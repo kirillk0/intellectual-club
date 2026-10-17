@@ -53,6 +53,7 @@ impl Fixture {
             memory_bytes: 512 * 1024 * 1024,
             pids_limit: 64,
             nano_cpus: 1_000_000_000,
+            cgroup_parent: std::env::var("OUTLET_TEST_CGROUP_PARENT").ok(),
         };
         let manager = ContainerManager::open(docker.clone(), config.clone(), SERVER, TOKEN).await?;
         Ok(Self {
@@ -196,6 +197,24 @@ async fn run(provider: &ContainerOutlet, chat: i64, root: i64, args: Value) -> R
         .await
 }
 
+/// Count processes whose command line contains `needle` (the scan itself never matches).
+async fn processes_matching(provider: &ContainerOutlet, root: i64, needle: &str) -> Result<usize> {
+    let scan = run(
+        provider,
+        root,
+        root,
+        json!({"command":"for p in /proc/[0-9]*; do tr '\\0' ' ' < \"$p/cmdline\" 2>/dev/null; echo; done"}),
+    )
+    .await?;
+    successful(&scan)?;
+    Ok(scan.raw["stdout"]
+        .as_str()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(needle))
+        .count())
+}
+
 #[tokio::test]
 #[ignore = "requires an explicitly selected Linux Docker Engine"]
 async fn command_io_and_chat_family_routing() {
@@ -321,42 +340,71 @@ async fn missing_container_and_timeout_survive_sqlite_reopen() {
             "agent did not receive an explicit reset notice"
         );
 
-        let timeout = run(
+        let replacement_id = replacement.raw["workspace"]["container_id"].clone();
+        let daemon = run(
             &outlet,
             303,
             301,
-            json!({"command":"sleep 300", "timeout_seconds":1}),
+            json!({"command":"nohup sleep 3150 >/dev/null 2>&1 & printf kept > /workspace/kept"}),
         )
         .await?;
+        successful(&daemon)?;
+        // Escape attempts: new session, cleared environment, nohup and an ignored SIGTERM.
+        let (timeout, concurrent) = tokio::join!(
+            run(
+                &outlet,
+                303,
+                301,
+                json!({"command":"setsid sh -c 'sleep 3142' & env -i /bin/sh -c 'sleep 3143' & nohup sleep 3144 >/dev/null 2>&1 & (trap '' TERM; sleep 3146) & sleep 3145", "timeout_seconds":1}),
+            ),
+            run(
+                &outlet,
+                305,
+                301,
+                json!({"command":"sleep 4; cat /workspace/kept", "timeout_seconds":30}),
+            )
+        );
+        let (timeout, concurrent) = (timeout?, concurrent?);
         ensure!(
-            timeout.raw["timed_out"] == true && timeout.raw["container_destroyed"] == true,
-            "timeout must kill the whole task container: {}",
+            timeout.raw["timed_out"] == true
+                && timeout.raw["processes_stopped"] == true
+                && timeout.raw["container_destroyed"] == false,
+            "timeout must stop only the timed-out command: {}",
             timeout.text
         );
-        let timed_id = timeout.raw["workspace"]["container_id"]
-            .as_str()
-            .context("timed out container id")?;
         ensure!(
-            matches!(
-                docker.inspect_container(timed_id, None).await,
-                Err(bollard::errors::Error::DockerResponseServerError {
-                    status_code: 404,
-                    ..
-                })
-            ),
-            "timed-out exec container is still alive"
+            timeout.raw["workspace"]["container_id"] == replacement_id
+                && timeout.text.contains("only its processes were stopped"),
+            "timeout changed the workspace: {}",
+            timeout.text
+        );
+        successful(&concurrent)?;
+        ensure!(
+            concurrent.raw["stdout"] == "kept",
+            "concurrent command did not survive the timeout: {}",
+            concurrent.text
+        );
+        ensure!(
+            processes_matching(&outlet, 301, "sleep 314").await? == 0,
+            "a process of the timed-out command escaped"
+        );
+        ensure!(
+            processes_matching(&outlet, 301, "sleep 3150").await? == 1,
+            "daemon of a completed command was killed by another command's timeout"
         );
         drop(outlet);
         drop(manager);
 
         let manager = ContainerManager::open(docker, config, SERVER, TOKEN).await?;
         let outlet = provider(manager)?;
-        let next = run(&outlet, 304, 301, json!({"command":"true"})).await?;
+        let next = run(&outlet, 304, 301, json!({"command":"cat /workspace/kept"})).await?;
         successful(&next)?;
         ensure!(
-            next.raw["workspace"]["recreated"] == true
-                && next.raw["workspace"]["reset_reason"] == "command_timeout",
-            "timeout tombstone did not survive restart"
+            next.raw["workspace"]["recreated"] == false
+                && next.raw["workspace"]["container_id"] == replacement_id
+                && next.raw["stdout"] == "kept",
+            "workspace was not kept after a timeout and restart: {}",
+            next.text
         );
         Ok(())
     })
@@ -412,12 +460,21 @@ async fn background_progress_idempotency_and_real_cancellation() {
         successful(&count)?;
         ensure!(count.raw["stdout"].as_str().unwrap_or_default().trim() == "1", "duplicate start executed twice");
         let container_id = count.raw["workspace"]["container_id"].as_str().context("container id")?.to_string();
+        let survivor = {
+            let outlet = outlet.clone();
+            tokio::spawn(async move { run(&outlet, 406, 401, json!({"command":"sleep 3; echo survivor-marker"})).await })
+        };
+        tokio::time::sleep(Duration::from_millis(500)).await;
         pool.cancel_background(task, "0").await?;
-        wait_background(&pool, task, |snapshot| snapshot.raw["status"] == "canceled").await?;
-        ensure!(matches!(fixture.docker.inspect_container(&container_id, None).await, Err(bollard::errors::Error::DockerResponseServerError { status_code:404, .. })), "cancel only stopped polling, not the command container");
-        let next = run(&outlet, 403, 401, json!({"command":"test ! -e /workspace/executions"})).await?;
+        let canceled = wait_background(&pool, task, |snapshot| snapshot.raw["status"] == "canceled").await?;
+        ensure!(fixture.docker.inspect_container(&container_id, None).await.is_ok(), "cancel destroyed the shared container: {}", canceled.text);
+        ensure!(processes_matching(&outlet, 401, "ready-marker").await? == 0, "canceled command is still running");
+        let survivor = survivor.await??;
+        successful(&survivor)?;
+        ensure!(survivor.raw["stdout"] == "survivor-marker\n", "concurrent command did not survive the cancel");
+        let next = run(&outlet, 403, 401, json!({"command":"cat /workspace/executions"})).await?;
         successful(&next)?;
-        ensure!(next.raw["workspace"]["recreated"] == true && next.raw["workspace"]["reset_reason"] == "command_canceled", "background cancel did not leave a reset notice");
+        ensure!(next.raw["workspace"]["recreated"] == false && next.raw["stdout"] == "x", "background cancel changed workspace files: {}", next.text);
 
         let done_task = "background-completion-test";
         let done_args = json!({"command":"printf y >> /workspace/executions; printf 'finished-marker\n'"});
@@ -427,7 +484,7 @@ async fn background_progress_idempotency_and_real_cancellation() {
         pool.start_background_with_context(done_task, "run_command", done_args, None, Some(routing(404, 401))).await?;
         let count = run(&outlet, 405, 401, json!({"command":"wc -c < /workspace/executions"})).await?;
         successful(&count)?;
-        ensure!(count.raw["stdout"].as_str().unwrap_or_default().trim() == "1", "completed task was executed a second time");
+        ensure!(count.raw["stdout"].as_str().unwrap_or_default().trim() == "2", "completed task was executed a second time");
         pool.shutdown().await;
         Ok(())
     }).await;

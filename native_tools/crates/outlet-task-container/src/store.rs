@@ -47,6 +47,12 @@ impl Store {
                destroyed_at INTEGER,
                reset_reason TEXT,
                notice_pending INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS execs (
+               exec_id TEXT PRIMARY KEY,
+               root_chat_id INTEGER NOT NULL,
+               generation INTEGER NOT NULL,
+               started_at INTEGER NOT NULL
              );",
         )?;
         let binding = format!(
@@ -218,19 +224,77 @@ impl Store {
     }
 
     pub fn destroyed(
-        &self,
+        &mut self,
         root_chat_id: i64,
         generation: i64,
         reason: &str,
         now: i64,
     ) -> Result<()> {
-        let changed = self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
             "UPDATE containers SET status='destroyed',destroyed_at=?4,
                reset_reason=?3,notice_pending=1,active_calls=0
              WHERE root_chat_id=?1 AND generation=?2",
             params![root_chat_id, generation, reason, now],
         )?;
+        ensure_changed(changed)?;
+        // Removing the container stopped every process, so no exec remains unconfirmed.
+        transaction.execute("DELETE FROM execs WHERE root_chat_id=?1", [root_chat_id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Persist a command before it starts, so a crashed runner can stop it after restart.
+    pub fn exec_started(
+        &self,
+        root_chat_id: i64,
+        generation: i64,
+        exec_id: &str,
+        now: i64,
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "INSERT INTO execs(exec_id,root_chat_id,generation,started_at)
+             SELECT ?3,root_chat_id,generation,?4 FROM containers
+             WHERE root_chat_id=?1 AND generation=?2 AND status='ready'",
+            params![root_chat_id, generation, exec_id, now],
+        )?;
         ensure_changed(changed)
+    }
+
+    /// Forget a command whose termination has been confirmed.
+    pub fn exec_finished(&self, exec_id: &str) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM execs WHERE exec_id=?1", [exec_id])?;
+        Ok(())
+    }
+
+    /// Commands of one workspace generation whose termination was never confirmed.
+    pub fn unconfirmed_execs(&self, root_chat_id: i64, generation: i64) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT exec_id FROM execs WHERE root_chat_id=?1 AND generation=?2 ORDER BY started_at",
+        )?;
+        let ids = statement
+            .query_map(params![root_chat_id, generation], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
+    /// After a restart, previous-process calls can no longer finish: their processes were
+    /// stopped, so the workspace becomes idle again while keeping its files.
+    pub fn interrupted_calls_stopped(&mut self, root_chat_id: i64, generation: i64) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE containers SET active_calls=0
+             WHERE root_chat_id=?1 AND generation=?2 AND status='ready'",
+            params![root_chat_id, generation],
+        )?;
+        ensure_changed(changed)?;
+        transaction.execute(
+            "DELETE FROM execs WHERE root_chat_id=?1 AND generation=?2",
+            params![root_chat_id, generation],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 }
 
@@ -296,7 +360,7 @@ mod tests {
             store.acquire(42, row.generation, 200).unwrap();
             store.release(42, row.generation, 300).unwrap();
         }
-        let store = Store::open(&path, "http://server", "token").unwrap();
+        let mut store = Store::open(&path, "http://server", "token").unwrap();
         assert_eq!(store.runner_id, runner_id);
         assert_eq!(store.get(42).unwrap().unwrap().last_used_at, 300);
         store.destroyed(42, 1, "container_missing", 400).unwrap();
@@ -402,5 +466,35 @@ mod tests {
             [2, 1, 3]
         );
         assert_eq!(store.get(3).unwrap().unwrap().status, "creating");
+    }
+    #[test]
+    fn unconfirmed_execs_survive_reopen_until_confirmed_or_workspace_destroyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        {
+            let mut store = Store::open(&path, "s", "t").unwrap();
+            ready(&mut store, 42, 0);
+            store.acquire(42, 1, 10).unwrap();
+            store.exec_started(42, 1, "a", 11).unwrap();
+            store.exec_started(42, 1, "b", 12).unwrap();
+            store.exec_finished("a").unwrap();
+            assert!(store.exec_started(42, 2, "stale-generation", 13).is_err());
+        }
+        let mut store = Store::open(&path, "s", "t").unwrap();
+        assert_eq!(
+            store.unconfirmed_execs(42, 1).unwrap(),
+            vec!["b".to_string()]
+        );
+        store.interrupted_calls_stopped(42, 1).unwrap();
+        let row = store.get(42).unwrap().unwrap();
+        assert_eq!(
+            (row.status.as_str(), row.active_calls, row.notice_pending),
+            ("ready", 0, false)
+        );
+        assert!(store.unconfirmed_execs(42, 1).unwrap().is_empty());
+        store.exec_started(42, 1, "c", 20).unwrap();
+        store.destroyed(42, 1, "command_timeout", 30).unwrap();
+        assert!(store.unconfirmed_execs(42, 1).unwrap().is_empty());
+        assert!(store.exec_started(42, 1, "after-destroy", 31).is_err());
     }
 }

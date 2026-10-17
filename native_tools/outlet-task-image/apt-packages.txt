@@ -1,0 +1,62 @@
+# Primary apt layer: document, OCR, browser, media and font stack.
+# Installed with --no-install-recommends. This layer is large and changes rarely;
+# put small CLI/dev tools into apt-tools.txt instead (cheaper rebuilds).
+
+# PDF
+poppler-utils
+qpdf
+mupdf-tools
+ghostscript
+
+# Office. Component -nogui packages instead of the libreoffice-nogui metapackage,
+# which pulls Debian's python3 (3.11) through python3-uno.
+libreoffice-writer-nogui
+libreoffice-calc-nogui
+libreoffice-impress-nogui
+libreoffice-draw-nogui
+libreoffice-math-nogui
+default-jre-headless
+pandoc
+
+# OCR
+tesseract-ocr
+tesseract-ocr-eng
+tesseract-ocr-rus
+tesseract-ocr-ukr
+tesseract-ocr-deu
+tesseract-ocr-fra
+tesseract-ocr-spa
+tesseract-ocr-ita
+tesseract-ocr-jpn
+tesseract-ocr-chi-sim
+tesseract-ocr-osd
+
+# Browser automation and media
+chromium
+chromium-driver
+xvfb
+xauth
+ffmpeg
+
+# Fonts (Office metric-compatible, Cyrillic, CJK, emoji)
+fonts-dejavu
+fonts-liberation
+fonts-liberation2
+fonts-crosextra-carlito
+fonts-crosextra-caladea
+fonts-noto-core
+fonts-noto-cjk
+fonts-noto-color-emoji
+fonts-paratype
+
+# Spell checking
+hunspell
+hunspell-ru
+hunspell-en-us
+hunspell-de-de
+
+# Runtime libraries for pip packages (weasyprint, pyzbar)
+libpango-1.0-0
+libpangoft2-1.0-0
+libharfbuzz-subset0
+libzbar0

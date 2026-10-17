@@ -1,0 +1,47 @@
+# Small CLI and development tools, installed in a late layer so edits here do not
+# rebuild the heavy apt, pip, npm and browser layers.
+# python:3.12-bookworm already ships build-essential, git, curl, wget, unzip and imagemagick.
+
+# Archives
+p7zip-full
+unar
+cabextract
+innoextract
+msitools
+zstd
+zip
+
+# Build and development
+cmake
+ninja-build
+pkg-config
+sqlite3
+postgresql-client
+gettext
+libxml2-utils
+xxd
+shellcheck
+strace
+git-lfs
+
+# Everyday CLI
+ripgrep
+fd-find
+jq
+tree
+less
+vim-tiny
+nano
+rsync
+openssh-client
+dnsutils
+iproute2
+netcat-openbsd
+procps
+psmisc
+lsof
+file
+bc
+time
+sudo
+imagemagick

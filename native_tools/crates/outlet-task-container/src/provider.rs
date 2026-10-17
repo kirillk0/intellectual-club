@@ -20,7 +20,8 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
-use crate::manager::{ContainerLease, ContainerManager};
+use crate::manager::{ContainerLease, ContainerManager, ExecStop};
+use crate::process;
 
 const OUTPUT_BYTES: usize = 200_000;
 const FILE_OPERATION_TIMEOUT: Duration = Duration::from_secs(600);
@@ -67,7 +68,7 @@ impl ContainerOutlet {
             }
             env.insert(name.clone(), value);
         }
-        let command = args.command_argv()?;
+        let command = process::wrap_command(args.command_argv()?);
         let cwd = normalize_path(args.cwd.as_deref().unwrap_or("/workspace"), true)?;
         let seconds = args
             .timeout_seconds
@@ -78,6 +79,9 @@ impl ContainerOutlet {
         let mut stdout = Capture::new(&secrets);
         let mut stderr = Capture::new(&secrets);
         let mut stdin_error = None;
+        // Tag the command so an interruption can stop exactly its processes.
+        let exec_id = self.manager.begin_exec(lease)?;
+        env.insert(process::EXEC_ID_ENV.to_string(), exec_id.clone());
         let run = async {
             let exec = self
                 .manager
@@ -163,18 +167,26 @@ impl ContainerOutlet {
             }
             _ = context.cancelled() => CommandOutcome::Canceled,
         };
-        let reset = !matches!(outcome, CommandOutcome::Exited(_));
-        if reset {
-            let reason = match &outcome {
-                CommandOutcome::TimedOut => "command_timeout",
-                CommandOutcome::Canceled => "command_canceled",
-                _ => "command_outcome_unknown",
-            };
-            // Disconnecting exec does not kill its process tree. Destroy the whole workspace.
-            self.manager.destroy(lease, reason).await.map_err(|error| anyhow!(UnconfirmedExecution(format!(
-                "Cannot confirm emergency container removal; execution outcome is unknown. Administrator intervention may be required: {error:#}"
-            ))))?;
-        }
+        let stop = match &outcome {
+            CommandOutcome::Exited(_) => {
+                self.manager.end_exec(lease, &exec_id);
+                None
+            }
+            interrupted => {
+                let reason = match interrupted {
+                    CommandOutcome::TimedOut => "command_timeout",
+                    CommandOutcome::Canceled => "command_canceled",
+                    _ => "command_outcome_unknown",
+                };
+                // Disconnecting from an exec does not stop it: stop only this command.
+                Some(self.manager.stop_exec(lease, &exec_id, reason).await?)
+            }
+        };
+        let processes_stopped = matches!(stop, Some(ExecStop::Stopped));
+        let destroyed_after = match &stop {
+            Some(ExecStop::ContainerDestroyed(error)) => Some(error.clone()),
+            _ => None,
+        };
         let (out, out_truncated) = stdout.finish(&secrets);
         let (err, err_truncated) = stderr.finish(&secrets);
         let code = match outcome {
@@ -190,15 +202,24 @@ impl ContainerOutlet {
             "timed_out": matches!(outcome, CommandOutcome::TimedOut),
             "canceled": matches!(outcome, CommandOutcome::Canceled),
             "output_truncated": out_truncated || err_truncated,
-            "container_destroyed": reset, "error": error, "stdin_error": stdin_error,
+            "processes_stopped": processes_stopped,
+            "container_destroyed": destroyed_after.is_some(), "exec_id": exec_id,
+            "error": error, "stdin_error": stdin_error,
         });
         let mut text = format!(
             "exit_code: {}\nstdout:\n{out}\nstderr:\n{err}",
             code.map(|v| v.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         );
-        if reset {
-            text.push_str("\nWARNING: Command interrupted or outcome unknown; the entire shared task container was destroyed to stop all processes. Files and concurrent work are lost. The next call creates a fresh container.");
+        if processes_stopped {
+            text.push_str(&match &outcome {
+                CommandOutcome::TimedOut => format!("\nCommand timed out after {seconds} s; only its processes were stopped. Other commands and workspace files are unaffected."),
+                CommandOutcome::Canceled => "\nCommand canceled; only its processes were stopped. Other commands and workspace files are unaffected.".to_string(),
+                _ => "\nCommand outcome is unknown; its remaining processes were stopped. Other commands and workspace files are unaffected.".to_string(),
+            });
+        }
+        if let Some(stop_error) = &destroyed_after {
+            text.push_str(&format!("\nWARNING: The interrupted command could not be stopped selectively ({stop_error}); the entire shared task container was destroyed. Files and concurrent work are lost. The next call creates a fresh container."));
         }
         if let Some(error) = error {
             text.push_str(&format!("\nError: {error}"));
@@ -212,6 +233,20 @@ impl ContainerOutlet {
             text.push_str("\nOutput truncated.");
         }
         Ok(ToolResult::new(text, raw))
+    }
+
+    async fn interrupted_transfer(&self, lease: &ContainerLease) -> Result<ToolResult> {
+        // The dropped operation may have been running its destination-directory helper.
+        if let Some(exec_id) = lease.active_exec() {
+            if let ExecStop::ContainerDestroyed(error) = self
+                .manager
+                .stop_exec(lease, &exec_id, "file_transfer_interrupted")
+                .await?
+            {
+                bail!("File transfer interrupted; its helper command could not be stopped ({error}), so the task container was destroyed. The next call creates a fresh workspace.");
+            }
+        }
+        bail!("File transfer interrupted or timed out; the destination may contain a partial file. Other commands and workspace files are unaffected.")
     }
 
     async fn download_file(
@@ -370,14 +405,14 @@ impl ToolProvider for ContainerOutlet {
             json!({"type": "string", "description": "Chat file external UUID."});
         download_schema["required"] = json!(["file_id", "local_path"]);
         vec![
-            ToolSpec::new("run_command", "Run a command in the Linux container shared by this chat and its subagents. Files persist between calls until eviction or failure. argv takes precedence over command (/bin/sh -c). Default cwd: /workspace. Use the background wrapper for long cancellable work; stopping foreground chat generation does not cancel a dispatched exec. Timeout/background cancel destroys the ENTIRE shared container, including concurrent work. Inspect workspace generation and reset warnings in every result. Never automatically retry a command with unknown outcome.", json!({
+            ToolSpec::new("run_command", "Run a command in the Linux container shared by this chat and its subagents. Files persist between calls until eviction or failure. argv takes precedence over command (/bin/sh -c). Default cwd: /workspace. Use the background wrapper for long cancellable work; stopping foreground chat generation does not cancel a dispatched exec. A timeout or background cancel stops only this command's processes (including its background children); concurrent commands and files are unaffected. Inspect workspace generation and reset warnings in every result. Never automatically retry a command with unknown outcome.", json!({
                 "type": "object", "properties": {
                     "command": {"type": "string"},
                     "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "cwd": {"type": "string"},
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     "stdin": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "description": format!("Command timeout; default {} seconds. Timeout destroys the shared workspace.", self.default_timeout.as_secs())},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "description": format!("Command timeout; default {} seconds. On timeout only this command's processes are stopped.", self.default_timeout.as_secs())},
                     "use_secrets": {"type": "array", "items": {"type": "string"}, "description": "Managed secret names to inject into this exec only. Raw progress is suppressed and exact values are redacted from the final output."}
                 }, "additionalProperties": false
             })).with_background_support(),
@@ -450,10 +485,7 @@ impl ToolProvider for ContainerOutlet {
                 };
                 match completed {
                     Some(result) => result,
-                    None => match self.manager.destroy(&lease, "file_transfer_interrupted").await {
-                        Ok(()) => Err(anyhow!("File transfer interrupted; the task container was destroyed. The next call creates a fresh workspace.")),
-                        Err(error) => Err(anyhow!(UnconfirmedExecution(format!("File transfer interrupted; cannot confirm container removal: {error:#}")))),
-                    }
+                    None => self.interrupted_transfer(&lease).await,
                 }
             }
         };
@@ -529,6 +561,9 @@ impl RunCommandArgs {
         normalize_path(self.cwd.as_deref().unwrap_or("/workspace"), true)?;
         for (name, value) in &self.env {
             validate_env_key(name)?;
+            if name == process::EXEC_ID_ENV {
+                bail!("{} is reserved for the runner", process::EXEC_ID_ENV);
+            }
             if value.contains('\0') {
                 bail!("Environment values must not contain NUL characters");
             }

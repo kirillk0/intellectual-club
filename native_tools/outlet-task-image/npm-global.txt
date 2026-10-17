@@ -1,0 +1,5 @@
+# Global npm packages; NODE_PATH makes them require()-able from any directory.
+docx
+pptxgenjs
+tsx
+typescript

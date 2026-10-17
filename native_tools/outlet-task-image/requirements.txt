@@ -1,0 +1,79 @@
+# Installed as root into the image's system Python 3.12 (/usr/local), no venv,
+# so `pip install` keeps working for agents. Versions resolve at build time;
+# /usr/local/share/outlet-task-image/manifest.txt records the result.
+
+# Data and general utilities
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+requests
+httpx
+beautifulsoup4
+lxml
+openpyxl
+pillow
+markitdown[all]
+rich
+tqdm
+ipython
+pytest
+
+# PDF and documents
+pymupdf
+pypdf
+pikepdf
+reportlab
+python-docx
+ebooklib
+weasyprint
+markdown
+pytesseract
+pdf2image
+ocrmypdf
+docxtpl
+odfpy
+extract-msg
+tabulate
+
+# Web
+ddgs
+curl_cffi
+playwright
+selenium
+yt-dlp
+feedparser
+deep-translator
+
+# Images
+opencv-python-headless
+scikit-image
+imageio
+cairosvg
+svgwrite
+qrcode
+
+# Data formats, geometry, science
+pyarrow
+duckdb
+networkx
+shapely
+pyproj
+sympy
+plotly
+scikit-learn
+statsmodels
+soundfile
+
+# Binary analysis and development
+pefile
+capstone
+ruff
+polib
+pyyaml
+jinja2
+psycopg[binary]
+paramiko
+language-tool-python
+uv

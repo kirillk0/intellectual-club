@@ -54,8 +54,10 @@ are not replaced when a tag changes. To update a mutable tag, explicitly `docker
 on the host; there is no background pull/update agent. Private images can be pre-pulled
 with the administrator's Docker credentials; the runner does not read registry secrets.
 
-The image must provide `/bin/sh`, `sleep infinity`, and `mkdir`; use a conventional
-Debian/Ubuntu/Python image. Its entrypoint/CMD are replaced with an idle process.
+The image must provide `/bin/sh`, `sleep infinity`, `mkdir`, and `cat`, `tr`, `grep`
+and `awk` with a readable `/proc` (used by the per-command stop helper); use a conventional
+Debian/Ubuntu/Python image. The repository's default agent image with document, OCR,
+browser and development tools is [`native_tools/outlet-task-image`](../../outlet-task-image/). Its entrypoint/CMD are replaced with an idle process.
 Working directory is `/workspace`; commands run as root **inside** the container to
 allow installing document tools. Python's stock image does not include PDF/Office
 utilities or Python document packages: install these in a custom image or with commands.
@@ -112,12 +114,15 @@ next call; replies include a warning, reset reason and workspace generation. A D
 communication error is **not** interpreted as a missing container. No command is silently
 replayed after an uncertain result.
 
-Idle containers and their timestamps survive a clean restart. If the runner crashes
-while a call is active, startup removes the affected container to stop orphaned execs;
-its next call explicitly reports the lost workspace. Aborted futures leave durable
-deletion intent and attempt immediate cleanup. Background result/progress records remain
-in `outlet-core` memory and do not survive a runner process restart; SQLite does not
-pretend to recover a command result it cannot know.
+Idle containers and their timestamps survive a clean restart. Each command is recorded
+in SQLite before it starts and forgotten once its exit is confirmed. A clean shutdown
+stops the commands still running; after a crash, startup stops the recorded commands of
+the previous process. Both keep the workspace files and the daemons of commands that
+had completed; only if the processes cannot be stopped is that container removed (its
+next call reports the lost workspace). An aborted call future stops its own command the
+same way. Background result/progress records remain in `outlet-core` memory and do not
+survive a runner process restart; SQLite does not pretend to recover a command result it
+cannot know.
 
 If the database is lost, its identity is lost too. Old labelled containers are left
 untouched, not adopted with guessed timestamps. Unknown objects in a known namespace
@@ -133,6 +138,7 @@ are warned about and left for manual inspection. Database corruption fails start
 | `OUTLET_MEMORY_BYTES` | 2 GiB | Per-container hard memory limit, swap bounded too; 0 disables |
 | `OUTLET_PIDS_LIMIT` | 256 | Per-container process bound |
 | `OUTLET_CPUS` | 2 | Per-container CPU ceiling |
+| `OUTLET_CGROUP_PARENT` | — | Parent cgroup of all task containers (e.g. a systemd slice with a total `MemoryMax`) |
 | `OUTLET_COMMAND_TIMEOUT_SECONDS` | 300 | Default command timeout; overridable per call |
 | `OUTLET_MAX_CONCURRENCY` | 20 | Shared foreground/background execution concurrency |
 | `OUTLET_MAX_FILE_BYTES` | 512 MiB | Safety bound for each streamed file transfer |
@@ -148,10 +154,19 @@ Docker metadata and SQLite. Container logging is disabled to avoid unbounded Doc
 Lazy cleanup cannot enforce a hard disk budget while existing containers keep writing.
 Monitor actual host free space; do not use the soft target as a filesystem quota.
 
-**Command timeout or `background_cancel` destroys the entire shared task container**, stopping its
-process tree and losing its writable files and any concurrent work. File-transfer
-interruption also resets it conservatively. OOM/process/CPU limits are emergency host
-protection, not tenant policies. OOM may kill only the offending exec rather than PID 1;
+A **command timeout or `background_cancel` stops only that command**: Docker cannot
+signal an exec, so every command runs under a small wrapper shell that stays its session
+leader and carries a unique `OUTLET_EXEC_ID` environment value (reserved; user `env`
+cannot set it). A separate helper exec sends `SIGTERM`, then `SIGKILL` after 2 seconds, to
+all processes that carry the id, run in a session led by one of them, or descend from
+them, so `nohup`, `setsid`, double-forked and cleared-environment children are included.
+Concurrent commands, files and daemons started by other commands are unaffected; the
+result reports `processes_stopped`. Only if the stop cannot be confirmed (helper failure,
+unkillable process) is the whole container removed as a last resort
+(`container_destroyed`). A process that both clears its environment and leaves the
+session of its command would escape; this is not a security boundary. An interrupted file
+transfer may leave a partial destination file but does not reset the workspace.
+OOM/process/CPU limits are emergency host protection, not tenant policies. OOM may kill only the offending exec rather than PID 1;
 a surviving container can retain its files. There is no global resource watchdog: size
 memory limits for your host and use a dedicated machine for untrusted workloads.
 The TTL guarantee covers housekeeping, not OOM, manual removal, failures or cancellation.
@@ -164,7 +179,10 @@ explicit cancellation. Image preparation precedes the command timeout and has a 
 
 ## Administration
 
-See `outlet-task-container.service` for an example systemd service. Store environment
+See `outlet-task-container.service` for an example systemd service. A Docker Compose
+service works too: run the binary in `debian:bookworm-slim` (glibc build) with the
+Docker socket and a private state directory mounted, and give it `stop_grace_period` of
+a few minutes so a clean shutdown can stop running commands. Store environment
 configuration in a root-readable `/etc/outlet-task-container.env`, and put the binary
 at `/usr/local/bin/outlet-task-container`. The service account needs its private state
 directory and access to the Docker socket. `SIGINT`/`SIGTERM` stop polling and clean up

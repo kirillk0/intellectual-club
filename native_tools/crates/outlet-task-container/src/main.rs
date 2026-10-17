@@ -55,6 +55,12 @@ struct Args {
     pids_limit: i64,
     #[arg(long, env = "OUTLET_CPUS", default_value_t = 2.0)]
     cpus: f64,
+    #[arg(
+        long,
+        env = "OUTLET_CGROUP_PARENT",
+        help = "Parent cgroup for all task containers, e.g. a systemd slice bounding their total memory"
+    )]
+    cgroup_parent: Option<String>,
     #[arg(long, env = "OUTLET_COMMAND_TIMEOUT_SECONDS", default_value_t = 300)]
     command_timeout_seconds: u64,
     #[arg(long, env = "OUTLET_MAX_FILE_BYTES", default_value_t = 512 * 1024 * 1024, help = "Streaming file-transfer safety bound")]
@@ -113,6 +119,7 @@ async fn main() -> Result<()> {
             memory_bytes: args.memory_bytes,
             pids_limit: args.pids_limit,
             nano_cpus: (args.cpus * 1_000_000_000.0) as i64,
+            cgroup_parent: args.cgroup_parent,
         },
         &connection.server_url,
         &connection.token,

@@ -10,7 +10,7 @@ The Rust workspace builds all native binaries together:
 - `outlet-shell` — reusable shell outlet tools
 - `outlet-shell-daemon` — headless binary for containers and server environments
 - `outlet-shell-desktop` — desktop GUI with one server per tab, command history, and browser or shared-secret connection
-- `outlet-task-container` — headless per-chat-family Linux containers with SQLite lifecycle state, files, and background commands; see [setup and operations](crates/outlet-task-container/README.md)
+- `outlet-task-container` — headless per-chat-family Linux containers with SQLite lifecycle state, files, and background commands; see [setup and operations](crates/outlet-task-container/README.md). Its default agent workspace image is [`outlet-task-image`](outlet-task-image/README.md)
 
 The desktop launcher binds the application HTTP server to `0.0.0.0`, allowing
 connections from other devices at `http://<computer-ip>:<app-port>` (port `4000`
