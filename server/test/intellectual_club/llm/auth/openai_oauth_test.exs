@@ -192,7 +192,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuthTest do
     assert meta.error_kind == "timeout"
   end
 
-  for status <- [503, 507, 520] do
+  for status <- [503, 504, 507, 520] do
     @status status
 
     test "returns retryable metadata on transient refresh HTTP #{status}" do

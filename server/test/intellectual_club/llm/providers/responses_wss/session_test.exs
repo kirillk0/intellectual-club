@@ -370,7 +370,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert length(requests_for(agent)) == 1
   end
 
-  for status <- [507, 520] do
+  for status <- [504, 507, 520] do
     @status status
 
     test "HTTP #{status} during WebSocket handshake remains retryable during fallback" do

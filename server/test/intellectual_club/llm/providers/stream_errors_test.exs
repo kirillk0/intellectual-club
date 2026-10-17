@@ -26,7 +26,7 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
 
   describe "non-JSON HTTP error bodies" do
     for provider <- [:anthropic, :responses, :openrouter, :google, :nvidia],
-        status <- [503, 507, 520] do
+        status <- [503, 504, 507, 520] do
       @provider provider
       @status status
 
@@ -231,10 +231,11 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
        ]}
     end
 
-  http_507_cases =
-    for provider <- [:anthropic, :responses, :openrouter, :google, :nvidia] do
-      {"#{provider} HTTP 507 is retryable without a retry hint in the JSON body", provider,
-       {507,
+  http_transient_cases =
+    for provider <- [:anthropic, :responses, :openrouter, :google, :nvidia],
+        status <- [504, 507] do
+      {"#{provider} HTTP #{status} is retryable without a retry hint in the JSON body", provider,
+       {status,
         {:json,
          %{
            "error" => %{
@@ -242,41 +243,46 @@ defmodule IntellectualClub.Llm.Providers.StreamErrorsTest do
              "type" => "unexpected_error",
              "message" => "Request failed"
            }
-         }}}, [status_code: 507, retryable: true, error_text: "Request failed"]}
+         }}}, [status_code: status, retryable: true, error_text: "Request failed"]}
     end
 
-  streamed_507_cases = [
-    {"responses error events with code 507 are retryable", :responses,
-     {200,
-      {:sse, [%{"type" => "error", "error" => %{"code" => 507, "message" => "Request failed"}}]}},
-     [status_code: 507, retryable: true, error_text: "Request failed"]},
-    {"responses failed events with code 507 are retryable", :responses,
-     {200,
-      {:sse,
-       [
-         %{
-           "type" => "response.failed",
-           "response" => %{"error" => %{"code" => 507, "message" => "Request failed"}}
-         }
-       ]}}, [status_code: 507, retryable: true, error_text: "Request failed"]},
-    {"openrouter error chunks with code 507 are retryable", :openrouter,
-     {200, {:sse, [%{"error" => %{"code" => 507, "message" => "Request failed"}}]}},
-     [status_code: 507, retryable: true, error_text: "Request failed"]},
-    {"nvidia error chunks with code 507 are retryable", :nvidia,
-     {200, {:sse, [%{"error" => %{"code" => 507, "message" => "Request failed"}}]}},
-     [status_code: 507, retryable: true, error_text: "Request failed"]},
-    {"google error events with code 507 are retryable", :google,
-     {200,
-      {:sse,
-       [
-         %{
-           "event_type" => "error",
-           "error" => %{"code" => 507, "message" => "Request failed"}
-         }
-       ]}}, [status_code: 507, retryable: true, error_text: "Request failed"]}
-  ]
+  streamed_transient_cases =
+    for status <- [504, 507] do
+      [
+        {"responses error events with code #{status} are retryable", :responses,
+         {200,
+          {:sse,
+           [%{"type" => "error", "error" => %{"code" => status, "message" => "Request failed"}}]}},
+         [status_code: status, retryable: true, error_text: "Request failed"]},
+        {"responses failed events with code #{status} are retryable", :responses,
+         {200,
+          {:sse,
+           [
+             %{
+               "type" => "response.failed",
+               "response" => %{"error" => %{"code" => status, "message" => "Request failed"}}
+             }
+           ]}}, [status_code: status, retryable: true, error_text: "Request failed"]},
+        {"openrouter error chunks with code #{status} are retryable", :openrouter,
+         {200, {:sse, [%{"error" => %{"code" => status, "message" => "Request failed"}}]}},
+         [status_code: status, retryable: true, error_text: "Request failed"]},
+        {"nvidia error chunks with code #{status} are retryable", :nvidia,
+         {200, {:sse, [%{"error" => %{"code" => status, "message" => "Request failed"}}]}},
+         [status_code: status, retryable: true, error_text: "Request failed"]},
+        {"google error events with code #{status} are retryable", :google,
+         {200,
+          {:sse,
+           [
+             %{
+               "event_type" => "error",
+               "error" => %{"code" => status, "message" => "Request failed"}
+             }
+           ]}}, [status_code: status, retryable: true, error_text: "Request failed"]}
+      ]
+    end
+    |> List.flatten()
 
-  @cases @cases ++ nvidia_cases ++ http_507_cases ++ streamed_507_cases
+  @cases @cases ++ nvidia_cases ++ http_transient_cases ++ streamed_transient_cases
 
   describe "provider error payloads" do
     for {name, provider, response, expected} <- @cases do

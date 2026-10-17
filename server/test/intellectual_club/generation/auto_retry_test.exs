@@ -104,7 +104,7 @@ defmodule IntellectualClub.Generation.AutoRetryTest do
       cancel_and_wait!(context.message_id, actor)
     end
 
-    for status <- [429, 507, 520] do
+    for status <- [429, 504, 507, 520] do
       @tag status: status
       test "an HTTP #{status} retry error step is kept when a later attempt succeeds",
            %{status: status} do
