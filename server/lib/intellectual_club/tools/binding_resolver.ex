@@ -3,6 +3,8 @@ defmodule IntellectualClub.Tools.BindingResolver do
   Resolves effective tool bindings for chats and builds model-visible tool payloads.
   """
 
+  alias IntellectualClub.Knowledge.PromptContent
+
   alias IntellectualClub.Tools.{
     BotToolBinding,
     BotUserToolBinding,
@@ -402,7 +404,13 @@ defmodule IntellectualClub.Tools.BindingResolver do
 
       type_line = format_type_line(group)
       type_description = normalize_prompt_text(Map.get(group, :type_description))
-      instance_description = normalize_prompt_text(Map.get(tool_instance, :description))
+
+      instance_description =
+        tool_instance
+        |> Map.get(:description)
+        |> PromptContent.strip_comments()
+        |> normalize_prompt_text()
+
       instance_context = normalize_prompt_text(Map.get(group, :instance_context))
 
       [

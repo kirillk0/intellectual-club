@@ -472,7 +472,8 @@ defmodule IntellectualClub.Generation.ContextTest do
         create_tool_instance!(actor,
           type: "ssh",
           name: "Staging SSH",
-          description: "Staging server.\nUse for staging checks.\nLiteral {{tool_target}}.",
+          description:
+            "//// leading admin note\nStaging server.\n//// inner admin note\nUse for staging checks.\nLiteral {{tool_target}}.",
           alias: "staging_ssh",
           config: %{"host" => "staging.example.com", "username" => "deploy"}
         )
@@ -503,7 +504,7 @@ defmodule IntellectualClub.Generation.ContextTest do
             "Type: SSH (ssh)",
             "Type description: Execute remote commands on an SSH host.\n\n### Available functions\n- `",
             "`staging_ssh__run_command`",
-            "### Instance description\nStaging server.",
+            "### Instance description\nStaging server.\nUse for staging checks.",
             "Literal {{tool_target}}.",
             "## Tool instance `prod_web`",
             "`prod_web__web_search`"
@@ -511,6 +512,7 @@ defmodule IntellectualClub.Generation.ContextTest do
         assert prompt =~ fragment
       end
 
+      refute prompt =~ "admin note"
       refute prompt =~ "staging_ssh__upload_file"
       assert "staging_ssh__run_command" in tool_payload_names(context)
       refute "staging_ssh__upload_file" in tool_payload_names(context)

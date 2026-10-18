@@ -26,7 +26,7 @@
       <div v-if="hint" class="muted knowledge-block-content-editor__hint">
         {{ translate(hint) }}
       </div>
-      <div v-else class="muted knowledge-block-content-editor__hint">
+      <div class="muted knowledge-block-content-editor__hint">
         Lines starting with <code>//// </code> are treated as comments and removed from the compiled prompt.
       </div>
       <div v-if="contentError" class="error-text">{{ contentError }}</div>
