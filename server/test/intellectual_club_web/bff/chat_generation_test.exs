@@ -583,7 +583,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
       assert target.parent_message_id == nil
       assert target.parent_relation_kind == nil
 
-      branch = payload["branch"] || []
+      refute Map.has_key?(payload, "branch")
+      state = conn |> recycle() |> get(~p"/api/bff/chat-state/#{target_id}") |> json_response(200)
+      branch = state["branch"]
       assert Enum.map(branch, & &1["role"]) == ["user", "assistant"]
       assert Enum.map(branch, & &1["id"]) == [List.first(branch)["id"], generation_id]
       assert Enum.at(branch, 1)["parent_id"] == List.first(branch)["id"]
@@ -661,7 +663,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
       assert is_integer(target_id)
       assert is_integer(generation_id)
 
-      branch = payload["branch"] || []
+      refute Map.has_key?(payload, "branch")
+      state = conn |> recycle() |> get(~p"/api/bff/chat-state/#{target_id}") |> json_response(200)
+      branch = state["branch"]
       replacement = Enum.at(branch, -2)
       generated = List.last(branch)
 

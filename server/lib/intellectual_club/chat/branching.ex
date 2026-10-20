@@ -65,11 +65,22 @@ defmodule IntellectualClub.Chat.Branching do
   defp fetch_source_chat(_source_chat_or_id, _actor), do: {:error, :invalid_chat_id}
 
   defp active_prefix_before_message(%Chat{} = source, message_id, actor, opts) do
-    branch = Threads.active_branch(source, actor, opts)
+    branch = Threads.active_branch(source, actor)
     index = Enum.find_index(branch, &(&1.id == message_id))
 
     if is_integer(index) do
-      {:ok, Enum.at(branch, index), Enum.take(branch, index)}
+      prefix = Enum.take(branch, index)
+
+      prefix =
+        case Keyword.get(opts, :load) do
+          nil ->
+            prefix
+
+          load ->
+            Ash.load!(prefix, load, actor: actor, strict?: Keyword.get(opts, :strict?, false))
+        end
+
+      {:ok, Enum.at(branch, index), prefix}
     else
       {:error, :message_not_in_active_branch}
     end

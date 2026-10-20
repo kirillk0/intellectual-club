@@ -165,6 +165,20 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   actions do
     defaults([:read])
 
+    create :copy do
+      public?(false)
+      accept([:chat_message_id, :sequence])
+      argument(:source_step_id, :integer, allow_nil?: false)
+      change(relate_actor(:owner))
+
+      change(
+        {IntellectualClub.Chat.Changes.RequireOwnedTraceParent,
+         relationship: :chat_message, terminal?: true}
+      )
+
+      change(IntellectualClub.Chat.Changes.CopyStoredStep)
+    end
+
     destroy :destroy do
       primary?(true)
       require_atomic?(false)

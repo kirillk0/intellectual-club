@@ -630,7 +630,7 @@ export function useChatMessageActions(params: Params) {
     }
 
     try {
-      const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+      const payload = await api.post<{ chat: Chat; generation: { message_id: number } }>(
         `/api/bff/chat-generation/${params.chatId.value}/branch-to-new-chat`,
         { message_id: msg.id }
       );
@@ -772,7 +772,7 @@ export function useChatMessageActions(params: Params) {
 
         if (branchMode === 'branch_new_chat') {
           branchingNewChatMessageId.value = editingMessageId;
-          const payload = await api.post<{ chat: Chat; branch: ChatBranchMessage[]; generation: { message_id: number } }>(
+          const payload = await api.post<{ chat: Chat; generation: { message_id: number } }>(
             `/api/bff/chat-generation/${params.chatId.value}/branch-to-new-chat`,
             {
               message_id: editingMessageId,

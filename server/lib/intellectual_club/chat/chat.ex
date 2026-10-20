@@ -108,7 +108,7 @@ defmodule IntellectualClub.Chat.Chat do
          :ok <- mutable_history(source),
          source_branch =
            Threads.active_branch(source, actor,
-             load: MessageTreeCopy.load_spec(),
+             load: MessageTreeCopy.full_load_spec(),
              strict?: true
            ),
          {:ok, _source_branch} <-
@@ -149,7 +149,7 @@ defmodule IntellectualClub.Chat.Chat do
       |> List.wrap()
       |> Threads.normalize_content_specs()
 
-    branch_opts = [load: MessageTreeCopy.load_spec(), strict?: true]
+    branch_opts = [load: MessageTreeCopy.full_load_spec(), strict?: true]
 
     with {:ok, selection} <-
            Branching.active_branch_selection(source_id, message_id, actor, branch_opts),

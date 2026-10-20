@@ -60,7 +60,26 @@ or independently imported step sequences.
 
 ## Physical encoding writes
 
-The existing `ChatMessageStep.create` path remains independently validated for physical imports, copies and compatibility. Unlike the logical action it accepts encoding fields and verifies them, regardless of any caller-supplied hash, snapshot or context flags.
+The existing `ChatMessageStep.create` path remains independently validated for physical imports, partial-step copies and compatibility. Unlike the logical action it accepts encoding fields and verifies them, regardless of any caller-supplied hash, snapshot or context flags.
+
+Whole-message branching, continuation and moved-branch prefixes use
+`MessageTreeCopy.copy_full_messages!/3`. A complete message retains every request
+predecessor, so its physical full/patch fields are copied unchanged without
+reconstruction, hashing or image-marker traversal. The internal
+`ChatMessageStep.copy` action accepts source step IDs, reads their persisted
+fields with Ash authorization, and checks ownership of terminal target messages
+in batches. It does not accept caller-supplied request encodings.
+
+Steps, items, contents and request-file bindings are written in batches. Tool
+links are remapped within their copied step. Each attachment and request pin
+receives an independent logical file row; the existing payload locks protect
+shared file bytes from garbage collection. The enclosing chat transaction rolls
+back the entire copy on failure. Partial or gapped step snapshots continue to use
+the reconstruction path because their request predecessors may be absent.
+
+Branch selection loads trace details only for the prefix before the selected
+message. The branch-to-new-chat BFF response contains the new chat and generation
+ID; the SPA loads its history through chat-state after navigation.
 
 ```elixir
 attrs = StepRequests.create_attributes(compact_request,

@@ -20,6 +20,143 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
   require Ash.Query
 
+  describe "whole-message copying" do
+    test "preserves trace links and independent attachments across messages" do
+      %{user: actor} = user_fixture()
+      {:ok, file} = Files.create_from_binary("whole.txt", "text/plain", "copied payload")
+
+      first =
+        source_message!(actor,
+          steps: 2,
+          file_id: file.id,
+          status: :generating,
+          step_statuses: [:done, :waiting_tools]
+        )
+
+      second = source_message!(actor, chat_id: first.chat_id, parent_id: first.id, steps: 2)
+      target = create_empty_chat!(actor)
+
+      assert {:ok, copied_ids} =
+               Repo.transaction(fn ->
+                 MessageTreeCopy.copy_full_messages!(
+                   [reverse_trace(first), reverse_trace(second)],
+                   target,
+                   actor
+                 )
+               end)
+
+      [copied_first, copied_second] = messages_for_chat(target.id, actor)
+      assert copied_ids == %{first.id => copied_first.id, second.id => copied_second.id}
+      assert copied_second.parent_id == copied_first.id
+      assert copied_first.status == :canceled
+      assert Enum.map(ordered(copied_first.steps), & &1.status) == [:done, :canceled]
+      assert trace_signature(copied_first) == trace_signature(first)
+      assert trace_signature(copied_second) == trace_signature(second)
+      ids = media_file_ids(copied_first)
+      assert length(Enum.uniq(ids)) == 2
+      refute file.id in ids
+      assert Enum.all?(ids, &(Ash.get!(StoredFile, &1, actor: actor).sha256 == file.sha256))
+    end
+
+    test "rejects inaccessible persisted steps and target chats" do
+      %{user: actor} = user_fixture()
+      %{user: stranger} = user_fixture()
+      source = source_message!(actor, steps: 1)
+      foreign = source_message!(stranger, steps: 1)
+      target = create_empty_chat!(actor)
+      foreign_target = create_empty_chat!(stranger)
+      before_ids = copy_record_ids(actor)
+
+      assert {:error, _} =
+               Repo.transaction(fn ->
+                 MessageTreeCopy.copy_full_messages!(
+                   [%{source | steps: foreign.steps}],
+                   target,
+                   actor
+                 )
+               end)
+
+      assert copy_record_ids(actor) == before_ids
+
+      assert {:error, _} =
+               Repo.transaction(fn ->
+                 MessageTreeCopy.copy_full_messages!(
+                   [source],
+                   %{foreign_target | owner_id: actor.id},
+                   actor
+                 )
+               end)
+
+      assert messages_for_chat(target.id, actor) == []
+      assert messages_for_chat(foreign_target.id, stranger) == []
+    end
+
+    test "rolls back duplicated files and every trace batch when content creation fails" do
+      %{user: actor} = user_fixture()
+      {:ok, file} = Files.create_from_binary("rollback-whole.txt", "text/plain", "payload")
+      source = source_message!(actor, steps: 2, file_id: file.id)
+
+      snapshot =
+        update_last_step(source, fn step ->
+          %{
+            step
+            | items:
+                Enum.map(step.items, fn item ->
+                  %{item | contents: Enum.map(item.contents, &%{&1 | kind: :invalid_kind})}
+                end)
+          }
+        end)
+
+      target = create_empty_chat!(actor)
+      before_ids = copy_record_ids(actor)
+
+      assert {:error, _} =
+               Repo.transaction(fn ->
+                 MessageTreeCopy.copy_full_messages!([snapshot], target, actor)
+               end)
+
+      assert copy_record_ids(actor) == before_ids
+      assert Ash.get!(Chat, target.id, actor: actor).last_message_id == nil
+    end
+
+    test "the internal step copy cannot append to a live generation" do
+      %{user: actor} = user_fixture()
+      source = source_message!(actor, steps: 1)
+      target = create_generating_message!(actor, create_empty_chat!(actor))
+      [step] = source.steps
+
+      assert {:error, _} =
+               ChatMessageStep
+               |> Ash.Changeset.for_create(
+                 :copy,
+                 %{source_step_id: step.id, sequence: 1, chat_message_id: target.id},
+                 actor: actor
+               )
+               |> Ash.create(actor: actor)
+
+      assert Ash.load!(target, :steps, actor: actor).steps == []
+    end
+
+    @tag :whitebox
+    test "database round trips grow with batches instead of individual trace records" do
+      %{user: actor} = user_fixture()
+      source = source_message!(actor, steps: 40)
+      target = create_empty_chat!(actor)
+
+      {{:ok, _}, %{queries: queries}} =
+        SqlCapture.measure(fn ->
+          Repo.transaction(fn -> MessageTreeCopy.copy_full_messages!([source], target, actor) end)
+        end)
+
+      assert length(queries) < 80
+      assert insert_count(queries, "chat_message_steps") == 1
+      assert insert_count(queries, "chat_message_items") == 2
+      assert insert_count(queries, "chat_message_contents") == 2
+      [copied] = messages_for_chat(target.id, actor)
+      assert trace_signature(copied) == trace_signature(source)
+    end
+  end
+
   test "trace inserts are batched per message and repeated item sequences stay within their steps" do
     %{user: actor} = user_fixture()
 

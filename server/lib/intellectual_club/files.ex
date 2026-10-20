@@ -122,6 +122,52 @@ defmodule IntellectualClub.Files do
 
   def duplicate_file(_file_id), do: {:error, :invalid_file_id}
 
+  @doc "Duplicates logical files in input order, including a separate row for each occurrence."
+  def duplicate_files([]), do: {:ok, []}
+
+  def duplicate_files(file_ids) when is_list(file_ids) do
+    File
+    |> Ash.transact(fn ->
+      ids = Enum.uniq(file_ids)
+      query = File |> Ash.Query.filter(id in ^ids)
+      sources = Ash.read!(query, authorize?: false)
+
+      sources
+      |> Enum.map(& &1.sha256)
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.each(fn sha256 ->
+        case PayloadLock.acquire(sha256) do
+          :ok -> :ok
+          {:error, reason} -> raise "Failed to lock copied file: #{inspect(reason)}"
+        end
+      end)
+
+      # Re-read after the payload locks so a concurrent deletion cannot race GC.
+      sources = query |> Ash.read!(authorize?: false) |> Map.new(&{&1.id, &1})
+
+      inputs =
+        Enum.map(file_ids, fn id ->
+          sources
+          |> Map.fetch!(id)
+          |> Map.take([:sha256, :filename, :size_bytes, :mime_type, :storage_backend])
+        end)
+
+      case Ash.bulk_create(inputs, File, :create,
+             authorize?: false,
+             return_records?: true,
+             return_errors?: true,
+             stop_on_error?: true,
+             transaction: :all,
+             sorted?: true,
+             batch_size: 250
+           ) do
+        %Ash.BulkResult{status: :success, records: files} -> files
+        result -> raise "Failed to duplicate files: #{inspect(result.errors)}"
+      end
+    end)
+  end
+
   @spec load_payload(integer()) :: {:ok, {File.t(), binary()}} | {:error, term()}
   def load_payload(file_id) when is_integer(file_id) do
     with {:ok, %File{} = file} <- Ash.get(File, file_id, authorize?: false) do

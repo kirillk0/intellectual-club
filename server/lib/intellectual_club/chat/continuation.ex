@@ -16,7 +16,7 @@ defmodule IntellectualClub.Chat.Continuation do
     with {:ok, %Chat{} = source} <- Ash.get(Chat, source_chat_id, actor: actor),
          source_branch =
            Threads.active_branch(source, actor,
-             load: MessageTreeCopy.load_spec(),
+             load: MessageTreeCopy.full_load_spec(),
              strict?: true
            ),
          {:ok, _source_branch} <-
@@ -77,8 +77,8 @@ defmodule IntellectualClub.Chat.Continuation do
   @spec copy_active_branch_to_target!(Chat.t(), Chat.t(), map()) :: Chat.t()
   def copy_active_branch_to_target!(%Chat{} = source, %Chat{} = target, actor) do
     source
-    |> Threads.active_branch(actor, load: MessageTreeCopy.load_spec(), strict?: true)
-    |> MessageTreeCopy.copy_messages!(target, actor)
+    |> Threads.active_branch(actor, load: MessageTreeCopy.full_load_spec(), strict?: true)
+    |> MessageTreeCopy.copy_full_messages!(target, actor)
 
     Ash.get!(Chat, target.id, actor: actor)
   end
@@ -90,7 +90,7 @@ defmodule IntellectualClub.Chat.Continuation do
   def copy_loaded_branch_to_target!(%Chat{} = source, messages, %Chat{} = target, actor)
       when is_list(messages) do
     _ = Ash.get!(Chat, source.id, actor: actor)
-    MessageTreeCopy.copy_messages!(messages, target, actor)
+    MessageTreeCopy.copy_full_messages!(messages, target, actor)
     Ash.get!(Chat, target.id, actor: actor)
   end
 
@@ -111,7 +111,7 @@ defmodule IntellectualClub.Chat.Continuation do
           {:ok, Chat.t()} | {:error, term()}
   def copy_branch_to_target(%Chat{} = source, %Chat{} = target, message_id, actor, opts \\ [])
       when is_integer(message_id) and is_list(opts) do
-    branch_opts = [load: MessageTreeCopy.load_spec(), strict?: true]
+    branch_opts = [load: MessageTreeCopy.full_load_spec(), strict?: true]
 
     with {:ok, selection} <-
            Branching.active_branch_selection(source, message_id, actor, branch_opts) do
@@ -130,7 +130,7 @@ defmodule IntellectualClub.Chat.Continuation do
          {:ok, %ChatMessage{}} <- Ash.get(ChatMessage, selected.id, actor: actor),
          {:ok, replacement_contents} <- replacement_contents(selected, opts) do
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
-      copied_ids = MessageTreeCopy.copy_messages!(prefix, target, actor)
+      copied_ids = MessageTreeCopy.copy_full_messages!(prefix, target, actor)
 
       if Branching.user_message?(selected) do
         add_replacement_user_message!(replacement_contents, selected, target, copied_ids, actor)

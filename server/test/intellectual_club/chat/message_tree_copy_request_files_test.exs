@@ -21,6 +21,46 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
 
   require Ash.Query
 
+  test "whole-message copy preserves full and patch fields exactly" do
+    %{user: actor} = user_fixture()
+    source = create_empty_chat!(actor)
+    message = IntellectualClub.StepRequestsFixtures.request_message!(actor, chat: source)
+    requests = Map.new(1..4, &{&1, IntellectualClub.StepRequestsFixtures.compact_request(&1)})
+
+    {steps, _} =
+      Enum.map_reduce(1..4, nil, fn sequence, previous ->
+        step =
+          IntellectualClub.StepRequestsFixtures.encoded_request_step!(
+            message,
+            sequence,
+            requests[sequence],
+            actor,
+            previous_step: previous,
+            previous_request: if(previous, do: requests[sequence - 1])
+          )
+
+        {step, step}
+      end)
+
+    assert Enum.map(steps, & &1.request_mode) == [:full, :patch, :patch, :patch]
+
+    target =
+      Chat |> Ash.Changeset.for_create(:continue, %{id: source.id}, actor: actor) |> Ash.create!()
+
+    [copied] = messages_for_chat(target.id, actor)
+    copied_steps = Enum.sort_by(copied.steps, & &1.sequence)
+    fields = IntellectualClub.Generation.StepRequests.Codec.fields()
+
+    for {original, copy} <- Enum.zip(steps, copied_steps) do
+      original = IntellectualClub.StepRequestsFixtures.stored_request_step!(original.id, actor)
+      copy = IntellectualClub.StepRequestsFixtures.stored_request_step!(copy.id, actor)
+      assert Map.take(copy, fields) == Map.take(original, fields)
+
+      assert IntellectualClub.Generation.StepRequests.request_for_step!(copy.id, actor: actor) ==
+               requests[copy.sequence]
+    end
+  end
+
   test "continue action never mutates the source and clones frozen request bindings" do
     %{user: actor} = user_fixture()
 

@@ -114,7 +114,10 @@ defmodule IntellectualClub.Chat.BranchMove do
     source_messages = context.prefix_messages ++ context.moved_messages
 
     with {:ok, loaded_messages} <-
-           Ash.load(source_messages, MessageTreeCopy.load_spec(), actor: actor, strict?: true),
+           Ash.load(source_messages, MessageTreeCopy.full_load_spec(),
+             actor: actor,
+             strict?: true
+           ),
          {:ok, _loaded_messages} <-
            MessageTreeCopy.prepare_loaded_messages(loaded_messages, actor) do
       {prefix_messages, moved_messages} = Enum.split(loaded_messages, prefix_count)
@@ -131,7 +134,8 @@ defmodule IntellectualClub.Chat.BranchMove do
       set_chat_last_message!(context.source, context.source_replacement_last_id, actor)
     end
 
-    copied_prefix_ids = MessageTreeCopy.copy_messages!(context.prefix_messages, target, actor)
+    copied_prefix_ids =
+      MessageTreeCopy.copy_full_messages!(context.prefix_messages, target, actor)
 
     moved_root_parent_id = mapped_prefix_parent_id(context.selected.parent_id, copied_prefix_ids)
 

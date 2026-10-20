@@ -79,12 +79,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
          {:ok, selection} <- Branching.active_branch_selection(source, message_id, actor),
          {:ok, %Chat{} = target} <- create_branch_target_chat(selection, params, actor),
          {:ok, context} <- start_branch_generation(target, actor) do
-      {messages, branch_meta_by_id} = ChatPayloads.load_branch(target.id, actor)
-
       {:ok,
        %{
          chat: Serializer.chat_detail(target),
-         branch: ChatPayloads.serialize_branch(messages, branch_meta_by_id, actor),
          generation: %{message_id: context.message_id}
        }}
     end

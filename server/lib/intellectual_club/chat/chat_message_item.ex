@@ -111,6 +111,18 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
       change({ValidateToolResultItemLink, []})
     end
 
+    create :copy do
+      public?(false)
+      accept([:chat_message_step_id, :sequence, :type, :tool_call_item_id])
+      change(relate_actor(:owner))
+
+      change(
+        {IntellectualClub.Chat.Changes.RequireOwnedTraceParent, relationship: :chat_message_step}
+      )
+
+      change(ValidateToolResultItemLink)
+    end
+
     update :request_steering_interruption do
       accept([:steering_interruption])
       require_atomic?(false)

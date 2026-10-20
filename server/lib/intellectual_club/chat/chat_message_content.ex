@@ -215,6 +215,16 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
       change({RequireRelatedOwnedByActor, relationships: [:chat_message_item]})
     end
 
+    create :copy do
+      public?(false)
+      accept([:chat_message_item_id, :sequence, :kind, :content_text, :content_json, :file_id])
+      change(relate_actor(:owner))
+
+      change(
+        {IntellectualClub.Chat.Changes.RequireOwnedTraceParent, relationship: :chat_message_item}
+      )
+    end
+
     update :update do
       accept([:sequence, :kind, :content_text, :content_json, :file_id])
       require_atomic?(false)
