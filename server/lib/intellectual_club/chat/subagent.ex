@@ -190,25 +190,55 @@ defmodule IntellectualClub.Chat.Subagent do
   def ensure_handoff_allowed(%ToolInstance{} = tool_instance, %ExecutionContext{} = context) do
     actor = actor_from_context(context)
 
-    cond do
-      is_nil(actor) or not is_integer(context.chat_id) ->
-        :ok
+    if is_nil(actor) or not is_integer(context.chat_id) do
+      :ok
+    else
+      case fetch_owned_chat(context.chat_id, actor) do
+        {:ok, %Chat{subagent: true} = chat} ->
+          if handoff_allowed_in_subchat?(tool_instance, chat, actor),
+            do: :ok,
+            else: {:error, "Handoff is disabled inside subagent chats."}
 
-      allow_handoff_in_subchats?(tool_instance) ->
-        :ok
-
-      true ->
-        case fetch_owned_chat(context.chat_id, actor) do
-          {:ok, %Chat{subagent: true}} ->
-            {:error, "Handoff is disabled inside subagent chats."}
-
-          _other ->
-            :ok
-        end
+        _other ->
+          :ok
+      end
     end
   end
 
   def ensure_handoff_allowed(_tool_instance, _context), do: :ok
+
+  @doc """
+  Whether a subagent chat may continue through handoff.
+
+  The policy belongs to the tool instance that created the subagent lineage
+  (`parent_tool_instance`) while the actor can read it; otherwise the tool
+  instance executing the handoff decides.
+  """
+  @spec handoff_allowed_in_subchat?(ToolInstance.t(), Chat.t(), map()) :: boolean()
+  def handoff_allowed_in_subchat?(%ToolInstance{} = tool_instance, %Chat{} = chat, actor) do
+    case lineage_tool_instance(chat, tool_instance, actor) do
+      %ToolInstance{} = lineage_tool_instance -> allow_handoff_in_subchats?(lineage_tool_instance)
+      nil -> allow_handoff_in_subchats?(tool_instance)
+    end
+  end
+
+  defp lineage_tool_instance(
+         %Chat{parent_tool_instance_id: id},
+         %ToolInstance{id: id} = tool_instance,
+         _actor
+       )
+       when is_integer(id),
+       do: tool_instance
+
+  defp lineage_tool_instance(%Chat{parent_tool_instance_id: id}, _tool_instance, actor)
+       when is_integer(id) do
+    case Ash.get(ToolInstance, id, actor: actor) do
+      {:ok, %ToolInstance{} = lineage_tool_instance} -> lineage_tool_instance
+      _other -> nil
+    end
+  end
+
+  defp lineage_tool_instance(_chat, _tool_instance, _actor), do: nil
 
   @doc """
   Returns agent management functions that subchat policy rejects in the chat.
@@ -223,7 +253,8 @@ defmodule IntellectualClub.Chat.Subagent do
         %{id: actor_id} = actor
       )
       when is_integer(actor_id) do
-    handoff = if allow_handoff_in_subchats?(tool_instance), do: [], else: ["handoff"]
+    handoff =
+      if handoff_allowed_in_subchat?(tool_instance, chat, actor), do: [], else: ["handoff"]
 
     creation =
       case ensure_creation_allowed(tool_instance, chat, actor) do

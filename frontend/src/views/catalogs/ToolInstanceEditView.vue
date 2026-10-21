@@ -213,6 +213,27 @@
                 </p>
               </template>
 
+              <template v-else-if="configWidget(field.schema) === 'bot-select'">
+                <input :value="selectedBotLabel(field.key)" class="full" readonly />
+
+                <div class="flex" style="gap: 8px; margin-top: 8px">
+                  <button type="button" :disabled="saving || loading" @click="openBotPicker(field.key)">
+                    Select
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="saving || loading || !selectedBotId(field.key)"
+                    @click="clearBot(field.key)"
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <p v-if="botsError" class="error-text">
+                  {{ botsError }}
+                </p>
+              </template>
+
               <template v-else>
                 <select
                   v-if="Array.isArray(field.schema.enum) && field.schema.enum.length"
@@ -650,6 +671,16 @@
       @select="selectKnowledgeTag"
     />
 
+    <BotSelectorModal
+      v-if="botPickerOpen"
+      :model-value="botPickerValue"
+      :options="botPickerOptions"
+      title="Select bot"
+      confirm-label="Select"
+      @cancel="closeBotPicker"
+      @save="selectBot"
+    />
+
     <ShareWithGroupsModal
       v-model:open="sharing.modalOpen.value"
       title="Share tool"
@@ -673,6 +704,9 @@ import ShareToolbarButton from '@/components/ShareToolbarButton.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsPickerModal from '@/components/KnowledgeTagsPickerModal.vue';
+import BotSelectorModal from '@/components/BotSelectorModal.vue';
+import { parseImageAsset } from '@/features/media/image';
+import type { ImageAsset } from '@/types/api';
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
   createJsonApiIncludedIndex,
@@ -1520,6 +1554,113 @@ function clearKnowledgeTag(fieldKey: string) {
   clearConfigFieldErrors(fieldKey);
 }
 
+type BotOption = {
+  id: number;
+  name: string;
+  image: ImageAsset | null;
+  shared_incoming?: boolean;
+  shared_outgoing?: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  sort_activity_at: string | null;
+};
+
+function parseBotOption(resource: JsonApiResource): BotOption | null {
+  const id = toIntId(resource.id);
+  if (!id) return null;
+  const attrs = (resource.attributes || {}) as Record<string, unknown>;
+  const name = String(attrs.name || '').trim();
+  if (!name) return null;
+  return {
+    id,
+    name,
+    image: parseImageAsset(attrs.image),
+    shared_incoming: typeof attrs.shared_incoming === 'boolean' ? attrs.shared_incoming : undefined,
+    shared_outgoing: typeof attrs.shared_outgoing === 'boolean' ? attrs.shared_outgoing : undefined,
+    created_at: typeof attrs.created_at === 'string' ? attrs.created_at : null,
+    updated_at: typeof attrs.updated_at === 'string' ? attrs.updated_at : null,
+    sort_activity_at: typeof attrs.sort_activity_at === 'string' ? attrs.sort_activity_at : null,
+  };
+}
+
+const botPickerOpen = ref(false);
+const botPickerFieldKey = ref<string | null>(null);
+const botPickerValue = ref<number | string | ''>('');
+const botsQueryEnabled = ref(false);
+
+const botsQuery = useQuery<BotOption[]>({
+  queryKey: serverStateKeys.reference('bots', 'tool-selector'),
+  enabled: botsQueryEnabled,
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams();
+    params.set('sort', 'name');
+    params.set('fields[bots]', 'name,image,shared_incoming,shared_outgoing,sort_activity_at');
+    const payload = await jsonApiList('/api/ash/bots', params, { signal });
+    return (payload.data || [])
+      .map(parseBotOption)
+      .filter((bot): bot is BotOption => Boolean(bot));
+  },
+});
+
+const bots = computed(() => botsQuery.data.value ?? []);
+const botsError = computed(() => {
+  if (!botsQueryEnabled.value) return null;
+  if (botsQuery.data.value || !botsQuery.error.value) return null;
+  return botsQuery.error.value instanceof Error ? botsQuery.error.value.message : 'Failed to load bots.';
+});
+
+async function loadBots() {
+  const shouldRetry = botsQueryEnabled.value && botsQuery.isError.value;
+  botsQueryEnabled.value = true;
+  if (shouldRetry) {
+    await botsQuery.refetch({ cancelRefetch: false });
+  }
+}
+
+function selectedBotId(fieldKey: string): number | null {
+  return toIntId((form.config as any)[fieldKey] as any) ?? null;
+}
+
+function selectedBotLabel(fieldKey: string): string {
+  const id = selectedBotId(fieldKey);
+  if (!id) return translate('No bot selected');
+
+  const bot = bots.value.find((item) => item.id === id);
+  return bot?.name || `Bot #${id}`;
+}
+
+const botPickerOptions = computed(() => bots.value.map((bot) => ({ ...bot })));
+
+async function openBotPicker(fieldKey: string) {
+  botPickerFieldKey.value = fieldKey;
+  botPickerValue.value = selectedBotId(fieldKey) ?? '';
+  botPickerOpen.value = true;
+  await loadBots();
+}
+
+function closeBotPicker() {
+  botPickerOpen.value = false;
+}
+
+function selectBot(value: number | string | '') {
+  const fieldKey = botPickerFieldKey.value;
+  botPickerOpen.value = false;
+  if (!fieldKey) return;
+
+  const id = toIntId(value as any);
+  if (id) {
+    (form.config as any)[fieldKey] = id;
+  } else {
+    delete (form.config as any)[fieldKey];
+  }
+  clearConfigFieldErrors(fieldKey);
+}
+
+function clearBot(fieldKey: string) {
+  delete (form.config as any)[fieldKey];
+  clearConfigFieldErrors(fieldKey);
+}
+
 const configFields = computed<SchemaField[]>(() => {
   const schema = currentToolType.value?.config_schema;
   const props =
@@ -1548,6 +1689,19 @@ watch(
   (ids) => {
     if (!ids.length || sharedReadonly.value) return;
     void loadKnowledgeTags();
+  },
+  { immediate: true }
+);
+
+watch(
+  () =>
+    configFields.value
+      .filter((field) => configWidget(field.schema) === 'bot-select')
+      .map((field) => selectedBotId(field.key))
+      .filter((id): id is number => typeof id === 'number'),
+  (ids) => {
+    if (!ids.length) return;
+    void loadBots();
   },
   { immediate: true }
 );

@@ -406,8 +406,19 @@ defmodule IntellectualClub.Chat.Handoff do
       },
       actor: actor
     )
+    |> Ash.Changeset.force_change_attributes(%{
+      parent_tool_instance_id: lineage_tool_instance_id(source)
+    })
     |> Ash.create!()
   end
+
+  # A subagent continuation stays governed by the tool instance that created
+  # the subagent lineage.
+  defp lineage_tool_instance_id(%Chat{subagent: true, parent_tool_instance_id: id})
+       when is_integer(id),
+       do: id
+
+  defp lineage_tool_instance_id(_source), do: nil
 
   defp handoff_prompt(%Chat{} = source, actor) do
     case Ash.load(source, [bot: [:handoff_message_block]], actor: actor) do

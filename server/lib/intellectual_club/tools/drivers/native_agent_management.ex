@@ -17,6 +17,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Spawn, as: AgentSpawn
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Tools.Drivers.SubagentArguments
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
   alias IntellectualClub.Tools.ToolInstance
@@ -311,7 +312,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = tool_instance, "fork", args, %ExecutionContext{} = context)
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_subagent_args(args, "fork"),
+    with {:ok, brief, prompt} <- SubagentArguments.parse(args, "fork"),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          actor = %User{id: owner_id},
          {:ok, result} <- AgentFork.create_and_run(tool_instance, brief, prompt, context, actor) do
@@ -333,7 +334,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_subagent_args(args, "fork"),
+    with {:ok, brief, prompt} <- SubagentArguments.parse(args, "fork"),
          :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
          {:ok, result} <- BackgroundTasks.start_fork(tool_instance, brief, prompt, context) do
       {:ok, result}
@@ -348,7 +349,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
   def execute(%ToolInstance{} = tool_instance, "spawn", args, %ExecutionContext{} = context)
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_subagent_args(args, "spawn"),
+    with {:ok, brief, prompt} <- SubagentArguments.parse(args, "spawn"),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
          actor = %User{id: owner_id},
          {:ok, result} <- AgentSpawn.create_and_run(tool_instance, brief, prompt, context, actor) do
@@ -369,7 +370,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         %ExecutionContext{} = context
       )
       when is_map(args) do
-    with {:ok, brief, prompt} <- required_subagent_args(args, "spawn"),
+    with {:ok, brief, prompt} <- SubagentArguments.parse(args, "spawn"),
          :ok <- Subagent.preflight_creation_allowed(tool_instance, context),
          {:ok, result} <- BackgroundTasks.start_spawn(tool_instance, brief, prompt, context) do
       {:ok, result}
@@ -502,41 +503,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
     end
   end
 
-  defp required_subagent_args(args, primitive) when is_map(args) do
-    with :ok <- reject_extra_subagent_args(args, primitive),
-         {:ok, brief} <- required_trimmed_string(args, "brief"),
-         {:ok, prompt} <- required_trimmed_string(args, "prompt") do
-      {:ok, brief, prompt}
-    end
-  end
-
-  defp required_trimmed_string(args, key) when is_map(args) and is_binary(key) do
-    case Map.get(args, key) do
-      nil ->
-        {:error, "#{key} is required"}
-
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, "#{key} is required"}
-          trimmed -> {:ok, trimmed}
-        end
-
-      _other ->
-        {:error, "#{key} must be a string"}
-    end
-  end
-
-  defp reject_extra_subagent_args(args, primitive) when is_map(args) do
-    extras = Map.keys(args) -- ["brief", "prompt"]
-
-    case extras do
-      [] -> :ok
-      _other -> {:error, "#{primitive} arguments contain unsupported fields"}
-    end
-  end
-
   defp fork_schema do
-    subagent_schema(
+    SubagentArguments.schema(
       "Complete instructions for the only task the copied subagent must perform. " <>
         "When this prompt appears in the copied branch, abandon the parent turn's plan, " <>
         "complete only these instructions, answer once, and stop."
@@ -544,25 +512,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   end
 
   defp spawn_schema do
-    subagent_schema("First user message sent to the spawned subagent.")
-  end
-
-  defp subagent_schema(prompt_description) do
-    %{
-      "type" => "object",
-      "properties" => %{
-        "brief" => %{
-          "type" => "string",
-          "description" => "Short task description stored as the new chat note."
-        },
-        "prompt" => %{
-          "type" => "string",
-          "description" => prompt_description
-        }
-      },
-      "required" => ["brief", "prompt"],
-      "additionalProperties" => false
-    }
+    SubagentArguments.schema("First user message sent to the spawned subagent.")
   end
 
   defp required_background_task_id(args) when is_map(args) do

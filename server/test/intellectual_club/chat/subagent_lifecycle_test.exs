@@ -475,6 +475,125 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
       assert subchat_ids_for_call(actor, parent.call.item_id) == [child_chat_id]
     end
 
+    test "bot subagent runs the configured bot with its own settings and no copied chat bindings" do
+      %{user: actor} = user_fixture()
+      brief = "Delegate to the bot"
+      prompt = "Answer as the configured bot."
+      source_bot = create_bot!(actor, name: "Caller bot", first_messages: ["Caller greeting"])
+      source_configuration = create_configuration!(actor, model_name: "demo", context_length: nil)
+      bot_configuration = create_configuration!(actor, model_name: "demo", context_length: nil)
+
+      subagent_bot =
+        create_bot!(actor,
+          name: "Subagent bot",
+          first_messages: ["Subagent greeting"],
+          default_llm_configuration_id: bot_configuration.id
+        )
+
+      parent =
+        spawn_parent!(actor, brief, prompt,
+          tool: [type: "native-bot-subagent", config: %{"bot_id" => subagent_bot.id}],
+          chat: %{bot_id: source_bot.id, llm_configuration_id: source_configuration.id},
+          message: %{llm_configuration_id: source_configuration.id}
+        )
+
+      knowledge_block = create_knowledge_block!(actor, name: "Caller context", content: "Mine")
+      create_chat_block_binding!(actor, parent.chat, knowledge_block)
+      assert parent.call.name == "bot_subagent__spawn"
+
+      context = tool_call_context(parent, actor)
+
+      assert {:ok, result} =
+               Spawn.create_and_run(parent.tool_instance, brief, prompt, context, actor)
+
+      assert %{
+               "chat_id" => child_chat_id,
+               "prompt_message_id" => prompt_message_id,
+               "generation_message_id" => generation_message_id,
+               "final_message_id" => generation_message_id
+             } = result.raw["spawn"]
+
+      child = Ash.get!(Chat, child_chat_id, actor: actor)
+      assert child.note == brief
+      assert child.parent_chat_id == parent.chat.id
+      assert child.parent_relation_kind == :spawn
+      assert child.parent_tool_instance_id == parent.tool_instance.id
+      assert child.subagent == true
+      assert child.bot_id == subagent_bot.id
+      assert child.llm_configuration_id == bot_configuration.id
+      assert chat_binding_settings!(actor, child_chat_id) == %{blocks: [], tools: []}
+
+      child_messages = messages_for_chat!(actor, child_chat_id)
+      assert Enum.map(child_messages, & &1.role) == [:assistant, :user, :assistant]
+
+      assert Enum.map(Enum.take(child_messages, 2), &Previews.message_preview_text/1) ==
+               ["Subagent greeting", prompt]
+
+      assert Enum.map(Enum.drop(child_messages, 1), & &1.id) == [
+               prompt_message_id,
+               generation_message_id
+             ]
+
+      assert Enum.map(Enum.drop(child_messages, 1), & &1.llm_configuration_id) ==
+               [bot_configuration.id, bot_configuration.id]
+
+      assert List.last(child_messages).status == :done
+    end
+
+    test "bot subagent keeps the calling turn's configuration when the bot has no default one" do
+      %{user: actor} = user_fixture()
+      pinned = create_configuration!(actor, model_name: "demo", context_length: nil)
+      selected = create_configuration!(actor, model_name: "demo", context_length: nil)
+      subagent_bot = create_bot!(actor, name: "Subagent bot")
+
+      parent =
+        spawn_parent!(actor, "Delegate", "Keep the pinned configuration.",
+          tool: [type: "native-bot-subagent", config: %{"bot_id" => subagent_bot.id}],
+          chat: %{llm_configuration_id: pinned.id},
+          message: %{llm_configuration_id: pinned.id}
+        )
+
+      # The selector only applies to the next message; it may move mid-generation.
+      parent.chat
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      assert {:ok, reference} =
+               start_or_resume(:spawn, parent, tool_call_context(parent, actor), actor)
+
+      completed = wait_for_status!(reference.generation_message_id, actor, [:done])
+      assert completed.llm_configuration_id == pinned.id
+
+      child = Ash.get!(Chat, reference.chat_id, actor: actor)
+      assert child.bot_id == subagent_bot.id
+      assert child.llm_configuration_id == pinned.id
+    end
+
+    test "bot subagent fails before creating a chat when its bot is unavailable" do
+      %{user: actor} = user_fixture()
+      configuration = create_configuration!(actor, model_name: "demo", context_length: nil)
+      subagent_bot = create_bot!(actor, name: "Deleted bot")
+
+      parent =
+        spawn_parent!(actor, "Delegate", "Nothing to do.",
+          tool: [type: "native-bot-subagent", config: %{"bot_id" => subagent_bot.id}],
+          chat: %{llm_configuration_id: configuration.id}
+        )
+
+      Ash.destroy!(subagent_bot, actor: actor)
+
+      assert {:error, "Subagent bot is not available."} =
+               Spawn.create_and_run(
+                 parent.tool_instance,
+                 "Delegate",
+                 "Nothing to do.",
+                 tool_call_context(parent, actor),
+                 actor
+               )
+
+      assert subchat_ids_for_call(actor, parent.call.item_id) == []
+    end
+
     test "resumes the same prepared generation after a crash before reference persistence" do
       %{user: actor} = user_fixture()
       parent = spawn_parent!(actor, "Recover prepared spawn", "Resume this exact generation.")

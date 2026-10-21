@@ -345,6 +345,7 @@ defmodule IntellectualClub.Chat.Chat do
     references do
       reference(:parent_chat, on_delete: :nilify)
       reference(:parent_message, on_delete: :nilify)
+      reference(:parent_tool_instance, on_delete: :nilify)
     end
 
     custom_indexes do
@@ -359,6 +360,7 @@ defmodule IntellectualClub.Chat.Chat do
       index([:parent_message_id], name: "chats_parent_message_id_index")
       index([:parent_relation_kind], name: "chats_parent_relation_kind_index")
       index([:parent_tool_call_item_id], name: "chats_parent_tool_call_item_id_index")
+      index([:parent_tool_instance_id], name: "chats_parent_tool_instance_id_index")
 
       index([:parent_tool_call_item_id],
         name: "chats_unique_parent_tool_call_item_id_index",
@@ -450,6 +452,14 @@ defmodule IntellectualClub.Chat.Chat do
 
     belongs_to(:parent_tool_call_item, IntellectualClub.Chat.ChatMessageItem,
       allow_nil?: true,
+      attribute_type: :integer
+    )
+
+    # The tool instance that created this subagent lineage (fork or spawn);
+    # handoff continuations copy it. Its subchat policy governs the lineage.
+    belongs_to(:parent_tool_instance, IntellectualClub.Tools.ToolInstance,
+      allow_nil?: true,
+      public?: false,
       attribute_type: :integer
     )
 

@@ -10,6 +10,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
     {"mcp-http", false, false},
     {"native-agent-management", false, true},
     {"native-artifact-reader", true, false},
+    {"native-bot-subagent", false, false},
     {"native-game-tools", false, false},
     {"native-knowledge-library", false, false},
     {"native-web-reader", false, false},
@@ -118,6 +119,26 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
       assert schema["required"] == ["seconds"]
       assert schema["properties"]["seconds"]["type"] == "number"
+    end
+
+    test "bot subagent exposes spawn functions and a bot selector" do
+      metadata = DriverMetadata.for_type("native-bot-subagent")
+
+      assert metadata["title"] == "Bot Subagent"
+      assert metadata["functions_mode"] == "fixed"
+      assert metadata["supports_discovery"] == false
+      assert metadata["supports_handoff"] == false
+      assert metadata["config_schema"]["required"] == ["bot_id"]
+      assert metadata["config_schema"]["properties"]["bot_id"]["x-ui"]["widget"] == "bot-select"
+      assert metadata["config_schema"]["properties"]["nested_subchats_limit"]["default"] == 0
+
+      assert Enum.map(metadata["fixed_functions"], &{&1["name"], &1["enabled"]}) == [
+               {"spawn", true},
+               {"spawn_background", false}
+             ]
+
+      assert %{"is_background_function" => true, "provides_background_task_status" => false} =
+               Enum.find(metadata["fixed_functions"], &(&1["name"] == "spawn_background"))
     end
 
     test "background function capabilities are normalized" do

@@ -33,11 +33,16 @@ the source message's subsequent completion/cancellation status.
 
 ## Unavailable agent functions
 
-Agent-management policy can reject functions inside subchats: `fork`,
-`fork_background`, `spawn` and `spawn_background` once `nested_subchats_limit` is
-exhausted, and `handoff` unless `allow_handoff_in_subchats` is enabled. A linked fork
-keeps the parent's tool list unchanged so the inherited request prefix stays
-cacheable. Instead, its boundary steering names the model-visible functions
+Subchat policy can reject functions inside subchats: `fork`, `fork_background`,
+`spawn` and `spawn_background` once the executing tool instance's
+`nested_subchats_limit` is exhausted, and `handoff` unless
+`allow_handoff_in_subchats` is enabled. The handoff policy belongs to the tool
+instance that created the subagent lineage: every fork and spawn chat records it
+in the private `parent_tool_instance_id` attribute, handoff continuations copy it,
+and deleting that instance clears the link. While the chat owner can read that
+instance, its setting decides; otherwise the instance executing `handoff` does.
+A linked fork keeps the parent's tool list unchanged so the inherited request
+prefix stays cacheable. Instead, its boundary steering names the model-visible functions
 (`<alias>__<function>`) that are present in that list and rejected for the child.
 The names are computed once at fork creation and stored in the private
 `fork_unavailable_functions` attribute, so every reconstruction of the steering is
@@ -46,6 +51,23 @@ identical. Forks without such functions keep the original steering text.
 Chats that do not inherit a request prefix (spawn subchats and handoff continuations
 of subchats) omit rejected functions from both the tool payload and the system prompt
 tool context. Execution-time policy checks remain authoritative in every case.
+
+## Bot subagents
+
+The Bot Subagent tool (`native-bot-subagent`) exposes `spawn` and
+`spawn_background` with the same arguments and lifecycle as Agent Management, but
+the spawned chat is run by the bot selected in the tool instance configuration
+(`bot_id`), not by the calling chat's bot. The child uses that bot's knowledge
+blocks and tool bindings; chat-level bindings of the calling chat are not copied.
+Its configuration is the bot's default LLM configuration when it is set and
+readable; otherwise the calling turn's pinned configuration when the bot accepts
+it, and the usual chat default as a last resort. The instance also carries
+`nested_subchats_limit` and `allow_handoff_in_subchats`, which apply exactly as
+for Agent Management: the limit gates spawning from inside subchats, and the
+handoff flag governs the spawned lineage. Drivers declare this through the
+optional `spawn_target/1` callback; drivers without it inherit the calling chat.
+`spawn` is enabled by default; `spawn_background` is disabled by default and, once
+enabled, stays hidden unless a bound tool provides `check_background_task_status`.
 
 ## Live semantics and follow-ups
 

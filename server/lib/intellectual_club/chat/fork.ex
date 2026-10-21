@@ -278,6 +278,7 @@ defmodule IntellectualClub.Chat.Fork do
 
       nil ->
         with {:ok, source_context} <- build_source_context(source, brief, prompt, context, actor) do
+          source_context = Map.put(source_context, :tool_instance_id, tool_instance.id)
           find_or_create_subagent(tool_instance, source_context, context, actor, opts)
         end
     end
@@ -667,6 +668,7 @@ defmodule IntellectualClub.Chat.Fork do
       owner_id: actor.id,
       parent_chat_id: source_context.source.id,
       parent_relation_kind: @relation_kind,
+      parent_tool_instance_id: Map.get(source_context, :tool_instance_id),
       subagent: true
     }
 
@@ -932,7 +934,8 @@ defmodule IntellectualClub.Chat.Fork do
     |> Ash.Changeset.force_change_attributes(%{
       fork_source_step_id: source_context.followup_state.step.id,
       fork_task: source_context.prompt,
-      fork_unavailable_functions: source_context.unavailable_functions
+      fork_unavailable_functions: source_context.unavailable_functions,
+      parent_tool_instance_id: Map.get(source_context, :tool_instance_id)
     })
     |> Ash.create!()
   end

@@ -39,6 +39,16 @@ defmodule IntellectualClub.Tools.Driver do
   @callback unavailable_functions(IntellectualClub.Tools.ToolInstance.t(), map(), term()) ::
               [String.t()]
 
+  @doc """
+  Returns the target of subagent chats spawned through this driver.
+
+  `:inherit` keeps the calling chat's bot and settings; `{:bot, bot_id}` runs
+  that bot with its own prompt, tools and default configuration. Drivers
+  without this callback inherit.
+  """
+  @callback spawn_target(IntellectualClub.Tools.ToolInstance.t()) ::
+              :inherit | {:bot, pos_integer()} | {:error, String.t()}
+
   @callback discover(IntellectualClub.Tools.ToolInstance.t()) ::
               {:ok, list(map())} | {:error, term()}
 
@@ -54,6 +64,7 @@ defmodule IntellectualClub.Tools.Driver do
   @optional_callbacks fixed_functions: 1,
                       instance_prompt_context: 1,
                       normalize_config: 1,
+                      spawn_target: 1,
                       supports_handoff?: 0,
                       interruptible?: 0,
                       unavailable_functions: 3,

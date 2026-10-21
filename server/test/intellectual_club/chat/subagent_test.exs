@@ -258,6 +258,51 @@ defmodule IntellectualClub.Chat.SubagentTest do
       assert Subagent.unavailable_functions(one_level, unsaved_fork, actor) == creation
     end
 
+    test "handoff policy follows the tool instance that created the subagent lineage" do
+      %{user: actor} = user_fixture()
+      bot = create_bot!(actor)
+      root = create_empty_chat!(actor, subagent: false)
+
+      permissive_creator =
+        create_bot_subagent_tool!(actor, bot, %{"allow_handoff_in_subchats" => true})
+
+      restrictive_creator =
+        create_bot_subagent_tool!(actor, bot, %{"allow_handoff_in_subchats" => false})
+
+      disabled = create_agent_tool!(actor, %{"allow_handoff_in_subchats" => false})
+      enabled = create_agent_tool!(actor, %{"allow_handoff_in_subchats" => true})
+
+      permitted_child =
+        create_subchat!(actor, root, :spawn, parent_tool_instance_id: permissive_creator.id)
+
+      restricted_child =
+        create_subchat!(actor, root, :spawn, parent_tool_instance_id: restrictive_creator.id)
+
+      restricted_handoff =
+        create_subchat!(actor, restricted_child, :handoff,
+          parent_tool_instance_id: restrictive_creator.id
+        )
+
+      assert :ok = Subagent.ensure_handoff_allowed(disabled, context(permitted_child, actor))
+      refute "handoff" in Subagent.unavailable_functions(disabled, permitted_child, actor)
+
+      for chat <- [restricted_child, restricted_handoff] do
+        assert {:error, "Handoff is disabled inside subagent chats."} =
+                 Subagent.ensure_handoff_allowed(enabled, context(chat, actor))
+
+        assert "handoff" in Subagent.unavailable_functions(enabled, chat, actor)
+      end
+
+      # Deleting the creating tool instance clears the lineage, so the
+      # executing tool instance decides again.
+      Ash.destroy!(restrictive_creator, actor: actor)
+      assert Ash.get!(Chat, restricted_child.id, actor: actor).parent_tool_instance_id == nil
+      assert :ok = Subagent.ensure_handoff_allowed(enabled, context(restricted_child, actor))
+
+      assert {:error, "Handoff is disabled inside subagent chats."} =
+               Subagent.ensure_handoff_allowed(disabled, context(restricted_child, actor))
+    end
+
     test "handoff setting applies to every subagent relation kind" do
       %{user: actor} = user_fixture()
       root = create_empty_chat!(actor, subagent: false)
@@ -575,6 +620,15 @@ defmodule IntellectualClub.Chat.SubagentTest do
       name: unique_name("Agent management"),
       alias: "agent_management_#{System.unique_integer([:positive])}",
       config: config
+    )
+  end
+
+  defp create_bot_subagent_tool!(actor, bot, config) do
+    create_tool_instance!(actor,
+      type: "native-bot-subagent",
+      name: unique_name("Bot subagent"),
+      alias: "bot_subagent_#{System.unique_integer([:positive])}",
+      config: Map.put(config, "bot_id", bot.id)
     )
   end
 end

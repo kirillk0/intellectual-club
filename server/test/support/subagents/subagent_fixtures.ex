@@ -54,12 +54,20 @@ defmodule IntellectualClub.SubagentFixtures do
     * `:user_prompt` — text of the user message (default `"Run subagent"`);
     * `:tools` — `"tools"` of the step request;
     * `:chat` — attributes of the parent chat (e.g. `:llm_configuration_id`);
-    * `:message` — attributes of the generating reply (e.g. `:llm_configuration_id`).
+    * `:message` — attributes of the generating reply (e.g. `:llm_configuration_id`);
+    * `:tool` — attributes of the calling tool instance (default
+      `type: "native-agent-management"`); the persisted call is named
+      `<alias>__<primitive>`.
   """
   def create_parent_call!(actor, primitive, args, opts \\ []) do
     user_prompt = Keyword.get(opts, :user_prompt, "Run subagent")
     chat = create_chat!(actor, Keyword.get(opts, :chat, %{}))
-    tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
+    tool_instance =
+      create_tool_instance!(
+        actor,
+        merge_attrs(%{type: "native-agent-management"}, Keyword.get(opts, :tool, %{}))
+      )
 
     create_tool_function!(actor, tool_instance,
       name: to_string(primitive),
@@ -89,7 +97,7 @@ defmodule IntellectualClub.SubagentFixtures do
       RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: raw_request)
       |> add_runtime_tool_call(
         "#{primitive}_#{System.unique_integer([:positive])}",
-        "agent_management__#{primitive}",
+        "#{tool_instance.alias}__#{primitive}",
         args,
         1
       )

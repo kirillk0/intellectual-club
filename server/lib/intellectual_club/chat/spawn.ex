@@ -10,17 +10,21 @@ defmodule IntellectualClub.Chat.Spawn do
 
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.BackgroundTasks.BackgroundTask
+  alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatSettingsCopy
+  alias IntellectualClub.Chat.DefaultLlmConfiguration
   alias IntellectualClub.Chat.GenerationConfiguration
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context, as: GenerationContext
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+  alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Repo
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ExecutionResult
+  alias IntellectualClub.Tools.Registry
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
@@ -213,38 +217,41 @@ defmodule IntellectualClub.Chat.Spawn do
     # Expected policy rejection must not become a rollback of a nested fence
     # transaction. Repeat the policy read under invocation authority before any
     # mutation; unexpected write failures escape to the outer transaction.
-    with :ok <- Subagent.ensure_creation_allowed(tool_instance, source, actor) do
+    with :ok <- Subagent.ensure_creation_allowed(tool_instance, source, actor),
+         {:ok, _target} <- resolve_target(tool_instance, source, context, actor) do
       transaction_result =
         Subagent.with_invocation_authority(context, opts, fn ->
           with {:ok, current_source} <- fetch_owned_chat(source.id, actor),
-               :ok <- Subagent.ensure_creation_allowed(tool_instance, current_source, actor) do
-            # The parent chat selector may have moved on while this generation
-            # runs; the subagent keeps the configuration of the calling turn.
-            llm_configuration_id =
-              GenerationConfiguration.pinned_id(
-                context.assistant_message_id || context.message_id,
-                current_source,
-                actor
-              )
-
+               :ok <- Subagent.ensure_creation_allowed(tool_instance, current_source, actor),
+               {:ok, target} <- resolve_target(tool_instance, current_source, context, actor) do
             Repo.transaction(fn ->
-              attrs = %{
-                note: brief,
-                bot_id: current_source.bot_id,
-                llm_configuration_id: llm_configuration_id,
-                parent_chat_id: current_source.id,
-                parent_message_id: context.assistant_message_id || context.message_id,
-                parent_tool_call_item_id: context.tool_call_item_id,
-                parent_relation_kind: @relation_kind,
-                subagent: true
-              }
+              # Without a resolved configuration the create action applies the
+              # default one for the bot.
+              attrs =
+                %{
+                  note: brief,
+                  bot_id: target.bot_id,
+                  parent_chat_id: current_source.id,
+                  parent_message_id: context.assistant_message_id || context.message_id,
+                  parent_tool_call_item_id: context.tool_call_item_id,
+                  parent_relation_kind: @relation_kind,
+                  subagent: true
+                }
+                |> maybe_put_llm_configuration_id(target.llm_configuration_id)
 
               chat =
                 Chat
                 |> Ash.Changeset.for_create(:create, attrs, actor: actor)
+                |> Ash.Changeset.force_change_attributes(%{
+                  parent_tool_instance_id: tool_instance.id
+                })
                 |> Ash.create!(actor: actor)
 
-              :ok = ChatSettingsCopy.copy_bindings!(current_source.id, chat.id, actor)
+              if target.copy_bindings? do
+                :ok = ChatSettingsCopy.copy_bindings!(current_source.id, chat.id, actor)
+              end
+
+              llm_configuration_id = chat.llm_configuration_id
 
               {:ok, prompt_message} =
                 Threads.add_message_to_end(chat, :user, prompt,
@@ -289,6 +296,111 @@ defmodule IntellectualClub.Chat.Spawn do
     else
       {:error, error}
     end
+  end
+
+  @doc """
+  Resolves the bot, LLM configuration and binding strategy of a spawned chat.
+
+  Drivers without a spawn target inherit the calling chat: its bot, the
+  configuration pinned by the calling turn and copies of its chat-level
+  bindings. A bot target runs that bot with its own bindings; it uses the
+  bot's default configuration, the calling turn's configuration when the bot
+  has none and that configuration is compatible, or the chat default otherwise.
+  """
+  @spec resolve_target(ToolInstance.t(), Chat.t(), ExecutionContext.t(), User.t()) ::
+          {:ok,
+           %{
+             bot_id: integer() | nil,
+             llm_configuration_id: integer() | nil,
+             copy_bindings?: boolean()
+           }}
+          | {:error, String.t()}
+  def resolve_target(
+        %ToolInstance{} = tool_instance,
+        %Chat{} = source,
+        %ExecutionContext{} = context,
+        %User{} = actor
+      ) do
+    # The parent chat selector may have moved on while this generation runs;
+    # the subagent keeps the configuration of the calling turn.
+    pinned_llm_configuration_id =
+      GenerationConfiguration.pinned_id(
+        context.assistant_message_id || context.message_id,
+        source,
+        actor
+      )
+
+    case driver_spawn_target(tool_instance) do
+      :inherit ->
+        {:ok,
+         %{
+           bot_id: source.bot_id,
+           llm_configuration_id: pinned_llm_configuration_id,
+           copy_bindings?: true
+         }}
+
+      {:bot, bot_id} ->
+        case Ash.get(Bot, bot_id, actor: actor) do
+          {:ok, %Bot{} = bot} ->
+            {:ok,
+             %{
+               bot_id: bot.id,
+               llm_configuration_id:
+                 bot_llm_configuration_id(bot, pinned_llm_configuration_id, actor),
+               copy_bindings?: false
+             }}
+
+          _other ->
+            {:error, "Subagent bot is not available."}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp driver_spawn_target(%ToolInstance{type: type} = tool_instance) do
+    driver = type |> to_string() |> String.trim() |> Registry.driver_for_type!()
+
+    if function_exported?(driver, :spawn_target, 1) do
+      case apply(driver, :spawn_target, [tool_instance]) do
+        :inherit -> :inherit
+        {:bot, bot_id} when is_integer(bot_id) and bot_id > 0 -> {:bot, bot_id}
+        {:error, reason} when is_binary(reason) -> {:error, reason}
+        other -> {:error, "Invalid spawn target: #{inspect(other)}"}
+      end
+    else
+      :inherit
+    end
+  end
+
+  defp bot_llm_configuration_id(%Bot{} = bot, pinned_llm_configuration_id, actor) do
+    cond do
+      is_integer(bot.default_llm_configuration_id) and
+          readable_llm_configuration?(bot.default_llm_configuration_id, actor) ->
+        bot.default_llm_configuration_id
+
+      is_integer(pinned_llm_configuration_id) and
+          DefaultLlmConfiguration.compatible_with_bot?(actor, bot.id, pinned_llm_configuration_id) ->
+        pinned_llm_configuration_id
+
+      true ->
+        # The chat create action applies the default configuration for the bot.
+        nil
+    end
+  end
+
+  defp maybe_put_llm_configuration_id(attrs, llm_configuration_id)
+       when is_integer(llm_configuration_id),
+       do: Map.put(attrs, :llm_configuration_id, llm_configuration_id)
+
+  defp maybe_put_llm_configuration_id(attrs, _llm_configuration_id), do: attrs
+
+  defp readable_llm_configuration?(llm_configuration_id, actor) do
+    match?(
+      {:ok, %LlmConfiguration{}},
+      Ash.get(LlmConfiguration, llm_configuration_id, actor: actor)
+    )
   end
 
   defp load_existing_prepared(%Chat{} = chat, actor) do

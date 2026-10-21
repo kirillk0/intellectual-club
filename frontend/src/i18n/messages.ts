@@ -222,6 +222,21 @@ export const ruMessages: Record<string, string> = {
     'Запустить связанный сабчат с пустой историей, не дожидаясь завершения. Сохраните идентификатор фоновой задачи и проверяйте её явно.',
   'Wait until all listed background tasks finish or the optional timeout expires, then return their current statuses. Completed, failed, and canceled tasks are finished. Use check_background_task_status to retrieve results and progress.':
     'Дождаться завершения всех перечисленных фоновых задач или истечения необязательного таймаута и вернуть их текущие статусы. Успешно выполненные, завершившиеся с ошибкой и отменённые задачи считаются завершёнными. Для получения результатов и хода выполнения используйте check_background_task_status.',
+  'Bot Subagent': 'Бот-сабагент',
+  'Runs a configured bot as a subagent in a linked chat.':
+    'Запускает выбранного бота как сабагента в связанном чате.',
+  "Bot whose prompt, tools and default configuration run the subagent. Without a default configuration the subagent keeps the calling chat's configuration.":
+    'Бот, чьи промпт, инструменты и конфигурация по умолчанию используются сабагентом. Без конфигурации по умолчанию сабагент сохраняет конфигурацию вызывающего чата.',
+  'How many additional subchats a subagent may create. 0 disables spawning this bot inside subchats.':
+    'Сколько дополнительных сабчатов может создать сабагент. 0 запрещает запускать этого бота внутри сабчатов.',
+  'Start a linked subagent chat run by the configured bot with its own prompt, tools and configuration and no copied conversation history, and wait for it to finish.':
+    'Запустить связанный сабчат выбранного бота с его промптом, инструментами и конфигурацией, без копирования истории, и дождаться завершения.',
+  'Start a linked subagent chat run by the configured bot without waiting for it to finish. Save the returned background task id and check it explicitly.':
+    'Запустить связанный сабчат выбранного бота, не дожидаясь завершения. Сохраните идентификатор фоновой задачи и проверяйте её явно.',
+  'No bot selected': 'Бот не выбран',
+  'Bot is required.': 'Укажите бота.',
+  'Bot is not available.': 'Бот недоступен.',
+  'Bot must be a positive integer.': 'Идентификатор бота должен быть положительным целым числом.',
   'Subchat': 'Сабчат',
   'Confirm new password': 'Подтвердите новый пароль',
   'Confirm password': 'Подтвердите пароль',

@@ -25,6 +25,36 @@ defmodule IntellectualClub.Chat.HandoffTest do
       :ok
     end
 
+    test "a subagent continuation keeps the tool instance that created its lineage" do
+      %{user: actor} = user_fixture()
+      root = create_empty_chat!(actor)
+      creator = create_tool_instance!(actor, type: "native-agent-management")
+
+      source = create_subchat!(actor, root, :spawn, parent_tool_instance_id: creator.id)
+
+      {:ok, source_message} =
+        Threads.add_message_to_end(source, :user, "Subagent work", actor: actor)
+
+      assert {:ok, %{chat: target}} =
+               Handoff.create_handoff_chat(source, actor, "Continue the subagent work.",
+                 source_message_id: source_message.id
+               )
+
+      assert target.subagent == true
+      assert target.parent_relation_kind == :handoff
+      assert target.parent_tool_instance_id == creator.id
+
+      {:ok, root_message} = Threads.add_message_to_end(root, :user, "Root work", actor: actor)
+
+      assert {:ok, %{chat: root_target}} =
+               Handoff.create_handoff_chat(root, actor, "Continue the root work.",
+                 source_message_id: root_message.id
+               )
+
+      assert root_target.subagent == false
+      assert root_target.parent_tool_instance_id == nil
+    end
+
     test "creates the linked continuation chat with the rendered history and the source chat settings" do
       %{user: actor} = user_fixture()
 

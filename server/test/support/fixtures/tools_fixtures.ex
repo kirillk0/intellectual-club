@@ -16,7 +16,9 @@ defmodule IntellectualClub.ToolsFixtures do
     * `"mcp-http"`: `config: %{"server_url" => "https://example.com/mcp"}`,
       `secrets: %{"bearer_token" => "token"}`;
     * `"native-agent-management"`: `name: "Agent management"`,
-      `alias: "agent_management"`, `description: ""`.
+      `alias: "agent_management"`, `description: ""`;
+    * `"native-bot-subagent"`: `name: "Bot subagent"`, `alias: "bot_subagent"`,
+      `description: ""` (pass `config: %{"bot_id" => bot.id}`).
 
   Everything else (`:alias`, `:max_output_tokens`, `:rps_limit`, ...) falls
   back to the resource defaults unless given.
@@ -41,6 +43,10 @@ defmodule IntellectualClub.ToolsFixtures do
 
   defp type_defaults("native-agent-management") do
     %{name: "Agent management", alias: "agent_management", description: ""}
+  end
+
+  defp type_defaults("native-bot-subagent") do
+    %{name: "Bot subagent", alias: "bot_subagent", description: ""}
   end
 
   defp type_defaults(_type), do: %{}
