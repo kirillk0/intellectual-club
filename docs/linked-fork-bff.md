@@ -70,7 +70,7 @@ reference resolution.
 ## History mutations
 
 BFF message update/delete/retry-last-step/retry-from-step and chat branch
-switch/activate/move-to-new-chat/branch-to-new-chat return HTTP 403 with
+switch/activate/move-to-new-chat, in-chat branch and branch-to-new-chat return HTTP 403 with
 `code: "fork_history_read_only"` for linked children. Explicit send/generate
 `parent_id` values are allowed only at the current local leaf; ordinary follow-up
 send/generate remains available. Parent conversations and legacy children are not

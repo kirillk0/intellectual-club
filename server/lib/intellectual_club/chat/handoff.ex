@@ -7,6 +7,7 @@ defmodule IntellectualClub.Chat.Handoff do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.GenerationConfiguration
   alias IntellectualClub.Chat.HandoffRolloff
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
@@ -81,9 +82,11 @@ defmodule IntellectualClub.Chat.Handoff do
       source_message_id =
         normalize_source_message_id(Keyword.get(opts, :source_message_id), source)
 
+      handoff_mode = Keyword.get(opts, :handoff_mode, :manual)
+
       rolloff_opts = [
         source_message_id: source_message_id,
-        handoff_mode: Keyword.get(opts, :handoff_mode, :manual),
+        handoff_mode: handoff_mode,
         exclude_message_ids: Keyword.get(opts, :exclude_message_ids, [])
       ]
 
@@ -98,12 +101,16 @@ defmodule IntellectualClub.Chat.Handoff do
 
         :not_found ->
           with {:ok, rolloff} <- HandoffRolloff.build(source, actor, summary, rolloff_opts) do
+            llm_configuration_id =
+              target_llm_configuration_id(source, handoff_mode, source_message_id, actor)
+
             source
             |> create_target_with_summary(
               actor,
               rolloff,
               source_message_id,
-              parent_tool_call_item_id
+              parent_tool_call_item_id,
+              llm_configuration_id
             )
             |> recover_tool_handoff_create(
               parent_tool_call_item_id,
@@ -148,16 +155,32 @@ defmodule IntellectualClub.Chat.Handoff do
   def relation_kind, do: @relation_kind
   def summary_request, do: @summary_request
 
+  # A tool handoff continues the running agent turn in the target chat, so the
+  # target keeps that turn's pinned configuration. A manual handoff waits for
+  # the user's next message, which follows the chat configuration selector.
+  defp target_llm_configuration_id(%Chat{} = source, :tool, source_message_id, actor),
+    do: GenerationConfiguration.pinned_id(source_message_id, source, actor)
+
+  defp target_llm_configuration_id(%Chat{} = source, _mode, _source_message_id, _actor),
+    do: source.llm_configuration_id
+
   defp create_target_with_summary(
          source,
          actor,
          rolloff,
          source_message_id,
-         parent_tool_call_item_id
+         parent_tool_call_item_id,
+         llm_configuration_id
        ) do
     Ash.transact(Chat, fn ->
       target =
-        create_target_chat!(source, actor, source_message_id, parent_tool_call_item_id)
+        create_target_chat!(
+          source,
+          actor,
+          source_message_id,
+          parent_tool_call_item_id,
+          llm_configuration_id
+        )
 
       ChatSettingsCopy.copy_bindings!(source.id, target.id, actor)
 
@@ -365,7 +388,8 @@ defmodule IntellectualClub.Chat.Handoff do
          %Chat{} = source,
          actor,
          source_message_id,
-         parent_tool_call_item_id
+         parent_tool_call_item_id,
+         llm_configuration_id
        ) do
     Chat
     |> Ash.Changeset.for_create(
@@ -373,7 +397,7 @@ defmodule IntellectualClub.Chat.Handoff do
       %{
         note: source.note,
         bot_id: source.bot_id,
-        llm_configuration_id: source.llm_configuration_id,
+        llm_configuration_id: llm_configuration_id,
         parent_chat_id: source.id,
         parent_message_id: source_message_id,
         parent_tool_call_item_id: parent_tool_call_item_id,

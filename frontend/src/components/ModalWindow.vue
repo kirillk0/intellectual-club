@@ -165,7 +165,10 @@ function hasMultilineInput() {
 
 function eventTargetIgnored(event: KeyboardEvent) {
   const target = event.target instanceof Element ? event.target : null;
-  if (!target || !modalRef.value?.contains(target)) return false;
+  if (!target) return false;
+  // Floating menus of modal controls are teleported outside the modal element.
+  if (target.closest('[data-modal-shortcut-ignore]')) return true;
+  if (!modalRef.value?.contains(target)) return false;
 
   return Boolean(
     target.closest('button,a[href],select,[role="button"],[data-modal-shortcut-ignore]')

@@ -46,3 +46,50 @@ to create its chat, copied bindings, prompt and generation together. The first f
 retains its specialized source-request preparation before the parent publication
 fence. Pending media and native request images retain their protected fallback so
 image publication side effects remain inside the existing safe boundary.
+
+## Pinned configuration
+
+A generation pins the chat configuration observed at preparation: the assistant
+message stores its `llm_configuration_id`, and the step request stores the model,
+parameters and system prompt. The chat configuration selector may change while the
+generation runs; the new selection applies to the next message only.
+
+Retry and orphan recovery resolve the configuration from the message (the chat
+configuration is only a fallback when the message has none or it is unreadable) and
+derive prompt-block file and secret grants from that same configuration. Work
+derived from a running turn — spawn and fork subagent chats and tool handoff
+targets — inherits the turn's configuration (`Chat.GenerationConfiguration`).
+Manual handoff targets and queued follow-ups wait for the next user message and
+therefore follow the current chat selection.
+
+## Branch options
+
+`POST /api/bff/chat-generation/:id/branch` (in-chat) and
+`POST /api/bff/chat-generation/:id/branch-to-new-chat` accept the selected
+`message_id`, replacement contents for user messages, an optional
+`llm_configuration_id` and `start_generation` (default `true`). A user message gets
+a replacement sibling; an assistant message is regenerated from its parent.
+
+For a new chat the configuration becomes the target chat configuration; the source
+chat is untouched. In-chat, the configuration is written to the chat under the
+same chat lock and active-generation/queue admission as the direct generation it
+precedes, so a rejected branch leaves no partial change. With
+`start_generation: false` the branch only moves the active leaf (the replacement
+user message or the assistant's parent) through
+`QueueCoordinator.run_direct_mutation/3`, and the response carries
+`generation: null`; the composer Continue action starts the generation later.
+
+New attachments of a branch message follow the configuration the branch is sent
+with. `POST /api/bff/chat-uploads/:chat_id` accepts the same optional
+`llm_configuration_id` so a file can be staged for a configuration the chat does
+not use yet, and every consumer of staged uploads (send, queue, edit, branches)
+revalidates them against its own upload policy when they are materialized; the
+policy at upload start may be stale. Copied existing attachments are not
+revalidated: providers already degrade unsupported history media.
+
+The SPA exposes these options only in the user-message branch dialog; the dialog's
+attach button, accepted types and client validation use the selected
+configuration, and files added under a more permissive selection block saving. Branching
+from an assistant response stays a one-click action without options: in-chat it
+regenerates through `generate` with the response's parent, and to a new chat it
+uses the current chat configuration and starts immediately.

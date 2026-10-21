@@ -282,6 +282,37 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     end
   end
 
+  describe "direct mutations" do
+    test "a failing direct mutation rolls back its partial writes" do
+      %{user: actor} = user_fixture()
+      {chat, _root, anchor} = create_chat_with_anchor!(actor)
+
+      assert {:error, :rejected} =
+               QueueCoordinator.run_direct_mutation(chat.id, actor, fn ->
+                 {:ok, _message} =
+                   Threads.add_message(chat, :user, "Partial", actor: actor, parent_id: anchor.id)
+
+                 {:error, :rejected}
+               end)
+
+      assert length(Threads.all_messages(chat.id, actor)) == 2
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == anchor.id
+    end
+
+    test "a direct mutation cannot bypass a pending queue" do
+      %{user: actor} = user_fixture()
+      {chat, _root, _anchor} = create_chat_with_anchor!(actor)
+
+      assert {:ok, _queued} =
+               QueuedMessages.enqueue_follow_up(chat.id, %{content: "First"}, actor)
+
+      assert {:error, :queue_not_empty} =
+               QueueCoordinator.run_direct_mutation(chat.id, actor, fn ->
+                 flunk("the mutation must not run")
+               end)
+    end
+  end
+
   describe "terminal boundaries" do
     for {terminal_status, expected_reason} <- [
           error: "generation_error",

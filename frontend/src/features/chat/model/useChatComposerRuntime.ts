@@ -16,6 +16,7 @@ import {
   uploadChatChunk,
   UploadAbortedError,
   type ChatUploadInfo,
+  type ChatUploadSessionOptions,
 } from '@/features/chat/upload';
 import {
   buildSendPayload,
@@ -303,7 +304,11 @@ export function useChatComposerRuntime(params: Params) {
       };
     });
 
-  const resolveChatUpload = async (chatIdValue: number, file: PendingChatFile) => {
+  const resolveChatUpload = async (
+    chatIdValue: number,
+    file: PendingChatFile,
+    options: ChatUploadSessionOptions
+  ) => {
     if (file.uploadId) {
       try {
         const upload = await getChatUploadSession(chatIdValue, file.uploadId);
@@ -315,15 +320,19 @@ export function useChatComposerRuntime(params: Params) {
       }
     }
 
-    return createChatUploadSession(chatIdValue, file.file);
+    return createChatUploadSession(chatIdValue, file.file, options);
   };
 
-  const resolveWritableChatUpload = async (chatIdValue: number, file: PendingChatFile) => {
-    let upload = await resolveChatUpload(chatIdValue, file);
+  const resolveWritableChatUpload = async (
+    chatIdValue: number,
+    file: PendingChatFile,
+    options: ChatUploadSessionOptions
+  ) => {
+    let upload = await resolveChatUpload(chatIdValue, file, options);
     let offset = Math.min(upload.uploaded_bytes || 0, file.size);
 
     if (upload.status !== 'uploading' && upload.status !== 'uploaded') {
-      upload = await createChatUploadSession(chatIdValue, file.file);
+      upload = await createChatUploadSession(chatIdValue, file.file, options);
       offset = 0;
     }
 
@@ -338,12 +347,13 @@ export function useChatComposerRuntime(params: Params) {
   const uploadPendingFile = async (
     filesRef: Ref<PendingChatFile[]>,
     fileId: string,
-    chatIdValue: number
+    chatIdValue: number,
+    options: ChatUploadSessionOptions
   ) => {
     const pending = findPendingFile(filesRef, fileId);
     if (!pending) return null;
 
-    let { upload, offset } = await resolveWritableChatUpload(chatIdValue, pending);
+    let { upload, offset } = await resolveWritableChatUpload(chatIdValue, pending, options);
 
     syncPendingFileWithUpload(filesRef, fileId, upload, {
       error: '',
@@ -469,7 +479,7 @@ export function useChatComposerRuntime(params: Params) {
           if (!currentFile) return null;
 
           try {
-            ({ upload, offset } = await resolveWritableChatUpload(chatIdValue, currentFile));
+            ({ upload, offset } = await resolveWritableChatUpload(chatIdValue, currentFile, options));
           } catch (syncError) {
             updatePendingFile(filesRef, fileId, {
               uploadStatus: 'error',
@@ -524,7 +534,8 @@ export function useChatComposerRuntime(params: Params) {
 
   const ensurePendingFilesUploaded = async (
     filesRef: Ref<PendingChatFile[]>,
-    fileIds?: ReadonlySet<string>
+    fileIds?: ReadonlySet<string>,
+    options: ChatUploadSessionOptions = {}
   ) => {
     if (!params.chatId.value) return [];
 
@@ -539,7 +550,7 @@ export function useChatComposerRuntime(params: Params) {
       }
 
       try {
-        await uploadPendingFile(filesRef, item.id, params.chatId.value);
+        await uploadPendingFile(filesRef, item.id, params.chatId.value, options);
       } catch (error) {
         if (error instanceof UploadAbortedError && !findPendingFile(filesRef, item.id)) {
           continue;

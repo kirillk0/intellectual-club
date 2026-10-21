@@ -151,14 +151,23 @@ defmodule IntellectualClub.Chat.Chat do
 
     branch_opts = [load: MessageTreeCopy.full_load_spec(), strict?: true]
 
+    configuration_override_id =
+      Ash.Changeset.get_argument(changeset, :llm_configuration_id)
+
     with {:ok, selection} <-
            Branching.active_branch_selection(source_id, message_id, actor, branch_opts),
          :ok <- mutable_history(selection.source),
          :ok <- Branching.validate_replacement_contents(selection, replacement_contents),
+         :ok <- readable_configuration_override(configuration_override_id, actor),
          {:ok, _prefix} <-
            MessageTreeCopy.prepare_loaded_messages(selection.prefix, actor) do
+      target_attrs =
+        selection.source
+        |> Continuation.branch_target_attrs()
+        |> maybe_override_branch_configuration(configuration_override_id)
+
       changeset
-      |> Ash.Changeset.change_attributes(Continuation.branch_target_attrs(selection.source))
+      |> Ash.Changeset.change_attributes(target_attrs)
       |> Ash.Changeset.put_context(:source_chat_id, selection.source.id)
       |> Ash.Changeset.put_context(:branch_selection_snapshot, selection)
       |> Ash.Changeset.put_context(:replacement_contents, replacement_contents)
@@ -175,10 +184,33 @@ defmodule IntellectualClub.Chat.Chat do
           message: "must not be empty for user message branches"
         )
 
+      {:error, :llm_configuration_not_accessible} ->
+        Ash.Changeset.add_error(changeset,
+          field: :llm_configuration_id,
+          message: "is invalid or not accessible"
+        )
+
       {:error, error} ->
         add_action_error(changeset, :id, error)
     end
   end
+
+  # The inherited source configuration keeps its existing semantics; only an
+  # explicitly requested replacement must be readable by the branching actor.
+  defp readable_configuration_override(nil, _actor), do: :ok
+
+  defp readable_configuration_override(configuration_id, actor)
+       when is_integer(configuration_id) do
+    case Ash.get(IntellectualClub.Llm.LlmConfiguration, configuration_id, actor: actor) do
+      {:ok, %{id: ^configuration_id}} -> :ok
+      _unavailable -> {:error, :llm_configuration_not_accessible}
+    end
+  end
+
+  defp maybe_override_branch_configuration(attrs, nil), do: attrs
+
+  defp maybe_override_branch_configuration(attrs, configuration_id),
+    do: Map.put(attrs, :llm_configuration_id, configuration_id)
 
   defp mutable_history(%{fork_task: nil}), do: :ok
   defp mutable_history(_chat), do: {:error, :fork_history_read_only}
@@ -663,6 +695,11 @@ defmodule IntellectualClub.Chat.Chat do
       end
 
       argument :replacement_contents, {:array, :map} do
+        allow_nil?(true)
+        public?(true)
+      end
+
+      argument :llm_configuration_id, :integer do
         allow_nil?(true)
         public?(true)
       end

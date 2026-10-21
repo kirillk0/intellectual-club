@@ -1,6 +1,6 @@
 defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
   @moduledoc """
-  Chat generation BFF endpoints: send, generate and branch-to-new-chat.
+  Chat generation BFF endpoints: send, generate, in-chat branch and branch-to-new-chat.
   """
 
   use IntellectualClubWeb.ConnCase, async: false
@@ -172,6 +172,33 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
 
       assert payload["error"] ==
                "File uploads are disabled for the current bot and configuration."
+    end
+
+    test "revalidates staged uploads against the configuration at send time", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      with_images = create_configuration!(actor, supports_image_input: true)
+      text_only = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: with_images.id)
+      upload = upload_image_attachment!(conn, actor, password, chat.id)
+
+      chat
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: text_only.id}, actor: actor)
+      |> Ash.update!()
+
+      conn =
+        build_conn()
+        |> sign_in_conn(actor.username, password)
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/send", %{
+          "content" => "",
+          "upload_ids" => [upload["upload_id"]]
+        })
+
+      assert json_response(conn, 422)["error"] ==
+               "File uploads are disabled for the current bot and configuration."
+
+      assert messages_for_chat!(actor, chat) == []
     end
 
     test "allows files when chat has an artifact tool", %{
@@ -757,6 +784,419 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
       assert response(conn, conn.status)
       assert conn.status in [403, 404]
     end
+
+    test "uses the requested configuration and can leave the generation unstarted",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      source_configuration = create_configuration!(actor)
+      target_configuration = create_configuration!(actor)
+      source = create_empty_chat!(actor, llm_configuration_id: source_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+      {:ok, _answer} = Threads.add_message_to_end(source, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "llm_configuration_id" => target_configuration.id,
+          "start_generation" => false
+        })
+        |> json_response(200)
+
+      target_id = get_in(payload, ["chat", "id"])
+      assert payload["generation"] == nil
+      assert get_in(payload, ["chat", "llm_configuration_id"]) == target_configuration.id
+
+      target_messages = messages_for_chat!(actor, target_id)
+      assert Enum.map(target_messages, & &1.role) == [:user]
+      assert Enum.map(target_messages, &message_text/1) == ["Edited question"]
+      assert Ash.get!(Chat, target_id, actor: actor).last_message_id == hd(target_messages).id
+
+      assert Ash.get!(Chat, source.id, actor: actor).llm_configuration_id ==
+               source_configuration.id
+    end
+
+    test "starts the assistant regeneration with the requested configuration",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      source_configuration = create_configuration!(actor)
+      target_configuration = create_configuration!(actor)
+      source = create_empty_chat!(actor, llm_configuration_id: source_configuration.id)
+      {:ok, _question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(source, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => answer.id,
+          "llm_configuration_id" => to_string(target_configuration.id)
+        })
+        |> json_response(200)
+
+      generation_id = get_in(payload, ["generation", "message_id"])
+      assert get_in(payload, ["chat", "llm_configuration_id"]) == target_configuration.id
+
+      assert Ash.get!(ChatMessage, generation_id, actor: actor).llm_configuration_id ==
+               target_configuration.id
+
+      wait_for_generation_to_finish(conn, generation_id)
+    end
+
+    test "rejects a configuration the actor cannot read without creating a chat",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      %{user: stranger} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      foreign_configuration = create_configuration!(stranger)
+      source = create_empty_chat!(actor)
+      {:ok, question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+
+      conn =
+        post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "llm_configuration_id" => foreign_configuration.id
+        })
+
+      assert json_response(conn, 422)["error"] == "Configuration is invalid or not accessible."
+      assert owned_chat_ids(actor) == [source.id]
+    end
+
+    test "accepts files the requested configuration allows even if the source chat does not",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      text_only = create_configuration!(actor)
+      with_images = create_configuration!(actor, supports_image_input: true)
+      source = create_empty_chat!(actor, llm_configuration_id: text_only.id)
+      {:ok, question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+
+      upload =
+        upload_image_attachment!(conn, actor, password, source.id,
+          llm_configuration_id: with_images.id
+        )
+
+      payload =
+        build_conn()
+        |> sign_in_conn(actor.username, password)
+        |> post(~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => question.id,
+          "content" => "Look at this",
+          "upload_ids" => [upload["upload_id"]],
+          "llm_configuration_id" => with_images.id,
+          "start_generation" => false
+        })
+        |> json_response(200)
+
+      [message] = messages_for_chat!(actor, get_in(payload, ["chat", "id"]))
+      assert message_text(message) =~ "Look at this"
+
+      assert [%{kind: :media}] =
+               message.steps
+               |> Enum.flat_map(& &1.items)
+               |> Enum.flat_map(& &1.contents)
+               |> Enum.filter(&(&1.kind == :media))
+    end
+
+    test "rejects files the requested configuration does not allow without creating a chat",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      with_images = create_configuration!(actor, supports_image_input: true)
+      text_only = create_configuration!(actor)
+      source = create_empty_chat!(actor, llm_configuration_id: with_images.id)
+      {:ok, question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+      upload = upload_image_attachment!(conn, actor, password, source.id)
+
+      conn =
+        build_conn()
+        |> sign_in_conn(actor.username, password)
+        |> post(~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => question.id,
+          "content" => "Look at this",
+          "upload_ids" => [upload["upload_id"]],
+          "llm_configuration_id" => text_only.id
+        })
+
+      assert json_response(conn, 422)["error"] ==
+               "File uploads are disabled for the current bot and configuration."
+
+      assert owned_chat_ids(actor) == [source.id]
+    end
+
+    test "rejects a malformed configuration id", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      source = create_empty_chat!(actor)
+      {:ok, question} = Threads.add_message_to_end(source, :user, "Question", actor: actor)
+
+      conn =
+        post(conn, ~p"/api/bff/chat-generation/#{source.id}/branch-to-new-chat", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "llm_configuration_id" => "latest"
+        })
+
+      assert json_response(conn, 422)["error"] =~ "llm_configuration_id"
+      assert owned_chat_ids(actor) == [source.id]
+    end
+  end
+
+  describe "POST /api/bff/chat-generation/:id/branch" do
+    test "requires authentication", %{conn: conn} do
+      conn = post(conn, ~p"/api/bff/chat-generation/1/branch", %{"message_id" => 1})
+      assert json_response(conn, 401)["error"] == "Unauthorized"
+    end
+
+    test "branches a user message in place and switches the chat configuration",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      original_configuration = create_configuration!(actor)
+      branch_configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "llm_configuration_id" => branch_configuration.id
+        })
+        |> json_response(200)
+
+      generation_id = get_in(payload, ["generation", "message_id"])
+      [edited, generated] = payload["branch"]
+
+      assert all_text_contents(edited) == ["Edited question"]
+      assert edited["parent_id"] == nil
+      assert generated["id"] == generation_id
+      assert generated["parent_id"] == edited["id"]
+      refute Enum.any?(payload["branch"], &(&1["id"] in [question.id, answer.id]))
+
+      assert get_in(payload, ["chat", "llm_configuration_id"]) == branch_configuration.id
+
+      assert Ash.get!(ChatMessage, generation_id, actor: actor).llm_configuration_id ==
+               branch_configuration.id
+
+      wait_for_generation_to_finish(conn, generation_id)
+    end
+
+    test "branches a user message without starting a generation", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      chat = create_empty_chat!(actor)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, _answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "start_generation" => "false"
+        })
+        |> json_response(200)
+
+      assert payload["generation"] == nil
+      assert [edited] = payload["branch"]
+      assert all_text_contents(edited) == ["Edited question"]
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == edited["id"]
+      refute Enum.any?(messages_for_chat!(actor, chat), &(&1.status == :generating))
+    end
+
+    test "regenerates an assistant message as a sibling", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{"message_id" => answer.id})
+        |> json_response(200)
+
+      generation_id = get_in(payload, ["generation", "message_id"])
+      assert Enum.map(payload["branch"], & &1["id"]) == [question.id, generation_id]
+      assert get_in(payload, ["chat", "llm_configuration_id"]) == configuration.id
+
+      wait_for_generation_to_finish(conn, generation_id)
+    end
+
+    test "moves an assistant branch to its parent without starting a generation",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      original_configuration = create_configuration!(actor)
+      branch_configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+
+      payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => answer.id,
+          "llm_configuration_id" => branch_configuration.id,
+          "start_generation" => false
+        })
+        |> json_response(200)
+
+      assert payload["generation"] == nil
+      assert Enum.map(payload["branch"], & &1["id"]) == [question.id]
+      assert get_in(payload, ["chat", "llm_configuration_id"]) == branch_configuration.id
+
+      chat = Ash.get!(Chat, chat.id, actor: actor)
+      assert chat.last_message_id == question.id
+      assert chat.llm_configuration_id == branch_configuration.id
+      assert Ash.get!(ChatMessage, answer.id, actor: actor).parent_id == question.id
+    end
+
+    test "rejects branching while a generation is active without side effects" do
+      %{user: actor, password: password} = user_fixture()
+
+      original_configuration = create_configuration!(actor)
+      branch_configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+
+      generating =
+        create_generating_message!(actor, chat,
+          parent_id: question.id,
+          llm_configuration_id: original_configuration.id
+        )
+
+      for start_generation <- [true, false] do
+        conn =
+          build_conn()
+          |> sign_in_conn(actor.username, password)
+          |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+            "message_id" => question.id,
+            "content" => "Edited question",
+            "llm_configuration_id" => branch_configuration.id,
+            "start_generation" => start_generation
+          })
+
+        assert json_response(conn, 409)["code"] == "generation_active"
+      end
+
+      chat = Ash.get!(Chat, chat.id, actor: actor)
+      assert chat.llm_configuration_id == original_configuration.id
+      assert chat.last_message_id == generating.id
+
+      assert messages_for_chat!(actor, chat) |> Enum.map(& &1.id) == [
+               question.id,
+               generating.id
+             ]
+    end
+
+    test "rejects an inaccessible configuration without side effects", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      %{user: stranger} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      original_configuration = create_configuration!(actor)
+      foreign_configuration = create_configuration!(stranger)
+      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+
+      conn =
+        post(conn, ~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => question.id,
+          "content" => "Edited question",
+          "llm_configuration_id" => foreign_configuration.id,
+          "start_generation" => false
+        })
+
+      assert json_response(conn, 422)["error"] == "Configuration is invalid or not accessible."
+
+      chat = Ash.get!(Chat, chat.id, actor: actor)
+      assert chat.llm_configuration_id == original_configuration.id
+      assert chat.last_message_id == question.id
+      assert messages_for_chat!(actor, chat) |> Enum.map(& &1.id) == [question.id]
+    end
+
+    test "rejects files the requested configuration does not allow without side effects",
+         %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      with_images = create_configuration!(actor, supports_image_input: true)
+      text_only = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: with_images.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      upload = upload_image_attachment!(conn, actor, password, chat.id)
+
+      conn =
+        build_conn()
+        |> sign_in_conn(actor.username, password)
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => question.id,
+          "content" => "Look at this",
+          "upload_ids" => [upload["upload_id"]],
+          "llm_configuration_id" => text_only.id,
+          "start_generation" => false
+        })
+
+      assert json_response(conn, 422)["error"] ==
+               "File uploads are disabled for the current bot and configuration."
+
+      chat = Ash.get!(Chat, chat.id, actor: actor)
+      assert chat.llm_configuration_id == with_images.id
+      assert chat.last_message_id == question.id
+      assert messages_for_chat!(actor, chat) |> Enum.map(& &1.id) == [question.id]
+    end
+
+    test "rejects messages outside the active branch", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+
+      chat = create_empty_chat!(actor)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+
+      {:ok, _inactive} =
+        Threads.add_message(chat, :assistant, "Inactive", actor: actor, parent_id: question.id)
+
+      {:ok, _meta} = Threads.activate_branch(chat.id, answer.id, actor)
+
+      {:ok, inactive_question} =
+        Threads.add_message(chat, :user, "Other", actor: actor, parent_id: nil)
+
+      {:ok, _meta} = Threads.activate_branch(chat.id, answer.id, actor)
+
+      conn =
+        post(conn, ~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => inactive_question.id,
+          "content" => "Edited"
+        })
+
+      assert json_response(conn, 422)["error"] == "Message is not in the active branch."
+    end
+  end
+
+  defp owned_chat_ids(actor) do
+    Chat
+    |> Ash.Query.sort(id: :asc)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(& &1.id)
   end
 
   defp all_text_contents(message_payload) do
@@ -830,6 +1270,39 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
       actor: actor
     )
     |> Ash.create!(actor: actor)
+  end
+
+  defp upload_image_attachment!(_conn, actor, password, chat_id, opts \\ []) do
+    payload = png_1x1()
+    conn = sign_in_conn(build_conn(), actor.username, password)
+
+    params =
+      %{
+        "filename" => "pic.png",
+        "mime_type" => "image/png",
+        "size_bytes" => byte_size(payload)
+      }
+      |> then(fn params ->
+        case Keyword.get(opts, :llm_configuration_id) do
+          nil -> params
+          id -> Map.put(params, "llm_configuration_id", id)
+        end
+      end)
+
+    upload =
+      conn
+      |> post(~p"/api/bff/chat-uploads/#{chat_id}", params)
+      |> json_response(200)
+      |> Map.fetch!("upload")
+
+    build_conn()
+    |> sign_in_conn(actor.username, password)
+    |> put_req_header("content-type", "application/octet-stream")
+    |> put_req_header("x-upload-offset", "0")
+    |> put(~p"/api/bff/chat-uploads/#{chat_id}/#{upload["upload_id"]}/chunk", payload)
+    |> json_response(200)
+
+    upload
   end
 
   defp create_upload!(conn, chat_id, filename, mime_type, size_bytes) do

@@ -79,7 +79,8 @@ the reconstruction path because their request predecessors may be absent.
 
 Branch selection loads trace details only for the prefix before the selected
 message. The branch-to-new-chat BFF response contains the new chat and generation
-ID; the SPA loads its history through chat-state after navigation.
+ID (`null` when the branch was created without starting a generation); the SPA
+loads its history through chat-state after navigation.
 
 ```elixir
 attrs = StepRequests.create_attributes(compact_request,

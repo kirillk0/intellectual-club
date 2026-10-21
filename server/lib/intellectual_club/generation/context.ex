@@ -156,11 +156,15 @@ defmodule IntellectualClub.Generation.Context do
       tools_payload =
         maybe_disable_tools_for_retry(request_payload, tool_resolution.tools_payload)
 
+      # Retries and recovery keep the generation's pinned configuration even when
+      # the chat selector has moved on, so prompt-block grants must follow it too.
+      configuration_id = llm_configuration && llm_configuration.id
+
       available_file_external_ids =
-        available_file_external_ids_for_chat(chat, actor, tool_resolution)
+        available_file_external_ids_for_chat(chat, configuration_id, actor, tool_resolution)
 
       available_secret_binding_external_ids =
-        available_secret_binding_external_ids_for_chat(chat, actor)
+        available_secret_binding_external_ids_for_chat(chat, configuration_id, actor)
 
       provider = llm_configuration && Map.get(llm_configuration, :provider)
 
@@ -319,7 +323,12 @@ defmodule IntellectualClub.Generation.Context do
           |> Enum.uniq()
 
         _other ->
-          available_file_external_ids_for_chat(chat, actor, tool_resolution)
+          available_file_external_ids_for_chat(
+            chat,
+            llm_configuration && llm_configuration.id,
+            actor,
+            tool_resolution
+          )
       end
 
     available_secret_binding_external_ids =
@@ -332,7 +341,11 @@ defmodule IntellectualClub.Generation.Context do
           |> Enum.uniq()
 
         _other ->
-          available_secret_binding_external_ids_for_chat(chat, actor)
+          available_secret_binding_external_ids_for_chat(
+            chat,
+            llm_configuration && llm_configuration.id,
+            actor
+          )
       end
 
     %__MODULE__{
@@ -1521,11 +1534,16 @@ defmodule IntellectualClub.Generation.Context do
     end
   end
 
-  defp load_prompt_sources(chat, actor) do
+  defp load_prompt_sources(chat, actor),
+    do: load_prompt_sources(chat, chat.llm_configuration_id, actor)
+
+  # `configuration_id` is explicit so callers resuming a pinned generation can
+  # resolve configuration blocks independently of the chat's current selection.
+  defp load_prompt_sources(chat, configuration_id, actor) do
     %{
       bot: load_bot_prompt_bindings(chat.bot_id, actor),
       chat: load_chat_prompt_bindings(chat.id, actor),
-      configuration: load_configuration_prompt_bindings(chat.llm_configuration_id, actor),
+      configuration: load_configuration_prompt_bindings(configuration_id, actor),
       user: load_user_prompt_bindings(actor)
     }
   end
@@ -1675,9 +1693,9 @@ defmodule IntellectualClub.Generation.Context do
 
   defp prompt_block_entries(_bindings, _source), do: []
 
-  defp available_secret_binding_external_ids_for_chat(chat, actor) do
+  defp available_secret_binding_external_ids_for_chat(chat, configuration_id, actor) do
     chat
-    |> load_prompt_sources(actor)
+    |> load_prompt_sources(configuration_id, actor)
     |> ordered_prompt_blocks()
     |> available_secret_binding_external_ids()
   end
@@ -1712,9 +1730,9 @@ defmodule IntellectualClub.Generation.Context do
 
   defp block_secret_binding_external_ids(_block), do: []
 
-  defp available_file_external_ids_for_chat(chat, actor, tool_resolution) do
+  defp available_file_external_ids_for_chat(chat, configuration_id, actor, tool_resolution) do
     chat
-    |> load_prompt_sources(actor)
+    |> load_prompt_sources(configuration_id, actor)
     |> ordered_prompt_blocks()
     |> available_file_external_ids(tool_resolution)
   end

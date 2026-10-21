@@ -55,7 +55,11 @@ const failedSteer = (): ChatQueuedMessage => ({
   contents: [{ id: 201, sequence: 1, kind: 'text', content_text: 'Failed instruction' }],
 });
 
-const createRuntime = (messages = [followUp()], readOnly = false) => {
+const createRuntime = (
+  messages = [followUp()],
+  readOnly = false,
+  waitForConfigSync?: () => Promise<boolean>
+) => {
   const queuedMessages = ref<ChatQueuedMessage[]>(messages);
   const loadError = ref('');
   const chatId = ref(2);
@@ -84,6 +88,7 @@ const createRuntime = (messages = [followUp()], readOnly = false) => {
     removePendingFileFromCollection: vi.fn(async () => undefined),
     clearPendingFilesCollection,
     refreshChat,
+    waitForConfigSync,
   });
 
   return { runtime, queuedMessages, loadError, refreshChat, chatId, activeGenerationId, cancelingGenerationId };
@@ -155,6 +160,43 @@ describe('chat queue runtime', () => {
 
     expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-queued-messages/10/send-next', {});
     expect(refreshChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the next follow-up only after a pending configuration change is confirmed', async () => {
+    let confirmConfig: (ready: boolean) => void = () => {};
+    const waitForConfigSync = vi.fn(
+      () => new Promise<boolean>((resolve) => {
+        confirmConfig = resolve;
+      })
+    );
+    apiMocks.post.mockResolvedValueOnce({
+      queued_message: { ...followUp(), status: 'delivered' },
+    });
+    const { runtime } = createRuntime([followUp()], false, waitForConfigSync);
+
+    const sending = runtime.sendNext(followUp('blocked'));
+    await Promise.resolve();
+    expect(waitForConfigSync).toHaveBeenCalledTimes(1);
+    expect(apiMocks.post).not.toHaveBeenCalled();
+
+    confirmConfig(true);
+    await sending;
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-queued-messages/10/send-next', {});
+  });
+
+  it('keeps the follow-up queued when the configuration change does not settle', async () => {
+    const { runtime, loadError, refreshChat } = createRuntime(
+      [followUp()],
+      false,
+      vi.fn().mockResolvedValue(false)
+    );
+
+    await runtime.sendNext(followUp('blocked'));
+
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    expect(refreshChat).not.toHaveBeenCalled();
+    expect(loadError.value).toBe('Configuration change is still syncing. Please wait.');
+    expect(runtime.queueActionId.value).toBeNull();
   });
 
   it('keeps quarantined steering visible and editable without treating it as follow-up backlog', async () => {

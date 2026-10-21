@@ -13,6 +13,7 @@ defmodule IntellectualClub.Chat.Spawn do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatSettingsCopy
+  alias IntellectualClub.Chat.GenerationConfiguration
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context, as: GenerationContext
@@ -217,11 +218,20 @@ defmodule IntellectualClub.Chat.Spawn do
         Subagent.with_invocation_authority(context, opts, fn ->
           with {:ok, current_source} <- fetch_owned_chat(source.id, actor),
                :ok <- Subagent.ensure_creation_allowed(tool_instance, current_source, actor) do
+            # The parent chat selector may have moved on while this generation
+            # runs; the subagent keeps the configuration of the calling turn.
+            llm_configuration_id =
+              GenerationConfiguration.pinned_id(
+                context.assistant_message_id || context.message_id,
+                current_source,
+                actor
+              )
+
             Repo.transaction(fn ->
               attrs = %{
                 note: brief,
                 bot_id: current_source.bot_id,
-                llm_configuration_id: current_source.llm_configuration_id,
+                llm_configuration_id: llm_configuration_id,
                 parent_chat_id: current_source.id,
                 parent_message_id: context.assistant_message_id || context.message_id,
                 parent_tool_call_item_id: context.tool_call_item_id,
@@ -239,7 +249,7 @@ defmodule IntellectualClub.Chat.Spawn do
               {:ok, prompt_message} =
                 Threads.add_message_to_end(chat, :user, prompt,
                   actor: actor,
-                  llm_configuration_id: current_source.llm_configuration_id
+                  llm_configuration_id: llm_configuration_id
                 )
 
               # The new chat identity and copied binding scope do not exist

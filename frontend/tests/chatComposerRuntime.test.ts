@@ -137,6 +137,34 @@ describe('chat composer runtime', () => {
     vi.restoreAllMocks();
   });
 
+  it('starts attachment uploads with the configuration the message is composed for', async () => {
+    const { runtime } = createRuntime(null);
+    apiMocks.post.mockResolvedValue({
+      upload: {
+        upload_id: 'upload-for-branch',
+        filename: 'note.txt',
+        mime_type: 'text/plain',
+        size_bytes: 4,
+        uploaded_bytes: 4,
+        chunk_size_bytes: 1024,
+        status: 'uploaded',
+        expires_at: '2026-10-22T00:00:00Z',
+      },
+    });
+    const files = ref([pendingFile()]);
+
+    await expect(
+      runtime.ensurePendingFilesUploaded(files, undefined, { llmConfigurationId: 8 })
+    ).resolves.toEqual(['upload-for-branch']);
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-uploads/12', {
+      filename: 'note.txt',
+      mime_type: 'text/plain',
+      size_bytes: 4,
+      llm_configuration_id: 8,
+    });
+  });
+
   it('selects Send or Continue from the idle payload without trimming text', () => {
     const { runtime } = createRuntime(null);
 

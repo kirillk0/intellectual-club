@@ -53,7 +53,8 @@ defmodule IntellectualClub.SubagentFixtures do
 
     * `:user_prompt` — text of the user message (default `"Run subagent"`);
     * `:tools` — `"tools"` of the step request;
-    * `:chat` — attributes of the parent chat (e.g. `:llm_configuration_id`).
+    * `:chat` — attributes of the parent chat (e.g. `:llm_configuration_id`);
+    * `:message` — attributes of the generating reply (e.g. `:llm_configuration_id`).
   """
   def create_parent_call!(actor, primitive, args, opts \\ []) do
     user_prompt = Keyword.get(opts, :user_prompt, "Run subagent")
@@ -66,7 +67,13 @@ defmodule IntellectualClub.SubagentFixtures do
     )
 
     create_chat_tool_binding!(actor, chat, tool_instance)
-    message = create_generating_message!(actor, chat, user_text: user_prompt)
+
+    message =
+      create_generating_message!(
+        actor,
+        chat,
+        merge_attrs(%{user_text: user_prompt}, Keyword.get(opts, :message, %{}))
+      )
 
     raw_request =
       %{

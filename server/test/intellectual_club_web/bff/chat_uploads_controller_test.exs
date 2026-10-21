@@ -36,6 +36,46 @@ defmodule IntellectualClubWeb.Bff.ChatUploadsControllerTest do
     assert payload["error"] == ~s(File "big.txt" exceeds the maximum size of 4 B.)
   end
 
+  test "POST /api/bff/chat-uploads/:chat_id validates against a requested configuration", %{
+    conn: conn
+  } do
+    %{user: actor, password: password} = user_fixture()
+    %{user: stranger} = user_fixture()
+    conn = sign_in_conn(conn, actor.username, password)
+
+    text_only = create_configuration!(actor)
+    with_images = create_configuration!(actor, supports_image_input: true)
+    foreign = create_configuration!(stranger, supports_image_input: true)
+    chat = create_empty_chat!(actor, llm_configuration_id: text_only.id)
+    image = %{"filename" => "pic.png", "mime_type" => "image/png", "size_bytes" => 10}
+
+    assert json_response(post(conn, ~p"/api/bff/chat-uploads/#{chat.id}", image), 422)["error"] ==
+             "File uploads are disabled for the current bot and configuration."
+
+    payload =
+      build_conn()
+      |> sign_in_conn(actor.username, password)
+      |> post(
+        ~p"/api/bff/chat-uploads/#{chat.id}",
+        Map.put(image, "llm_configuration_id", with_images.id)
+      )
+      |> json_response(200)
+
+    assert get_in(payload, ["upload", "status"]) == "uploading"
+
+    for configuration_id <- [foreign.id, "latest"] do
+      conn =
+        build_conn()
+        |> sign_in_conn(actor.username, password)
+        |> post(
+          ~p"/api/bff/chat-uploads/#{chat.id}",
+          Map.put(image, "llm_configuration_id", configuration_id)
+        )
+
+      assert json_response(conn, 422)["error"] == "Configuration is invalid or not accessible."
+    end
+  end
+
   test "chunk upload tracks progress and rejects wrong offsets", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

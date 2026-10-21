@@ -24,6 +24,7 @@
         v-if="configMenuOpen"
         ref="configDropdownRef"
         class="config-select__menu config-select__menu--floating"
+        data-modal-shortcut-ignore
         role="menu"
         :aria-label="t('Configuration')"
         tabindex="-1"
@@ -61,6 +62,7 @@
         </template>
         <template v-else>
           <button
+            v-if="showEditAction"
             class="config-select__item config-select__item--action"
             type="button"
             role="menuitem"
@@ -71,7 +73,7 @@
             <span>{{ t('Edit configuration') }}</span>
           </button>
           <template v-if="!disabled">
-            <div class="menu-divider"></div>
+            <div v-if="showEditAction" class="menu-divider"></div>
             <button
               v-if="defaultConfig"
               class="config-select__item"
@@ -138,6 +140,7 @@
         v-if="configMenuOpen && moreMenuOpen"
         ref="moreDropdownRef"
         class="config-select__submenu-menu config-select__submenu-menu--floating"
+        data-modal-shortcut-ignore
         role="menu"
         :aria-label="t('More configurations')"
         :style="moreMenuStyle"
@@ -190,6 +193,10 @@ interface Props {
   moreConfigs: LlmConfiguration[];
   selectedDisabledConfig: LlmConfiguration | null;
   configLabel: (cfg: LlmConfiguration) => string;
+  // The editor shortcut is hidden where opening a stacked editor makes no sense (dialogs).
+  showEditAction?: boolean;
+  // Floating menus are teleported to body and must stack above an open modal.
+  overModal?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -199,6 +206,8 @@ const props = withDefaults(defineProps<Props>(), {
   regularSelectableConfigs: () => [],
   moreConfigs: () => [],
   selectedDisabledConfig: null,
+  showEditAction: true,
+  overModal: false,
 });
 
 const emit = defineEmits<{
@@ -222,7 +231,9 @@ const moreMenuStyle = ref<Record<string, string>>({});
 let moreMenuOpenTimer: number | null = null;
 let moreMenuCloseTimer: number | null = null;
 
-const canOpenEditor = computed(() => props.modelValue !== '');
+const canOpenEditor = computed(() => props.showEditAction && props.modelValue !== '');
+// Modal backdrops stack at 3000; floating menus of dialog controls must stay above them.
+const menuZIndex = computed(() => (props.overModal ? 3100 : 2200));
 // The editor stays reachable while switching is locked (read-only chat, active generation).
 const menuAvailable = computed(() => !props.disabled || canOpenEditor.value);
 
@@ -322,7 +333,7 @@ const updateConfigMenuPosition = () => {
     width: `${width}px`,
     maxWidth: `${maxWidth}px`,
     maxHeight: `${availableHeight}px`,
-    zIndex: '2200',
+    zIndex: String(menuZIndex.value),
   };
 };
 
@@ -354,7 +365,7 @@ const updateMoreMenuPosition = () => {
     width: `${width}px`,
     maxWidth: `${maxWidth}px`,
     maxHeight: `${maxHeight}px`,
-    zIndex: '2201',
+    zIndex: String(menuZIndex.value + 1),
   };
 };
 

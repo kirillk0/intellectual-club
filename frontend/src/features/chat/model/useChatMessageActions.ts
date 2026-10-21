@@ -4,6 +4,7 @@ import { api, getApiErrorMessage } from '@/api/client';
 import { translate } from '@/i18n';
 import {
   createPendingChatFiles,
+  describeChatUploadPolicy,
   mapContentToExistingAttachment,
   overallPendingUploadProgress,
   validateFilesForChatUpload,
@@ -24,6 +25,7 @@ import {
   primaryChatMessageText,
   sortedChatMessageContentParts,
 } from '@/features/chat/model/chatMessageContent';
+import type { ChatUploadSessionOptions } from '@/features/chat/upload';
 import { copyTextWithFallback } from '@/utils/clipboard';
 import type { Chat, ChatBranchMessage, ChatMessageStep } from '@/types/api';
 
@@ -40,18 +42,40 @@ type Params = {
   branch: Ref<ChatBranchMessage[]>;
   selectedConfig: Ref<number | ''>;
   fileUploadPolicy: ComputedRef<ChatUploadPolicy>;
+  // Upload policy of this chat with another configuration; used by the branch dialog.
+  uploadPolicyForConfig?: (configId: number) => ChatUploadPolicy;
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
   messageConfigLabel: (configId?: number | null) => string;
   startPolling: (messageId: number) => Promise<void>;
   scrollToLastMessage: ScrollToLastMessage;
-  ensurePendingFilesUploaded: (filesRef: Ref<PendingChatFile[]>) => Promise<string[]>;
+  ensurePendingFilesUploaded: (
+    filesRef: Ref<PendingChatFile[]>,
+    fileIds?: ReadonlySet<string>,
+    options?: ChatUploadSessionOptions
+  ) => Promise<string[]>;
   removePendingFileFromCollection: (filesRef: Ref<PendingChatFile[]>, id: string) => Promise<void>;
   clearPendingFilesCollection: (filesRef: Ref<PendingChatFile[]>) => Promise<void>;
   pushChatRoute: (chatId: number) => Promise<void> | void;
   afterBranchSwitched?: () => void;
+  // Applies a chat configuration the server switched as part of an in-chat branch.
+  applyServerConfiguration?: (configId: number | null) => Promise<void> | void;
 };
 
 type EditModalMode = 'edit' | 'branch' | 'branch_new_chat';
+
+type InChatBranchPayload = {
+  branch: ChatBranchMessage[];
+  chat?: Chat | null;
+  generation?: { message_id: number } | null;
+};
+
+type NewChatBranchPayload = {
+  chat: Chat;
+  generation?: { message_id: number } | null;
+};
+
+const CONFIG_SYNC_PENDING_MESSAGE =
+  'Configuration change is still syncing. Please wait before starting a new generation.';
 
 export type OpenWorkingState = {
   messageId: number;
@@ -87,6 +111,38 @@ export function useChatMessageActions(params: Params) {
   const editPendingFiles = ref<PendingChatFile[]>([]);
   const editError = ref('');
   const savingEdit = ref(false);
+
+  // Options of the user-message branch dialog: the configuration of the resulting
+  // chat and whether the branch starts a generation right away.
+  const branchConfigId = ref<number | ''>('');
+  const branchStartGeneration = ref(true);
+
+  // The configuration a branch is explicitly sent with; null keeps the chat configuration.
+  const branchConfigOverride = computed(() =>
+    modalMode.value !== 'edit' && typeof branchConfigId.value === 'number' && branchConfigId.value > 0
+      ? branchConfigId.value
+      : null
+  );
+
+  // Attachments of the dialog follow the configuration the message is sent with.
+  const editUploadPolicy = computed(() => {
+    const configId = branchConfigOverride.value;
+    return configId && params.uploadPolicyForConfig
+      ? params.uploadPolicyForConfig(configId)
+      : params.fileUploadPolicy.value;
+  });
+  const editAttachmentsEnabled = computed(() => !historyReadOnly.value && editUploadPolicy.value.allowsFiles);
+  const editAttachmentAccept = computed(() => editUploadPolicy.value.accept);
+  const editAttachmentHelp = computed(() => describeChatUploadPolicy(editUploadPolicy.value));
+  // Files added under a more permissive configuration block saving until removed.
+  const editAttachmentPolicyError = computed(
+    () =>
+      validateFilesForChatUpload(
+        editPendingFiles.value.map((item) => item.file),
+        editUploadPolicy.value
+      ).errors[0] || ''
+  );
+  const editErrorText = computed(() => editAttachmentPolicyError.value || editError.value);
 
   const editSaveLabel = computed(() => {
     if (!savingEdit.value) {
@@ -200,6 +256,32 @@ export function useChatMessageActions(params: Params) {
   const currentRetryConfigurationId = () => {
     const configId = params.selectedConfig.value || params.chat.value?.llm_configuration_id || null;
     return typeof configId === 'number' && Number.isFinite(configId) && configId > 0 ? configId : null;
+  };
+
+  const resetBranchOptions = () => {
+    branchConfigId.value = currentRetryConfigurationId() ?? '';
+    branchStartGeneration.value = true;
+  };
+
+  const branchRequestOptions = () => ({
+    start_generation: branchStartGeneration.value,
+    ...(typeof branchConfigId.value === 'number' && branchConfigId.value > 0
+      ? { llm_configuration_id: branchConfigId.value }
+      : {}),
+  });
+
+  const applyInChatBranch = async (payload: InChatBranchPayload) => {
+    replaceBranch(payload.branch);
+    if (payload.chat) {
+      await params.applyServerConfiguration?.(payload.chat.llm_configuration_id ?? null);
+    }
+
+    const messageId = payload.generation?.message_id;
+    if (messageId) {
+      await params.startPolling(messageId);
+    } else {
+      await params.scrollToLastMessage();
+    }
   };
 
   const retryConfigurationWarning = (message: ChatBranchMessage | null | undefined) => {
@@ -603,6 +685,7 @@ export function useChatMessageActions(params: Params) {
     editRemovedAttachmentIds.value = [];
     editPendingFiles.value = [];
     editError.value = '';
+    resetBranchOptions();
   };
 
   const startBranch = (msg: ChatBranchMessage) => {
@@ -711,7 +794,7 @@ export function useChatMessageActions(params: Params) {
   const addEditPendingFiles = (files: File[]) => {
     if (historyReadOnly.value) return;
     if (!files.length) return;
-    const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
+    const { accepted, errors } = validateFilesForChatUpload(files, editUploadPolicy.value);
 
     if (accepted.length > 0) {
       editPendingFiles.value = [...editPendingFiles.value, ...createPendingChatFiles(accepted)];
@@ -727,6 +810,7 @@ export function useChatMessageActions(params: Params) {
   const saveEdit = async () => {
     if (historyReadOnly.value) return;
     if (!editingMessage.value?.id || savingEdit.value) return;
+    if (editAttachmentPolicyError.value) return;
     const savingMessageId = editingMessage.value.id;
     savingEdit.value = true;
     editError.value = '';
@@ -760,26 +844,32 @@ export function useChatMessageActions(params: Params) {
 
         const configReady = await params.waitForConfigSync();
         if (!configReady) {
-          alert('Configuration change is still syncing. Please wait before starting a new generation.');
+          alert(CONFIG_SYNC_PENDING_MESSAGE);
           return;
         }
 
-        const parentId = editingMessage.value.parent_id ?? null;
         const uploadIds =
-          editPendingFiles.value.length > 0 ? await params.ensurePendingFilesUploaded(editPendingFiles) : [];
+          editPendingFiles.value.length > 0
+            ? await params.ensurePendingFilesUploaded(editPendingFiles, undefined, {
+                llmConfigurationId: branchConfigOverride.value,
+              })
+            : [];
         const hasBranchFiles = editExistingAttachments.value.length > 0 || uploadIds.length > 0;
         const content = editContents.value[0] ?? '';
 
+        const branchPayload = {
+          message_id: editingMessageId,
+          ...(hasBranchFiles
+            ? buildSendPayload(content, uploadIds, editExistingAttachments.value)
+            : { content }),
+          ...branchRequestOptions(),
+        };
+
         if (branchMode === 'branch_new_chat') {
           branchingNewChatMessageId.value = editingMessageId;
-          const payload = await api.post<{ chat: Chat; generation: { message_id: number } }>(
+          const payload = await api.post<NewChatBranchPayload>(
             `/api/bff/chat-generation/${params.chatId.value}/branch-to-new-chat`,
-            {
-              message_id: editingMessageId,
-              ...(hasBranchFiles
-                ? buildSendPayload(content, uploadIds, editExistingAttachments.value)
-                : { content }),
-            }
+            branchPayload
           );
           const nextChatId = payload.chat?.id;
           if (!nextChatId) throw new Error('Missing chat id');
@@ -789,19 +879,12 @@ export function useChatMessageActions(params: Params) {
           return;
         }
 
-        const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
-          `/api/bff/chat-generation/${params.chatId.value}/send`,
-          hasBranchFiles
-            ? buildSendPayload(content, uploadIds, editExistingAttachments.value, parentId)
-            : { content, parent_id: parentId }
+        const payload = await api.post<InChatBranchPayload>(
+          `/api/bff/chat-generation/${params.chatId.value}/branch`,
+          branchPayload
         );
-        replaceBranch(payload.branch);
         resetEditState();
-
-        const messageId = payload.generation?.message_id;
-        if (messageId) {
-          await params.startPolling(messageId);
-        }
+        await applyInChatBranch(payload);
       }
     } catch (error) {
       console.error(error);
@@ -861,6 +944,13 @@ export function useChatMessageActions(params: Params) {
     isBookmarkingMessage,
     editingMessage,
     modalMode,
+    branchConfigId,
+    branchStartGeneration,
+    editAttachmentsEnabled,
+    editAttachmentAccept,
+    editAttachmentHelp,
+    editAttachmentPolicyError,
+    editErrorText,
     editContents,
     editExistingAttachments,
     editPendingFiles,

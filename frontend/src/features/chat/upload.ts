@@ -41,11 +41,24 @@ export const isRetryableUploadChunkError = (error: unknown) => {
   return isHttpError(error) && RETRYABLE_UPLOAD_HTTP_STATUS_CODES.has(error.status);
 };
 
-export const createChatUploadSession = async (chatId: number, file: File) => {
+export type ChatUploadSessionOptions = {
+  // Validates the file against this configuration instead of the chat's current
+  // one (a message composed for another configuration, e.g. branch options).
+  llmConfigurationId?: number | null;
+};
+
+export const createChatUploadSession = async (
+  chatId: number,
+  file: File,
+  options: ChatUploadSessionOptions = {}
+) => {
   const payload = await api.post<ChatUploadResponse>(`/api/bff/chat-uploads/${chatId}`, {
     filename: file.name,
     mime_type: file.type || 'application/octet-stream',
     size_bytes: file.size,
+    ...(typeof options.llmConfigurationId === 'number' && options.llmConfigurationId > 0
+      ? { llm_configuration_id: options.llmConfigurationId }
+      : {}),
   });
 
   return payload.upload;

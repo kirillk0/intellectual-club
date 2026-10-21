@@ -30,6 +30,8 @@ type Params = {
   removePendingFileFromCollection: (files: Ref<PendingChatFile[]>, id: string) => Promise<void>;
   clearPendingFilesCollection: (files: Ref<PendingChatFile[]>) => Promise<void>;
   refreshChat: () => Promise<void>;
+  // Lets a manual dispatch start with the configuration the user just selected.
+  waitForConfigSync?: () => Promise<boolean>;
 };
 
 type QueuedMessageMutationPayload = {
@@ -328,6 +330,10 @@ export function useChatQueueRuntime(params: Params) {
     queueActionId.value = message.id;
     params.loadError.value = '';
     try {
+      if (params.waitForConfigSync && !(await params.waitForConfigSync())) {
+        params.loadError.value = translate('Configuration change is still syncing. Please wait.');
+        return;
+      }
       const payload = await api.post<QueuedMessageMutationPayload>(
         `/api/bff/chat-queued-messages/${message.id}/send-next`,
         {}

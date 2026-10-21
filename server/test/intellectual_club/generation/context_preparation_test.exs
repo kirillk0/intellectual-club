@@ -12,8 +12,12 @@ defmodule IntellectualClub.Generation.ContextPreparationTest do
 
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageItem, ChatMessageStep}
   alias IntellectualClub.Chat.{LinkedForkCleanup, Spawn, Threads}
+  alias IntellectualClub.Files
   alias IntellectualClub.Generation.{Context, Lease, Persistence, StepRequests}
   alias IntellectualClub.Generation.Context.{Preparation, StalePreparationError}
+  alias IntellectualClub.Knowledge.KnowledgeBlockFile
+  alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
+  alias IntellectualClub.Secrets.{KnowledgeBlockSecret, Secret}
   alias IntellectualClub.Tools.{ExecutionContext, ToolInstance}
 
   describe "prepare/2 and publish!/2" do
@@ -475,6 +479,33 @@ defmodule IntellectualClub.Generation.ContextPreparationTest do
       assert replacement.status == :waiting_provider
       assert StepRequests.request_for_step!(replacement.id, actor: actor) == request
     end
+
+    test "retry and prepared contexts keep the generation configuration's file and secret grants" do
+      %{user: actor} = user_fixture()
+      {pinned, pinned_file, pinned_secret} = configuration_with_grants!(actor, "Pinned")
+      {selected, selected_file, selected_secret} = configuration_with_grants!(actor, "Selected")
+      chat = create_chat!(actor, llm_configuration_id: pinned.id)
+
+      {message, [step]} =
+        retryable_message!(actor, chat, :error, 1, llm_configuration_id: pinned.id)
+
+      # The selector applies to the next message only; it may move mid-generation.
+      chat
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      request = StepRequests.request_for_step!(step.id, actor: actor)
+      assert {:ok, retry} = Context.prepare_retry(message.id, actor: actor)
+      prepared = Context.build_prepared!(chat.id, message.id, step.id, request, actor: actor)
+
+      for context <- [retry, prepared] do
+        assert context.llm_configuration_id == pinned.id
+        assert pinned_file.external_id in context.available_file_external_ids
+        refute selected_file.external_id in context.available_file_external_ids
+        assert pinned_secret.external_id in context.available_secret_binding_external_ids
+        refute selected_secret.external_id in context.available_secret_binding_external_ids
+      end
+    end
   end
 
   describe "Spawn.start_or_resume/6 preparation" do
@@ -537,15 +568,22 @@ defmodule IntellectualClub.Generation.ContextPreparationTest do
 
   defp messages(chat_id, actor), do: Threads.all_messages(chat_id, actor)
 
-  defp retryable_message!(actor, chat, status, step_count) do
+  defp retryable_message!(actor, chat, status, step_count, attrs \\ []) do
     {:ok, user_message} = Threads.add_message_to_end(chat, :user, "hello", actor: actor)
 
     message =
-      create_message!(actor, chat,
-        parent_id: user_message.id,
-        status: status,
-        error_detail: if(status == :error, do: "boom"),
-        token_count: 0
+      create_message!(
+        actor,
+        chat,
+        merge_attrs(
+          %{
+            parent_id: user_message.id,
+            status: status,
+            error_detail: if(status == :error, do: "boom"),
+            token_count: 0
+          },
+          attrs
+        )
       )
 
     steps =
@@ -560,6 +598,41 @@ defmodule IntellectualClub.Generation.ContextPreparationTest do
       end
 
     {message, steps}
+  end
+
+  # A configuration whose prompt block grants one file and one secret binding.
+  defp configuration_with_grants!(actor, name) do
+    configuration = create_configuration!(actor, note: name)
+    block = create_knowledge_block!(actor, name: "#{name} block", content: "#{name} content")
+    {:ok, file} = Files.create_from_binary("#{name}.txt", "text/plain", name)
+
+    create!(
+      KnowledgeBlockFile,
+      %{knowledge_block_id: block.id, file_id: file.id, sequence: 0},
+      actor
+    )
+
+    secret =
+      create!(Secret, %{name: "#{name} token", description: name, value: "#{name}-value"}, actor)
+
+    secret_binding =
+      create!(
+        KnowledgeBlockSecret,
+        %{
+          knowledge_block_id: block.id,
+          secret_id: secret.id,
+          env_name: "#{String.upcase(name)}_TOKEN"
+        },
+        actor
+      )
+
+    create!(
+      LlmConfigurationKnowledgeBlock,
+      %{llm_configuration_id: configuration.id, knowledge_block_id: block.id, enabled: true},
+      actor
+    )
+
+    {configuration, file, secret_binding}
   end
 
   defp retry_request(sequence) do

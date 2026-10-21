@@ -43,6 +43,19 @@
           >
             {{ t('Not saved') }}
           </span>
+          <span
+            v-if="generationConfigMismatchText"
+            class="config-generation-mismatch"
+            role="status"
+            tabindex="0"
+            :title="generationConfigMismatchText"
+            :aria-label="generationConfigMismatchText"
+          >
+            <span class="config-generation-mismatch__dot" aria-hidden="true"></span>
+            <span class="config-generation-mismatch__label" aria-hidden="true" data-i18n-ignore>
+              {{ generationConfigLabel }}
+            </span>
+          </span>
           <ChatConfigurationSelect
             :model-value="selectedConfig"
             :disabled="configSelectorDisabled"
@@ -245,6 +258,8 @@ interface Props {
   configSyncError: string;
   configurationOptionsReady: boolean;
   isGenerating: boolean;
+  // Label of the running generation's configuration when it differs from the selection.
+  generationConfigLabel?: string;
   menuOpen: boolean;
   menuStyle: Record<string, string>;
   currentBotId: number | null;
@@ -277,6 +292,7 @@ const props = withDefaults(defineProps<Props>(), {
   selectedDisabledConfig: null,
   selectedDisabledConfigReason: null,
   configurationOptionsReady: true,
+  generationConfigLabel: '',
   continuationNav: () => [],
 });
 
@@ -298,12 +314,13 @@ const emit = defineEmits<{
   'dismiss-missing-tools-banner': [];
 }>();
 
+// A running generation keeps its pinned configuration, so the selector stays
+// available and applies to the next message.
 const configSelectorDisabled = computed(
   () =>
     !props.canEdit ||
     !props.configurationOptionsReady ||
-    props.configSyncStatus === 'pending' ||
-    props.isGenerating
+    props.configSyncStatus === 'pending'
 );
 
 const hasContinuationNav = computed(() => props.continuationNav.length > 1);
@@ -311,9 +328,16 @@ const hasContinuationNav = computed(() => props.continuationNav.length > 1);
 const configSelectorTitle = computed(() => {
   if (!props.canEdit) return t('Shared chats are read-only');
   if (!props.configurationOptionsReady) return t('Loading configurations…');
-  if (props.isGenerating) return t('Cannot change configuration while generating a response');
   if (props.configSyncStatus === 'pending') return t('Waiting for server confirmation');
   return undefined;
+});
+
+const generationConfigMismatchText = computed(() => {
+  if (!props.generationConfigLabel) return '';
+  return t(
+    'Current response is being generated with {label}. The selected configuration applies to the next message.',
+    { label: props.generationConfigLabel }
+  );
 });
 
 const handoffDisabledTitle = computed(() => {
@@ -364,6 +388,63 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 
 .config-control {
   align-items: center;
+  min-width: 0;
+}
+
+.config-generation-mismatch {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 10rem;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: help;
+}
+
+.config-generation-mismatch:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.config-generation-mismatch__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: config-generation-pulse 1.4s ease-in-out infinite;
+}
+
+.config-generation-mismatch__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes config-generation-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config-generation-mismatch__dot {
+    animation: none;
+  }
 }
 
 .chat-toolbar__title-wrap {
@@ -546,6 +627,16 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 
   .chat-toolbar__actions {
     gap: 4px;
+  }
+
+  .config-generation-mismatch {
+    width: 22px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .config-generation-mismatch__label {
+    display: none;
   }
 }
 </style>

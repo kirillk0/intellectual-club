@@ -158,6 +158,7 @@ defmodule IntellectualClubWeb.Router do
     post "/chat-generation/:id/send", ChatGenerationController, :send
     post "/chat-generation/:chat_id/queue", ChatQueuedMessagesController, :create
     post "/chat-generation/:id/generate", ChatGenerationController, :generate
+    post "/chat-generation/:id/branch", ChatGenerationController, :branch
     post "/chat-generation/:id/branch-to-new-chat", ChatGenerationController, :branch_to_new_chat
     post "/chat-generation/:id/handoff", ChatGenerationController, :handoff
 

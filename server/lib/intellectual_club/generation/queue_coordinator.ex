@@ -364,6 +364,57 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     end
   end
 
+  @doc """
+  Runs a direct history mutation that does not start a generation under the
+  same admission boundary as a direct generation start.
+
+  The callback runs inside the chat-locked transaction and must return
+  `{:ok, result}` or `{:error, reason}`; errors roll the mutation back.
+  """
+  @spec run_direct_mutation(integer(), map() | nil, (-> {:ok, term()} | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
+  def run_direct_mutation(chat_id, actor, fun)
+      when is_integer(chat_id) and is_function(fun, 0) do
+    with :ok <- direct_preflight(chat_id, actor) do
+      transact(fn ->
+        chat = lock_chat!(chat_id)
+        active_generation = lock_active_generation(chat.id)
+        queue = Enum.reject(lock_active_queue!(chat.id), &quarantined_steer?/1)
+
+        cond do
+          Map.get(actor, :id) != chat.owner_id ->
+            {:error, :forbidden}
+
+          match?(%ChatMessage{}, active_generation) ->
+            {:error, :generation_active}
+
+          queue != [] ->
+            {:error, :queue_not_empty}
+
+          true ->
+            # Raising rolls back partial mutations and preserves the reason;
+            # Ash.transaction would wrap a rollback value into an Ash error.
+            case fun.() do
+              {:ok, result} -> {:ok, result}
+              {:error, reason} -> raise PublicationError, reason: reason
+            end
+        end
+      end)
+      |> case do
+        {:ok, {:ok, result}} -> {:ok, result}
+        {:ok, {:error, reason}} -> {:error, reason}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  rescue
+    error in PublicationError -> {:error, error.reason}
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def run_direct_mutation(_chat_id, _actor, _fun), do: {:error, :invalid_chat_id}
+
   defp prepare_direct_attempt(chat_id, opts, attempts) do
     with :ok <- direct_preflight(chat_id, Keyword.get(opts, :actor)) do
       case Context.prepare(chat_id, opts) do

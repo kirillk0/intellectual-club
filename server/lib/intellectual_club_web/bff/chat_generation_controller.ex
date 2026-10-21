@@ -76,48 +76,76 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
     end
   end
 
+  def branch(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- ChatParams.resource_id(id) do
+      message_id = Helpers.parse_optional_integer(Map.get(params, "message_id"))
+
+      conn
+      |> render_branch_result(
+        ChatGenerationFlow.branch_in_chat(chat_id, message_id, params, actor)
+      )
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ChatAccess.render_error(conn, error)
+    end
+  end
+
   def branch_to_new_chat(conn, %{"id" => id} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- ChatParams.resource_id(id) do
       message_id = Helpers.parse_optional_integer(Map.get(params, "message_id"))
 
-      case ChatGenerationFlow.branch_to_new_chat(chat_id, message_id, params, actor) do
-        {:ok, payload} ->
-          json(conn, payload)
-
-        {:error, :message_required} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "message_id is required"})
-
-        {:error, :message_not_in_active_branch} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "Message is not in the active branch."})
-
-        {:error, :empty_user_message} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: "User branch message cannot be empty."})
-
-        {:error, %Plug.Conn{} = conn} ->
-          conn
-
-        {:error, :queue_not_empty} ->
-          render_queue_not_empty(conn)
-
-        {:error, :generation_active} ->
-          render_generation_active(conn)
-
-        {:error, error_message} when is_binary(error_message) ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: error_message})
-
-        {:error, error} ->
-          ChatAccess.render_error(conn, error)
-      end
+      conn
+      |> render_branch_result(
+        ChatGenerationFlow.branch_to_new_chat(chat_id, message_id, params, actor)
+      )
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error} ->
+        ChatAccess.render_error(conn, error)
+    end
+  end
+
+  defp render_branch_result(conn, result) do
+    case result do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, :message_required} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "message_id is required"})
+
+      {:error, :message_not_in_active_branch} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Message is not in the active branch."})
+
+      {:error, :empty_user_message} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "User branch message cannot be empty."})
+
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, :queue_not_empty} ->
+        render_queue_not_empty(conn)
+
+      {:error, :generation_active} ->
+        render_generation_active(conn)
+
+      {:error, error_message} when is_binary(error_message) ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: error_message})
+
       {:error, error} ->
         ChatAccess.render_error(conn, error)
     end
@@ -143,6 +171,9 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationController do
           ChatAccess.render_error(conn, error)
       end
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
       {:error, error} ->
         ChatAccess.render_error(conn, error)
     end

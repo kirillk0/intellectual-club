@@ -11,7 +11,7 @@ import {
   updateChatRecord,
 } from '@/features/chat/chatAshApi';
 import { normalizeIdList, normalizeNameList } from '@/features/chat/model/chatViewModel.shared';
-import type { Bot, Chat, LlmConfiguration } from '@/types/api';
+import type { Bot, Chat, ChatBranchMessage, LlmConfiguration } from '@/types/api';
 import { formatChatBaseTitle, formatChatFullTitle } from '@/utils/chatTitle';
 
 const CONFIG_SYNC_GRACE_PERIOD_MS = 2500;
@@ -29,6 +29,7 @@ type Params = {
   llmConfigurations: Ref<LlmConfiguration[]>;
   artifactToolsAvailable: Ref<boolean>;
   activeGenerationId: Ref<number | null>;
+  branch?: Ref<ChatBranchMessage[]>;
   menuOpen: Ref<boolean>;
   deleting: Ref<boolean>;
   toggleMenu: () => void;
@@ -60,6 +61,9 @@ export function useChatHeaderControls(params: Params) {
   const configSyncStatus = ref<'synced' | 'pending' | 'error'>('synced');
   const configSyncError = ref('');
   let configSyncToken = 0;
+  // Advances whenever a local configuration write starts. Chat reads capture it
+  // so a response that may predate the write cannot roll the selection back.
+  let configWriteRevision = 0;
   let resolveConfigSync: (() => void) | null = null;
   let configSyncPromise: Promise<void> = Promise.resolve();
 
@@ -85,6 +89,33 @@ export function useChatHeaderControls(params: Params) {
     const cfg = (params.llmConfigurations.value || []).find((item) => item.id === configId);
     return cfg ? configLabel(cfg) : `Config #${configId}`;
   };
+
+  const positiveConfigId = (value: unknown) => {
+    const id = typeof value === 'number' ? value : Number(value);
+    return Number.isInteger(id) && id > 0 ? id : null;
+  };
+
+  // The configuration the next generation will use: the selector value, or the
+  // persisted chat value while the selector has not been hydrated yet.
+  const nextGenerationConfigId = computed(
+    () => positiveConfigId(selectedConfig.value) ?? positiveConfigId(params.chat.value?.llm_configuration_id)
+  );
+
+  // A running generation keeps the configuration pinned at its start. Returns the
+  // label of that configuration when it differs from the one selected for the next message.
+  const generationConfigMismatchLabel = (message: ChatBranchMessage | null | undefined) => {
+    if (!message || message.role !== 'assistant' || message.status !== 'generating') return '';
+    const generationConfigId = positiveConfigId(message.llm_configuration_id);
+    if (!generationConfigId || generationConfigId === nextGenerationConfigId.value) return '';
+    return messageConfigLabel(generationConfigId);
+  };
+
+  const activeGenerationConfigMismatchLabel = computed(() => {
+    const messageId = params.activeGenerationId.value;
+    if (!messageId) return '';
+    const message = (params.branch?.value || []).find((item) => item.id === messageId);
+    return generationConfigMismatchLabel(message);
+  });
 
   const currentBotId = computed(() => params.chat.value?.bot_id ?? null);
   const currentBotInfo = computed(() => {
@@ -157,6 +188,13 @@ export function useChatHeaderControls(params: Params) {
   const fileUploadPolicy = computed(() =>
     resolveChatUploadPolicy(currentBotInfo.value, currentConfig.value, params.artifactToolsAvailable.value)
   );
+  // The upload policy of this chat if it used another configuration (branch options).
+  const uploadPolicyForConfig = (configId: number) =>
+    resolveChatUploadPolicy(
+      currentBotInfo.value,
+      (params.llmConfigurations.value || []).find((config) => config.id === configId) || null,
+      params.artifactToolsAvailable.value
+    );
   const selectedDisabledConfigReason = computed<'disabled' | 'incompatible' | null>(() => {
     if (!selectedConfig.value) return null;
 
@@ -211,15 +249,63 @@ export function useChatHeaderControls(params: Params) {
     }
   };
 
+  // Snapshot taken before a chat read starts; null while a configuration write is in flight.
+  const configReadRevision = () => (isConfigSyncPending.value ? null : configWriteRevision);
+
+  const canApplyServerConfig = (readRevision: number | null | undefined) => {
+    if (isConfigSyncPending.value) return false;
+    return readRevision === undefined || readRevision === configWriteRevision;
+  };
+
+  // Keep the persisted chat value aligned with the confirmed local selection after
+  // a possibly stale read replaced the chat record.
+  const restoreConfirmedConfig = () => {
+    if (!params.chat.value) return;
+    const confirmed = selectedConfig.value === '' ? null : Number(selectedConfig.value);
+    if ((params.chat.value.llm_configuration_id ?? null) === confirmed) return;
+    params.chat.value = { ...params.chat.value, llm_configuration_id: confirmed };
+  };
+
+  // Drops any in-flight configuration write (for example, when the chat changes)
+  // so its late response cannot update the next chat.
+  const resetConfigState = (value: number | '' = '') => {
+    configSyncToken += 1;
+    selectedConfig.value = value;
+    configSyncStatus.value = 'synced';
+    configSyncError.value = '';
+    finishConfigSync();
+  };
+
+  // Applies a configuration the server already switched as part of another
+  // action (an in-chat branch). It counts as a confirmed write so an older chat
+  // read cannot roll it back; a pending local write keeps owning the selector.
+  const applyServerConfiguration = async (configId: number | null) => {
+    const chat = params.chat.value;
+    const unchanged =
+      (chat?.llm_configuration_id ?? null) === configId && selectedConfig.value === (configId ?? '');
+    if (unchanged) return;
+
+    configWriteRevision += 1;
+    if (chat) params.chat.value = { ...chat, llm_configuration_id: configId };
+    if (!isConfigSyncPending.value) selectedConfig.value = configId ?? '';
+    await params.refreshPromptContext();
+  };
+
   const hydrate = (payload: {
     selectedConfig?: number | '';
+    configReadRevision?: number | null;
     missingRequiredPerUserToolAliases?: string[];
   }) => {
     if (payload.selectedConfig !== undefined) {
-      selectedConfig.value = payload.selectedConfig;
-      configSyncStatus.value = 'synced';
-      configSyncError.value = '';
-      finishConfigSync();
+      if (canApplyServerConfig(payload.configReadRevision)) {
+        selectedConfig.value = payload.selectedConfig;
+        configSyncStatus.value = 'synced';
+        configSyncError.value = '';
+        finishConfigSync();
+      } else if (!isConfigSyncPending.value) {
+        restoreConfirmedConfig();
+      }
+      // A pending write owns the selection and settles it when the server responds.
     }
     if (payload.missingRequiredPerUserToolAliases !== undefined) {
       missingRequiredPerUserToolAliases.value =
@@ -373,14 +459,12 @@ export function useChatHeaderControls(params: Params) {
   const updateConfig = async () => {
     if (!params.canEdit.value) return;
     if (!params.chatId.value) return;
-    if (params.activeGenerationId.value) {
-      window.alert('Cannot change configuration while generating a response.');
-      selectedConfig.value = appliedConfig.value;
-      return;
-    }
     if (isConfigSyncPending.value) return;
 
+    // A running generation keeps its pinned configuration; the selection applies
+    // to the next message.
     const token = (configSyncToken += 1);
+    configWriteRevision += 1;
     configSyncStatus.value = 'pending';
     configSyncError.value = '';
     beginConfigSync();
@@ -459,15 +543,21 @@ export function useChatHeaderControls(params: Params) {
     appliedConfig,
     isConfigSyncPending,
     waitForConfigSync,
+    configReadRevision,
+    resetConfigState,
+    applyServerConfiguration,
     currentConfig,
     configLabel,
     messageConfigLabel,
+    generationConfigMismatchLabel,
+    activeGenerationConfigMismatchLabel,
     currentBotId,
     currentBotInfo,
     currentBotName,
     chatBaseTitle,
     chatFullTitle,
     fileUploadPolicy,
+    uploadPolicyForConfig,
     selectableConfigs,
     defaultConfig,
     regularSelectableConfigs,

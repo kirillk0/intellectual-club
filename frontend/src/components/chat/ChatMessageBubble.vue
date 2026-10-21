@@ -191,6 +191,16 @@
         </button>
       </div>
 
+      <div
+        v-if="generationConfigNoteText"
+        class="generation-config-note"
+        role="note"
+        :title="generationConfigNoteTitle"
+        data-i18n-ignore
+      >
+        <span class="generation-config-note__label">{{ generationConfigNoteText }}</span>
+      </div>
+
       <div class="message-footer">
         <div class="message-meta">
           <span class="message-number">#{{ index + 1 }}</span>
@@ -416,6 +426,8 @@ interface Props {
   readonly?: boolean;
   historyReadonly?: boolean;
   expectedHandoffEventKind?: HandoffSystemEventKind | null;
+  // Label of this generation's pinned configuration when it differs from the chat selection.
+  generationConfigMismatchLabel?: string;
   registerRef?: (el: HTMLElement | null) => void;
 }
 
@@ -439,6 +451,7 @@ const props = withDefaults(defineProps<Props>(), {
   deleteTitle: 'Delete',
   readonly: false,
   expectedHandoffEventKind: null,
+  generationConfigMismatchLabel: '',
 });
 
 const emit = defineEmits<{
@@ -525,6 +538,20 @@ const moreMenuButtonRef = ref<HTMLElement | null>(null);
 const moreMenuStyle = ref<Record<string, string>>({});
 const messageContentEl = ref<HTMLElement | null>(null);
 let enhanceMessageContentToken = 0;
+
+const generationConfigNoteText = computed(() => {
+  if (msg.value.status !== 'generating' || !props.generationConfigMismatchLabel) return '';
+  return translate('Generating with {label}', { label: props.generationConfigMismatchLabel });
+});
+
+const generationConfigNoteTitle = computed(() =>
+  generationConfigNoteText.value
+    ? translate(
+        'Current response is being generated with {label}. The selected configuration applies to the next message.',
+        { label: props.generationConfigMismatchLabel }
+      )
+    : undefined
+);
 
 const canRetry = computed(
   () =>
@@ -1073,6 +1100,29 @@ const handleMessageContentClick = async (event: MouseEvent) => {
   gap: 8px;
   width: 100%;
   min-width: 0;
+}
+
+.generation-config-note {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--color-warning-border);
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  cursor: help;
+}
+
+.generation-config-note__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message.handoff-system-event {

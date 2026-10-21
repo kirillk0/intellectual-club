@@ -34,6 +34,34 @@ defmodule IntellectualClub.Chat.UploadPolicy do
     from_chat(chat, artifact_tools_available: tool_resolution.artifact_tools_available)
   end
 
+  @doc """
+  Loads the policy a chat would have with `configuration_id` as its configuration.
+
+  Used for actions that switch configuration together with the message (branch
+  options). `nil` keeps the chat configuration. The configuration must be
+  readable by the actor.
+  """
+  @spec load_for_chat_configuration(integer(), integer() | nil, term()) ::
+          {:ok, t()} | {:error, :llm_configuration_not_accessible}
+  def load_for_chat_configuration(chat_id, nil, actor) when is_integer(chat_id),
+    do: {:ok, load_for_chat(chat_id, actor)}
+
+  def load_for_chat_configuration(chat_id, configuration_id, actor)
+      when is_integer(chat_id) and is_integer(configuration_id) do
+    case Ash.get(LlmConfiguration, configuration_id, actor: actor) do
+      {:ok, %LlmConfiguration{id: ^configuration_id} = configuration} ->
+        chat = Ash.get!(Chat, chat_id, actor: actor, load: [:bot], strict?: true)
+        tool_resolution = BindingResolver.resolve_for_chat(chat, actor)
+
+        chat = %{chat | llm_configuration_id: configuration.id, llm_configuration: configuration}
+
+        {:ok, from_chat(chat, artifact_tools_available: tool_resolution.artifact_tools_available)}
+
+      _unavailable ->
+        {:error, :llm_configuration_not_accessible}
+    end
+  end
+
   @spec from_chat(Chat.t(), keyword()) :: t()
   def from_chat(chat, opts \\ [])
 

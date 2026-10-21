@@ -152,6 +152,8 @@
           {{ attachmentDropHint }}
         </div>
 
+        <slot name="options" />
+
         <div class="modal-actions">
           <span v-if="errorText" class="error-text">{{ errorText }}</span>
           <div class="spacer"></div>

@@ -148,6 +148,28 @@ defmodule IntellectualClubWeb.Bff.ChatParams do
     |> maybe_put_generation_parent_id(raw_parent_id, parent_id, explicit_parent?)
   end
 
+  @doc """
+  Parses branch options: an optional target configuration and whether the
+  branch should immediately start a generation (defaults to true).
+  """
+  def branch_options(params) when is_map(params) do
+    start_generation? = Helpers.parse_boolean(Map.get(params, "start_generation"), true)
+
+    case Map.get(params, "llm_configuration_id") do
+      value when value in [nil, ""] ->
+        {:ok, %{llm_configuration_id: nil, start_generation?: start_generation?}}
+
+      value ->
+        case Helpers.parse_optional_integer(value) do
+          id when is_integer(id) and id > 0 ->
+            {:ok, %{llm_configuration_id: id, start_generation?: start_generation?}}
+
+          _invalid ->
+            {:error, "llm_configuration_id must be a positive integer."}
+        end
+    end
+  end
+
   def match_type(:meta), do: "meta"
   def match_type(:active_message), do: "active_message"
   def match_type(:inactive_message), do: "inactive_message"

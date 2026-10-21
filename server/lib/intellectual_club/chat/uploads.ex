@@ -47,9 +47,8 @@ defmodule IntellectualClub.Chat.Uploads do
       |> Map.get("size_bytes")
       |> normalize_integer()
 
-    policy = UploadPolicy.load_for_chat(chat_id, actor)
-
-    with size when is_integer(size) and size > 0 <- size_bytes,
+    with {:ok, policy} <- start_upload_policy(chat_id, attrs, actor),
+         size when is_integer(size) and size > 0 <- size_bytes,
          :ok <- UploadPolicy.validate_file_spec(filename, mime_type, size, policy),
          :ok <- ensure_upload_root() do
       expires_at = DateTime.add(DateTime.utc_now(), @default_ttl_seconds, :second)
@@ -88,6 +87,25 @@ defmodule IntellectualClub.Chat.Uploads do
       nil -> {:error, "size_bytes must be a positive integer."}
       {:error, reason} -> {:error, reason}
       _other -> {:error, "size_bytes must be a positive integer."}
+    end
+  end
+
+  # A message composed for another configuration (branch options) validates its
+  # files against that configuration instead of the chat's current one.
+  defp start_upload_policy(chat_id, attrs, actor) do
+    case Map.get(attrs, "llm_configuration_id") do
+      value when value in [nil, ""] ->
+        {:ok, UploadPolicy.load_for_chat(chat_id, actor)}
+
+      value ->
+        with configuration_id when is_integer(configuration_id) and configuration_id > 0 <-
+               normalize_integer(value),
+             {:ok, policy} <-
+               UploadPolicy.load_for_chat_configuration(chat_id, configuration_id, actor) do
+          {:ok, policy}
+        else
+          _invalid -> {:error, "Configuration is invalid or not accessible."}
+        end
     end
   end
 
@@ -130,11 +148,21 @@ defmodule IntellectualClub.Chat.Uploads do
     end
   end
 
-  @spec materialize_uploads(integer(), [String.t()], term()) ::
+  @doc """
+  Turns uploaded sessions into files.
+
+  With `policy:` every session is validated against it first: the policy used
+  when the upload started may differ from the one of the message that consumes
+  it (the chat or branch configuration may have changed since).
+  """
+  @spec materialize_uploads(integer(), [String.t()], term(), keyword()) ::
           {:ok, materialized_uploads()} | {:error, :not_found | String.t() | term()}
-  def materialize_uploads(chat_id, upload_ids, actor)
-      when is_integer(chat_id) and is_list(upload_ids) do
-    with {:ok, sessions} <- fetch_uploaded_sessions(chat_id, upload_ids, actor) do
+  def materialize_uploads(chat_id, upload_ids, actor, opts \\ [])
+
+  def materialize_uploads(chat_id, upload_ids, actor, opts)
+      when is_integer(chat_id) and is_list(upload_ids) and is_list(opts) do
+    with {:ok, sessions} <- fetch_uploaded_sessions(chat_id, upload_ids, actor),
+         :ok <- validate_sessions(sessions, Keyword.get(opts, :policy)) do
       Enum.reduce_while(sessions, {:ok, %{sessions: sessions, files: []}}, fn upload,
                                                                               {:ok, acc} ->
         with {:ok, file} <-
@@ -157,7 +185,24 @@ defmodule IntellectualClub.Chat.Uploads do
     end
   end
 
-  def materialize_uploads(_chat_id, _upload_ids, _actor), do: {:error, "Invalid upload ids."}
+  def materialize_uploads(_chat_id, _upload_ids, _actor, _opts),
+    do: {:error, "Invalid upload ids."}
+
+  defp validate_sessions(_sessions, nil), do: :ok
+
+  defp validate_sessions(sessions, policy) when is_map(policy) do
+    Enum.reduce_while(sessions, :ok, fn upload, :ok ->
+      case UploadPolicy.validate_file_spec(
+             upload.filename,
+             upload.mime_type,
+             upload.size_bytes,
+             policy
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
 
   @spec finalize_materialized_uploads(materialized_uploads()) :: :ok
   def finalize_materialized_uploads(%{sessions: sessions}) when is_list(sessions) do

@@ -42,7 +42,7 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
     copy_content_ids = Map.get(prepared, :copy_content_ids, [])
     legacy_uploads = Map.get(prepared, :legacy_uploads, [])
 
-    with {:ok, materialized} <- materialize_uploads(chat_id, upload_ids, actor) do
+    with {:ok, materialized} <- materialize_uploads(chat_id, upload_ids, actor, upload_policy) do
       case duplicate_copied_attachments(copy_content_ids, chat_id, actor) do
         {:ok, copied_file_ids} ->
           case persist_legacy_uploads(legacy_uploads, upload_policy) do
@@ -91,10 +91,11 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
     end
   end
 
-  defp materialize_uploads(_chat_id, [], _actor), do: {:ok, %{sessions: [], files: []}}
+  defp materialize_uploads(_chat_id, [], _actor, _upload_policy),
+    do: {:ok, %{sessions: [], files: []}}
 
-  defp materialize_uploads(chat_id, upload_ids, actor) do
-    Uploads.materialize_uploads(chat_id, upload_ids, actor)
+  defp materialize_uploads(chat_id, upload_ids, actor, upload_policy) do
+    Uploads.materialize_uploads(chat_id, upload_ids, actor, policy: upload_policy)
   end
 
   defp duplicate_copied_attachments([], _chat_id, _actor), do: {:ok, []}

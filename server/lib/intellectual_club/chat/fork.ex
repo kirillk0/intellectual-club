@@ -13,6 +13,7 @@ defmodule IntellectualClub.Chat.Fork do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.ChatSettingsCopy
   alias IntellectualClub.Chat.ForkBoundary
+  alias IntellectualClub.Chat.GenerationConfiguration
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
@@ -558,7 +559,19 @@ defmodule IntellectualClub.Chat.Fork do
     {raw_request, request_context, unavailable_functions} =
       prepare_fork_request(source_context, context, actor)
 
-    source_context = Map.put(source_context, :unavailable_functions, unavailable_functions)
+    # The parent chat selector may have moved on while this generation runs;
+    # the forked chat and its first turn keep the calling turn's configuration.
+    llm_configuration_id =
+      GenerationConfiguration.pinned_id(
+        source_context.source_message,
+        source_context.source,
+        actor
+      )
+
+    source_context =
+      source_context
+      |> Map.put(:unavailable_functions, unavailable_functions)
+      |> Map.put(:llm_configuration_id, llm_configuration_id)
 
     Subagent.with_invocation_authority(context, opts, fn ->
       Repo.transaction(fn ->
@@ -572,9 +585,7 @@ defmodule IntellectualClub.Chat.Fork do
             %{
               chat_id: chat.id,
               parent_id: nil,
-              llm_configuration_id:
-                source_context.source_message.llm_configuration_id ||
-                  source_context.source.llm_configuration_id,
+              llm_configuration_id: source_context.llm_configuration_id,
               token_count: 0
             },
             actor: actor
@@ -909,7 +920,7 @@ defmodule IntellectualClub.Chat.Fork do
       %{
         note: source_context.brief,
         bot_id: source.bot_id,
-        llm_configuration_id: source.llm_configuration_id,
+        llm_configuration_id: source_context.llm_configuration_id,
         parent_chat_id: source.id,
         parent_message_id: source_context.source_message.id,
         parent_tool_call_item_id: parent_tool_call_item_id,

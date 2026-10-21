@@ -155,10 +155,10 @@ it('opens the selected configuration editor from the first menu item', async () 
 });
 
 it('keeps only the editor reachable while switching is locked', async () => {
-  await wrapper.setProps({ disabled: true, title: 'Cannot change configuration while generating a response' });
+  await wrapper.setProps({ disabled: true, title: 'Shared chats are read-only' });
   await wrapper.get('button').trigger('click');
   expect(labels()).toEqual(['Edit configuration']);
-  expect(menu().get('[role="note"]').text()).toBe('Cannot change configuration while generating a response');
+  expect(menu().get('[role="note"]').text()).toBe('Shared chats are read-only');
   await menu().trigger('keydown', { key: 'c' });
   expect(menu().find('input').exists()).toBe(false);
   await menu().get('.config-select__item--action').trigger('click');

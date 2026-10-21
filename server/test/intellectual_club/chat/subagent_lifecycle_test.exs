@@ -519,6 +519,37 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
         assert GenerationSupervisor.get_generation_state(child.last_message.id) == :not_found
       end
 
+      test "#{primitive} child keeps the calling generation's configuration after the selector moves" do
+        primitive = unquote(primitive)
+        %{user: actor} = user_fixture()
+        pinned = create_configuration!(actor, model_name: "demo", context_length: nil)
+        selected = create_configuration!(actor, model_name: "demo", context_length: nil)
+
+        parent =
+          parent_for!(actor, primitive, "Keep the pinned configuration.",
+            chat: %{llm_configuration_id: pinned.id},
+            message: %{llm_configuration_id: pinned.id}
+          )
+
+        # The selector only applies to the next message; it may move mid-generation.
+        parent.chat
+        |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
+        |> Ash.update!(actor: actor)
+
+        assert {:ok, reference} =
+                 start_or_resume(primitive, parent, tool_call_context(parent, actor), actor)
+
+        completed = wait_for_status!(reference.generation_message_id, actor, [:done])
+        assert completed.error_detail == nil
+        assert completed.llm_configuration_id == pinned.id
+        assert Ash.get!(Chat, reference.chat_id, actor: actor).llm_configuration_id == pinned.id
+
+        if prompt_message_id = Map.get(reference, :prompt_message_id) do
+          assert Ash.get!(ChatMessage, prompt_message_id, actor: actor).llm_configuration_id ==
+                   pinned.id
+        end
+      end
+
       test "#{primitive} cannot prepare a child from a stale parent epoch" do
         primitive = unquote(primitive)
         %{user: actor} = user_fixture()
@@ -982,14 +1013,20 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
     )
   end
 
-  defp spawn_parent!(actor, brief, prompt) do
-    create_parent_call!(actor, :spawn, %{"brief" => brief, "prompt" => prompt},
-      user_prompt: "Spawn now"
+  defp spawn_parent!(actor, brief, prompt, opts \\ []) do
+    create_parent_call!(
+      actor,
+      :spawn,
+      %{"brief" => brief, "prompt" => prompt},
+      Keyword.put_new(opts, :user_prompt, "Spawn now")
     )
   end
 
-  defp parent_for!(actor, :fork, prompt), do: fork_parent!(actor, prompt)
-  defp parent_for!(actor, :spawn, prompt), do: spawn_parent!(actor, "Spawn summary", prompt)
+  defp parent_for!(actor, primitive, prompt, opts \\ [])
+  defp parent_for!(actor, :fork, prompt, opts), do: fork_parent!(actor, prompt, opts)
+
+  defp parent_for!(actor, :spawn, prompt, opts),
+    do: spawn_parent!(actor, "Spawn summary", prompt, opts)
 
   defp start_or_resume(primitive, parent, context, actor, opts \\ []) do
     module = if primitive == :fork, do: Fork, else: Spawn

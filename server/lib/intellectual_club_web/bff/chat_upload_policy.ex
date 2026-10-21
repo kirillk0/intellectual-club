@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.Bff.ChatUploadPolicy do
 
   defdelegate default_max_file_size_bytes(), to: UploadPolicy
   defdelegate load_for_chat(chat_id, actor), to: UploadPolicy
+  defdelegate load_for_chat_configuration(chat_id, configuration_id, actor), to: UploadPolicy
   defdelegate from_chat(chat), to: UploadPolicy
   defdelegate validate_upload(upload, policy), to: UploadPolicy
   defdelegate validate_file_spec(filename, mime_type, size, policy), to: UploadPolicy

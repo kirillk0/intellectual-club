@@ -577,6 +577,46 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
                |> Enum.map(& &1.id)
     end
 
+    test "handoff child keeps the calling generation's configuration after the selector moves" do
+      %{user: actor} = user_fixture()
+      pinned = create_configuration!(actor)
+      selected = create_configuration!(actor)
+      source = create_empty_chat!(actor, llm_configuration_id: pinned.id)
+      {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
+
+      {:ok, assistant} =
+        Threads.add_message(source, :assistant, "Working",
+          actor: actor,
+          parent_id: user_message.id,
+          llm_configuration_id: pinned.id
+        )
+
+      # The selector only applies to the next message; it may move mid-generation.
+      source
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
+
+      context = %ExecutionContext{
+        owner_id: actor.id,
+        chat_id: source.id,
+        message_id: assistant.id,
+        assistant_message_id: assistant.id,
+        tool_call_item_id: create_tool_call_item!(assistant, actor).id
+      }
+
+      assert {:ok, %ExecutionResult{raw: %{"handoff" => %{"chat_id" => target_id}}}} =
+               NativeAgentManagement.execute(
+                 tool_instance,
+                 "handoff",
+                 %{"summary" => "Continue with the same model."},
+                 context
+               )
+
+      assert Ash.get!(Chat, target_id, actor: actor).llm_configuration_id == pinned.id
+    end
+
     test "cancel after handoff tool execution leaves the source queue blocked and child idle" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)

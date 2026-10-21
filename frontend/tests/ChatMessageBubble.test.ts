@@ -638,3 +638,52 @@ describe('ChatMessageBubble fork timeline', () => {
     wrapper.unmount();
   });
 });
+
+describe('ChatMessageBubble generation configuration', () => {
+  const answer = (status: ChatBranchMessage['status']): ChatBranchMessage => ({
+    id: 12,
+    role: 'assistant',
+    status,
+    llm_configuration_id: 7,
+    content: { items: [], parts: [{ content_id: 1, sequence: 1, text: 'Partial', item_type: 'answer' }], media: [] },
+  });
+
+  afterEach(() => {
+    setPreferredLocale(null);
+  });
+
+  it('marks a generating answer that runs with a configuration other than the selected one', () => {
+    setPreferredLocale('en');
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message: answer('generating'), index: 0, generationConfigMismatchLabel: 'Model A' },
+    });
+
+    const note = wrapper.get('.generation-config-note');
+    expect(note.text()).toBe('Generating with Model A');
+    expect(note.attributes('title')).toBe(
+      'Current response is being generated with Model A. The selected configuration applies to the next message.'
+    );
+    wrapper.unmount();
+  });
+
+  it('localizes the generation configuration note', () => {
+    setPreferredLocale('ru');
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message: answer('generating'), index: 0, generationConfigMismatchLabel: 'Model A' },
+    });
+
+    expect(wrapper.get('.generation-config-note').text()).toBe('Генерируется с Model A');
+    wrapper.unmount();
+  });
+
+  it('omits the note without a mismatch or after the generation finishes', async () => {
+    const wrapper = mount(ChatMessageBubble, {
+      props: { message: answer('generating'), index: 0 },
+    });
+    expect(wrapper.find('.generation-config-note').exists()).toBe(false);
+
+    await wrapper.setProps({ message: answer('done'), generationConfigMismatchLabel: 'Model A' });
+    expect(wrapper.find('.generation-config-note').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

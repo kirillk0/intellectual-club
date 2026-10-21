@@ -85,3 +85,29 @@ it('shows only the actions available for the chat and bot', () => {
   expect(menu().find('.menu-divider').exists()).toBe(false);
   expect(menu().text()).toContain('No bot');
 });
+
+it('keeps the configuration selector available while a response is generating', async () => {
+  wrapper = mountToolbar({ isGenerating: true });
+  const trigger = wrapper.get('.config-select__trigger');
+
+  expect(trigger.attributes('disabled')).toBeUndefined();
+  expect(trigger.attributes('title')).toBe('Main model');
+  await trigger.trigger('click');
+  expect(body().findAll('.config-select__item').some((item) => item.text() === 'Main model')).toBe(true);
+});
+
+it('marks a running generation that uses a configuration other than the selected one', () => {
+  wrapper = mountToolbar({ isGenerating: true, generationConfigLabel: 'Previous model' });
+  const marker = wrapper.get('.config-generation-mismatch');
+  const explanation =
+    'Current response is being generated with Previous model. The selected configuration applies to the next message.';
+
+  expect(marker.text()).toBe('Previous model');
+  expect(marker.attributes('title')).toBe(explanation);
+  expect(marker.attributes('aria-label')).toBe(explanation);
+});
+
+it('hides the generation configuration marker when it matches the selection', () => {
+  wrapper = mountToolbar({ isGenerating: true });
+  expect(wrapper.find('.config-generation-mismatch').exists()).toBe(false);
+});

@@ -101,6 +101,33 @@ defmodule IntellectualClub.Chat.HandoffTest do
       assert chat_binding_settings!(actor, target) == settings
     end
 
+    test "manual handoff continuation follows the source chat's current configuration" do
+      %{user: actor} = user_fixture()
+      summarizing = create_configuration!(actor)
+      selected = create_configuration!(actor)
+      source = create_empty_chat!(actor, llm_configuration_id: summarizing.id)
+
+      {:ok, source_message} =
+        Threads.add_message_to_end(source, :user, "Current work", actor: actor)
+
+      {:ok, summary} =
+        Threads.add_message(source, :assistant, "Handoff summary",
+          actor: actor,
+          parent_id: source_message.id,
+          llm_configuration_id: summarizing.id
+        )
+
+      # The continuation waits for the user's next message, which uses the selector.
+      source
+      |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
+      |> Ash.update!(actor: actor)
+
+      assert {:ok, %{chat: target, generation: nil}} =
+               Handoff.complete_manual_generation(summary.id, actor)
+
+      assert target.llm_configuration_id == selected.id
+    end
+
     test "manual handoff completion accepts a legacy answer item" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)

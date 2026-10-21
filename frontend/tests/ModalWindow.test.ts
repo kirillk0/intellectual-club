@@ -70,3 +70,29 @@ describe('ModalWindow document scroll lock', () => {
     expect(window.scrollTo).toHaveBeenCalledWith(12, 345);
   });
 });
+
+describe('ModalWindow keyboard shortcuts', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('ignores Enter from teleported controls that opt out of modal shortcuts', async () => {
+    const wrapper = mount(ModalWindow, {
+      attachTo: document.body,
+      props: { open: true, submitShortcut: 'auto' },
+      slots: { default: '<p>Modal content</p>' },
+    });
+    const floatingMenu = document.createElement('div');
+    floatingMenu.setAttribute('data-modal-shortcut-ignore', '');
+    const menuItem = document.createElement('span');
+    floatingMenu.append(menuItem);
+    document.body.append(floatingMenu);
+
+    menuItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(wrapper.emitted('submit')).toBeUndefined();
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(wrapper.emitted('submit')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});

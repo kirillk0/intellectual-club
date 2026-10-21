@@ -311,6 +311,7 @@ export function useChatViewModel() {
     llmConfigurations,
     artifactToolsAvailable,
     activeGenerationId,
+    branch,
     menuOpen: ui.menuOpen,
     deleting: ui.deleting,
     toggleMenu: ui.toggleMenu,
@@ -436,6 +437,8 @@ export function useChatViewModel() {
       await navigateToChat(id);
     },
     afterBranchSwitched: contextPanel.rerunBranchSearch,
+    applyServerConfiguration: headerControls.applyServerConfiguration,
+    uploadPolicyForConfig: headerControls.uploadPolicyForConfig,
   });
 
   getOpenWorkingPollRequest = messageActions.getOpenWorkingPollRequest;
@@ -455,6 +458,7 @@ export function useChatViewModel() {
     removePendingFileFromCollection: composerRuntime.removePendingFileFromCollection,
     clearPendingFilesCollection: composerRuntime.clearPendingFilesCollection,
     refreshChat: () => loadChatSafe({ mode: 'soft', includeSettings: false }),
+    waitForConfigSync: headerControls.waitForConfigSync,
   });
 
   const inspectors = useChatInspectors({
@@ -548,8 +552,8 @@ export function useChatViewModel() {
     artifactToolsAvailable.value = false;
     chatBlockCount.value = 0;
     chatToolCount.value = 0;
+    headerControls.resetConfigState();
     headerControls.hydrate({
-      selectedConfig: '',
       missingRequiredPerUserToolAliases: [],
     });
     contextPanel.hydrate({
@@ -672,6 +676,7 @@ export function useChatViewModel() {
       chatToolCount.value = 0;
     }
 
+    const configReadRevision = headerControls.configReadRevision();
     loadError.value = '';
     chatUnavailable.value = false;
 
@@ -718,6 +723,7 @@ export function useChatViewModel() {
       chat.value = payload.chat;
       headerControls.hydrate({
         selectedConfig: payload.chat?.llm_configuration_id ?? '',
+        configReadRevision,
       });
       chatNote.value = payload.chat?.note || '';
       branch.value = payload.branch || [];
@@ -1170,6 +1176,8 @@ export function useChatViewModel() {
     selectedDisabledConfig: headerControls.selectedDisabledConfig,
     selectedDisabledConfigReason: headerControls.selectedDisabledConfigReason,
     configLabel: headerControls.configLabel,
+    generationConfigMismatchLabel: headerControls.generationConfigMismatchLabel,
+    activeGenerationConfigMismatchLabel: headerControls.activeGenerationConfigMismatchLabel,
     menuOpen: ui.menuOpen,
     menuStyle: ui.menuStyle,
     currentBotId: headerControls.currentBotId,
@@ -1317,6 +1325,12 @@ export function useChatViewModel() {
     deliverQueuedSteeringNow: queueRuntime.deliverNow,
     editingMessage: messageActions.editingMessage,
     modalMode: messageActions.modalMode,
+    branchConfigId: messageActions.branchConfigId,
+    branchStartGeneration: messageActions.branchStartGeneration,
+    editModalAttachmentsEnabled: messageActions.editAttachmentsEnabled,
+    editModalAttachmentAccept: messageActions.editAttachmentAccept,
+    editModalAttachmentHelp: messageActions.editAttachmentHelp,
+    editModalError: messageActions.editErrorText,
     editContents: messageActions.editContents,
     editExistingAttachments: messageActions.editExistingAttachments,
     editPendingFiles: messageActions.editPendingFiles,

@@ -196,7 +196,6 @@ export const ruMessages: Record<string, string> = {
   'Configurations: {count}': 'Конфигурации: {count}',
   'Configure tools': 'Настроить инструменты',
   'Cannot handoff while generating or syncing configuration': 'Нельзя выполнить передачу во время генерации или синхронизации конфигурации',
-  'Cannot change configuration while generating a response': 'Нельзя менять конфигурацию во время генерации ответа',
   'Chat actions': 'Действия с чатом',
   'Chat continuations': 'Продолжения чата',
   'Continuation': 'Продолжение',
@@ -920,7 +919,6 @@ export const ruMessages: Record<string, string> = {
   'This tool is read-only. Duplicate it to create an editable copy.': 'Этот инструмент доступен только для чтения. Дублируйте его, чтобы создать редактируемую копию.',
   'This tool provides fixed functions and does not use discovery.': 'Этот инструмент предоставляет фиксированные функции и не использует обнаружение.',
   'This tool type does not require credentials.': 'Этот тип инструмента не требует учетных данных.',
-  'Cannot change configuration while generating a response.': 'Нельзя менять конфигурацию во время генерации ответа.',
   'Configuration change is still syncing. Please wait before starting a new generation.': 'Изменение конфигурации еще синхронизируется. Подождите перед запуском новой генерации.',
   'Time to first token': 'Время до первого токена',
   "Web Search & Fetch": "Поиск и чтение веб-страниц",
@@ -1114,7 +1112,21 @@ export const ruMessages: Record<string, string> = {
   'Your unsaved changes were kept.': 'Несохраненные изменения сохранены в форме.',
   'Zoom in': 'Увеличить',
   'Zoom out': 'Уменьшить',
-  'XHigh': 'Сверхвысокое'
+  'XHigh': 'Сверхвысокое',
+  'Branch options': 'Параметры ветки',
+  'Configuration is invalid or not accessible.': 'Конфигурация указана неверно или недоступна.',
+  'Current response is being generated with {label}. The selected configuration applies to the next message.':
+    'Текущий ответ генерируется с {label}. Выбранная конфигурация будет использована для следующего сообщения.',
+  'Generating with {label}': 'Генерируется с {label}',
+  'Start generation': 'Запустить генерацию',
+  'The branch is created without a response. Press Continue to generate it.':
+    'Ветка будет создана без ответа. Чтобы сгенерировать его, нажмите «Продолжить».',
+  'The new chat opens without a response, so you can adjust its settings first. Press Continue to generate it.':
+    'Новый чат откроется без ответа, чтобы сначала можно было его настроить. Чтобы сгенерировать ответ, нажмите «Продолжить».',
+  'This chat will switch to the selected configuration.':
+    'Чат переключится на выбранную конфигурацию.',
+  'File uploads are disabled for the current bot and configuration.':
+    'Загрузка файлов отключена для текущего бота и конфигурации.'
 };
 
 export const messages = {

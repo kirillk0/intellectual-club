@@ -27,6 +27,7 @@
         :config-sync-error="vm.configSyncError"
         :configuration-options-ready="vm.chatSettingsReady"
         :is-generating="Boolean(vm.activeGenerationId)"
+        :generation-config-label="vm.activeGenerationConfigMismatchLabel"
         :menu-open="vm.menuOpen"
         :menu-style="vm.menuStyle"
         :current-bot-id="vm.currentBotId"
@@ -172,6 +173,7 @@
                 :can-delete="vm.canDeleteMessage(msg, idx)"
                 :delete-title="vm.deleteMessageTitle(msg, idx)"
                 :expected-handoff-event-kind="expectedHandoffEventKind(msg)"
+                :generation-config-mismatch-label="vm.generationConfigMismatchLabel(msg)"
                 :register-ref="(el) => vm.setMessageRef(msg.id, el)"
                 @toggle-working="vm.toggleWorking(msg.id)"
                 @working-step-select="(stepId) => vm.selectWorkingStep(msg.id, stepId)"
@@ -551,10 +553,10 @@
         v-model="vm.editContents"
         :existing-attachments="vm.editExistingAttachments"
         :pending-files="vm.editPendingFiles"
-        :error="vm.editError"
-        :attachments-enabled="vm.canAttachFiles"
-        :attachment-accept="vm.fileInputAccept"
-        :attachment-help="vm.editAttachmentHelp"
+        :error="vm.editModalError"
+        :attachments-enabled="vm.editModalAttachmentsEnabled"
+        :attachment-accept="vm.editModalAttachmentAccept"
+        :attachment-help="vm.editModalAttachmentHelp"
         :saving="vm.savingEdit"
         :save-label="vm.editSaveLabel"
         @cancel="vm.cancelEdit"
@@ -564,8 +566,24 @@
         @preview-existing-attachment="vm.openExistingAttachmentPreview"
         @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'edit')"
         @save="vm.saveEdit"
-      />
+      >
+        <template v-if="vm.modalMode !== 'edit'" #options>
+          <ChatBranchOptions
+            v-model:config-id="vm.branchConfigId"
+            v-model:start-generation="vm.branchStartGeneration"
+            :new-chat="vm.modalMode === 'branch_new_chat'"
+            :current-config-id="vm.selectedConfig"
+            :disabled="vm.savingEdit"
+            :selectable-configs="vm.selectableConfigs"
+            :default-config="vm.defaultConfig"
+            :regular-selectable-configs="vm.regularSelectableConfigs"
+            :more-configs="vm.moreConfigs"
+            :config-label="vm.configLabel"
+          />
+        </template>
+      </ChatEditMessageModal>
     </Teleport>
+
 
     <Teleport to="body">
       <ChatEditMessageModal
@@ -816,6 +834,7 @@ import ChatQueuedMessagesPanel from '@/components/chat/ChatQueuedMessagesPanel.v
 import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
+import ChatBranchOptions from '@/features/chat/components/ChatBranchOptions.vue';
 import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOverlay.vue';
 import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue';
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';
@@ -1991,6 +2010,7 @@ onBeforeUnmount(() => {
   .chat-page .copy-hint,
   .chat-page .retry-link,
   .chat-page .typing-indicator,
+  .chat-page .generation-config-note,
   .chat-page .code-copy-button {
     display: none !important;
   }
