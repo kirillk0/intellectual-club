@@ -166,6 +166,119 @@ defmodule IntellectualClub.Llm.LlmUsageRecordTest do
     end
   end
 
+  describe "deleted live references" do
+    test "deleting the provider preserves its identity and billing snapshots", f do
+      provider = create_provider!(f.owner)
+
+      record =
+        f.attrs
+        |> Map.merge(%{
+          provider_id: provider.id,
+          provider_id_snapshot: provider.id,
+          provider_name_snapshot: provider.name,
+          provider_type_snapshot: provider.type
+        })
+        |> create!(f.consumer)
+
+      assert :ok =
+               provider
+               |> Ash.Changeset.for_destroy(:destroy, %{}, actor: f.owner)
+               |> Ash.destroy(actor: f.owner)
+
+      persisted = Ash.get!(LlmUsageRecord, record.id, actor: f.consumer)
+      assert persisted.provider_id == nil
+      assert persisted.usage_user_id == f.consumer.id
+      assert persisted.configuration_owner_id == f.owner.id
+      assert_snapshot_unchanged(record, persisted)
+    end
+
+    for {reference, deleted_actor, surviving_actor} <- [
+          {:usage_user_id, :consumer, :owner},
+          {:configuration_owner_id, :owner, :consumer}
+        ] do
+      @reference reference
+      @deleted_actor deleted_actor
+      @surviving_actor surviving_actor
+
+      test "deleting #{@deleted_actor} clears #{@reference} without losing historical access",
+           f do
+        record = create!(f.attrs, f.consumer)
+        deleted_user = Map.fetch!(f, @deleted_actor)
+        reader = Map.fetch!(f, @surviving_actor)
+
+        assert :ok =
+                 deleted_user
+                 |> Ash.Changeset.for_destroy(:destroy, %{}, actor: f.admin)
+                 |> Ash.destroy(actor: f.admin)
+
+        persisted = Ash.get!(LlmUsageRecord, record.id, actor: reader)
+        assert Map.fetch!(persisted, @reference) == nil
+        assert_snapshot_unchanged(record, persisted)
+        assert {:error, _} = Ash.get(LlmUsageRecord, record.id, actor: f.outsider)
+      end
+    end
+
+    for {target, detached} <- [
+          {:step, [:chat_message_step_id]},
+          {:message, [:chat_message_id, :chat_message_step_id]},
+          {:chat, [:chat_id, :chat_message_id, :chat_message_step_id]}
+        ] do
+      @target target
+      @detached detached
+
+      test "deleting #{@target} preserves usage and detaches only deleted trace references", f do
+        anchor = create_tool_call_anchor!(f.consumer)
+
+        record =
+          create_usage_record!(f.consumer, anchor, %{
+            configuration_owner_id: f.owner.id,
+            configuration_owner_id_snapshot: f.owner.id
+          })
+
+        assert :ok =
+                 anchor
+                 |> Map.fetch!(@target)
+                 |> Ash.Changeset.for_destroy(:destroy, %{}, actor: f.consumer)
+                 |> Ash.destroy(actor: f.consumer)
+
+        persisted = Ash.get!(LlmUsageRecord, record.id, actor: f.owner)
+
+        for reference <- [:chat_id, :chat_message_id, :chat_message_step_id] do
+          if reference in @detached do
+            assert Map.fetch!(persisted, reference) == nil
+          else
+            assert Map.fetch!(persisted, reference) == Map.fetch!(record, reference)
+          end
+        end
+
+        assert persisted.usage_user_id == f.consumer.id
+        assert persisted.configuration_owner_id == f.owner.id
+        assert_snapshot_unchanged(record, persisted)
+      end
+    end
+  end
+
+  defp assert_snapshot_unchanged(before, after_deletion) do
+    mutable_fields = [
+      :usage_user_id,
+      :configuration_owner_id,
+      :llm_configuration_id,
+      :provider_id,
+      :chat_id,
+      :chat_message_id,
+      :chat_message_step_id,
+      :updated_at
+    ]
+
+    immutable_fields =
+      LlmUsageRecord
+      |> Ash.Resource.Info.attributes()
+      |> Enum.map(& &1.name)
+      |> Enum.reject(&(&1 in mutable_fields))
+
+    assert Map.take(after_deletion, immutable_fields) == Map.take(before, immutable_fields)
+  end
+
   defp create(attrs, actor) do
     LlmUsageRecord
     |> Ash.Changeset.for_create(:create, attrs, actor: actor)

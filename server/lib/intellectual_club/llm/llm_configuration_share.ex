@@ -15,6 +15,10 @@ defmodule IntellectualClub.Llm.LlmConfigurationShare do
     table("llm_configuration_shares")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:llm_configuration, on_delete: :delete)
+    end
+
     custom_indexes do
       index([:llm_configuration_id], name: "llm_configuration_shares_llm_configuration_id_index")
       index([:user_group_id], name: "llm_configuration_shares_user_group_id_index")

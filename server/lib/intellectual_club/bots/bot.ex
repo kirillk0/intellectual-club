@@ -109,6 +109,10 @@ defmodule IntellectualClub.Bots.Bot do
     table("bots")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:default_llm_configuration, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:image_file_id], name: "bots_image_file_id_index")
       index([:default_llm_configuration_id], name: "bots_default_llm_configuration_id_index")

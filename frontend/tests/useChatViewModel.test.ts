@@ -161,6 +161,32 @@ describe('useChatViewModel loading', () => {
     vi.useRealTimers();
   });
 
+  it('shows historical configuration labels in message metadata and search hits after deletion', async () => {
+    const state = chatState(1, 7);
+    state.branch = [{
+      id: 31, role: 'assistant', status: 'done',
+      llm_configuration_id: null, llm_configuration_label_snapshot: 'Original Model',
+    }];
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) {
+        return Promise.resolve(chatSettings([{ id: 7, label: 'Renamed Model', enabled: true }]));
+      }
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(state);
+      return Promise.resolve(undefined);
+    });
+    const { viewModel } = await mountViewModel();
+    await flushPromises();
+    const message = viewModel.branch.value[0]!;
+
+    expect(viewModel.messageMetaLabel(message)).toBe('Original Model');
+    expect(viewModel.searchHitMeta({ ...message, content: 'Answer' })).toBe('Original Model');
+    expect(viewModel.messageMetaLabel({ ...message, llm_configuration_id: 7 })).toBe('Original Model');
+    expect(viewModel.messageMetaLabel({
+      ...message, llm_configuration_id: 7, llm_configuration_label_snapshot: null,
+    })).toBe('Renamed Model');
+    expect(viewModel.messageMetaLabel({ ...message, role: 'user' })).toBe('User');
+  });
+
   it.each(['reopen', 'load-first', 'poll-first', 'stale-projection'] as const)(
     'synchronizes independently loaded working details with the body cursor (%s)',
     async (race) => {

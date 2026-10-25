@@ -64,6 +64,7 @@ const createActions = (
     selectedConfig?: number | '';
     chatUploadPolicy?: ChatUploadPolicy;
     uploadPolicyForConfig?: (configId: number) => ChatUploadPolicy;
+    messageConfigLabel?: (configId?: number | null, snapshot?: string | null) => string;
   } = {}
 ) => {
   const branch = ref<ChatBranchMessage[]>([userMessage, assistantMessage]);
@@ -81,7 +82,7 @@ const createActions = (
     fileUploadPolicy: computed(() => overrides.chatUploadPolicy ?? anyFiles),
     uploadPolicyForConfig: overrides.uploadPolicyForConfig,
     waitForConfigSync: async () => true,
-    messageConfigLabel: () => '',
+    messageConfigLabel: overrides.messageConfigLabel ?? (() => ''),
     startPolling,
     scrollToLastMessage,
     ensurePendingFilesUploaded,
@@ -106,6 +107,17 @@ describe('chat message branch options', () => {
   beforeEach(() => {
     apiMocks.post.mockReset();
     publishChatChange.mockReset();
+  });
+
+  it('uses the configuration snapshot in the retry warning without changing its selection', () => {
+    const messageConfigLabel = vi.fn((id?: number | null, snapshot?: string | null) => snapshot || `Config #${id}`);
+    const { actions } = createActions({ selectedConfig: 9, messageConfigLabel });
+    const message = { ...assistantMessage, llm_configuration_label_snapshot: 'Original Model' };
+
+    expect(actions.retryConfigurationWarning(message)).toContain('(Original Model)');
+    expect(actions.retryConfigurationWarning(message)).toContain('(Config #9)');
+    expect(messageConfigLabel).toHaveBeenCalledWith(7, 'Original Model');
+    expect(actions.retryConfigurationWarning({ ...message, llm_configuration_id: null })).toBe('');
   });
 
   it('branches an assistant response in place immediately without branch options', async () => {

@@ -17,6 +17,10 @@ defmodule IntellectualClub.Chat.ChatShare do
     table("chat_shares")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:llm_configuration, on_delete: :delete)
+    end
+
     custom_indexes do
       index([:chat_id], name: "chat_shares_chat_id_index")
       index([:user_group_id], name: "chat_shares_user_group_id_index")

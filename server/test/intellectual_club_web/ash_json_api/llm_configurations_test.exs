@@ -216,6 +216,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTest do
         actor
       )
 
+      bot = create_bot!(actor, default_llm_configuration_id: configuration.id)
       chat = create_chat!(actor, llm_configuration_id: configuration.id)
       message = create_message!(actor, chat, llm_configuration_id: configuration.id)
 
@@ -228,7 +229,94 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmConfigurationsTest do
              |> Ash.read!(actor: actor) == []
 
       assert Ash.get!(Chat, chat.id, actor: actor).llm_configuration_id == nil
-      assert Ash.get!(ChatMessage, message.id, actor: actor).llm_configuration_id == nil
+      persisted_message = Ash.get!(ChatMessage, message.id, actor: actor)
+      assert persisted_message.llm_configuration_id == nil
+      assert persisted_message.llm_configuration_label_snapshot == "demo-model (cfg)"
+
+      assert Ash.get!(IntellectualClub.Bots.Bot, bot.id, actor: actor).default_llm_configuration_id ==
+               nil
+    end
+  end
+
+  describe "deleting shared configurations" do
+    test "revokes dependent chat shares without deleting the shared chat" do
+      %{user: owner} = user_fixture()
+      %{user: consumer} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, consumer]})
+      configuration = create_configuration!(owner)
+      share = share_configuration!(owner, configuration, group)
+      bot = create_bot!(owner)
+      share_bot!(owner, bot, group)
+      chat = create_chat!(consumer, bot_id: bot.id, llm_configuration_id: configuration.id)
+      chat_share = share_chat!(consumer, chat, group)
+      Ash.destroy!(configuration, actor: owner)
+      assert_not_found(IntellectualClub.Llm.LlmConfigurationShare, share.id, actor: owner)
+      assert_not_found(IntellectualClub.Chat.ChatShare, chat_share.id, actor: consumer)
+      assert Ash.get!(Chat, chat.id, actor: consumer).llm_configuration_id == nil
+    end
+
+    test "only the owner can delete and all consumers keep messages and immutable usage" do
+      %{user: owner} = owner_fixture = user_fixture()
+      %{user: consumer} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, consumer]})
+      configuration = create_configuration!(owner, model_name: "original", note: " shared ")
+      share_configuration!(owner, configuration, group)
+
+      anchors =
+        for actor <- [owner, consumer] do
+          chat = create_chat!(actor, llm_configuration_id: configuration.id)
+
+          anchor =
+            create_tool_call_anchor!(actor,
+              chat: chat,
+              message: %{llm_configuration_id: configuration.id}
+            )
+
+          record =
+            create_usage_record!(actor, anchor, %{
+              llm_configuration_id: configuration.id,
+              llm_configuration_id_snapshot: configuration.id,
+              llm_configuration_external_id_snapshot: configuration.external_id,
+              llm_configuration_label_snapshot: "original (shared)",
+              configuration_owner_id: owner.id,
+              configuration_owner_id_snapshot: owner.id
+            })
+
+          {actor, anchor, record}
+        end
+
+      assert {:error, %Ash.Error.Forbidden{}} =
+               configuration
+               |> Ash.Changeset.for_destroy(:destroy, %{}, actor: consumer)
+               |> Ash.destroy(actor: consumer)
+
+      for {actor, anchor, _record} <- anchors do
+        assert Ash.get!(ChatMessage, anchor.message.id, actor: actor).llm_configuration_id ==
+                 configuration.id
+      end
+
+      configuration
+      |> Ash.Changeset.for_update(:update, %{model_name: "renamed", note: "new"}, actor: owner)
+      |> Ash.update!()
+
+      delete!(owner_fixture, "/api/ash/llm-configurations/#{configuration.id}")
+      assert_not_found(LlmConfiguration, configuration.id, actor: owner)
+
+      for {actor, anchor, record} <- anchors do
+        assert Ash.get!(Chat, anchor.chat.id, actor: actor).llm_configuration_id == nil
+        message = Ash.get!(ChatMessage, anchor.message.id, actor: actor)
+        assert message.llm_configuration_id == nil
+        assert message.llm_configuration_label_snapshot == "original (shared)"
+        usage = Ash.get!(IntellectualClub.Llm.LlmUsageRecord, record.id, actor: actor)
+        assert usage.llm_configuration_id == nil
+        assert usage.llm_configuration_id_snapshot == configuration.id
+        assert usage.llm_configuration_label_snapshot == "original (shared)"
+        assert usage.cost == record.cost
+        assert usage.chat_message_id == message.id
+
+        assert Ash.get!(IntellectualClub.Llm.LlmUsageRecord, record.id, actor: owner).cost ==
+                 record.cost
+      end
     end
   end
 

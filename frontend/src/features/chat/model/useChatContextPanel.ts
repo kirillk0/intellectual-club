@@ -30,7 +30,7 @@ type Params = {
   currentBotInfo: ComputedRef<Bot | null>;
   isMobile: Ref<boolean>;
   leftOpen: Ref<boolean>;
-  messageConfigLabel: (configId?: number | null) => string;
+  messageConfigLabel: (configId?: number | null, snapshot?: string | null) => string;
   routeFullPath: () => string;
   routeQuery: () => Record<string, unknown>;
   replaceRouteQuery: (query: Record<string, any>) => Promise<void>;
@@ -247,7 +247,9 @@ export function useChatContextPanel(params: Params) {
 
   const searchHitMeta = (hit: ChatMessageSearchHit) => {
     const time = formatRelativeDateTime(displayTimestampIso(hit));
-    const cfgLabel = hit.role === 'assistant' ? params.messageConfigLabel(hit.llm_configuration_id ?? null) : '';
+    const cfgLabel = hit.role === 'assistant'
+      ? params.messageConfigLabel(hit.llm_configuration_id, hit.llm_configuration_label_snapshot)
+      : '';
     if (time && cfgLabel) return `${time} (${cfgLabel})`;
     if (time) return time;
     if (cfgLabel) return cfgLabel;
@@ -292,7 +294,9 @@ export function useChatContextPanel(params: Params) {
 
   const messageMetaLabel = (msg: ChatBranchMessage) => {
     const time = formatRelativeDateTime(displayTimestampIso(msg));
-    const cfgLabel = msg.role === 'assistant' ? params.messageConfigLabel(msg.llm_configuration_id) : '';
+    const cfgLabel = msg.role === 'assistant'
+      ? params.messageConfigLabel(msg.llm_configuration_id, msg.llm_configuration_label_snapshot)
+      : '';
     if (time && cfgLabel) return `${time} (${cfgLabel})`;
     if (time) return time;
     if (cfgLabel) return cfgLabel;

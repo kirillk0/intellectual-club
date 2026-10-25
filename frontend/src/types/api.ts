@@ -412,6 +412,7 @@ export type ChatBranchMessage = {
   created_at?: string | null;
   finished_at?: string | null;
   llm_configuration_id?: number | null;
+  llm_configuration_label_snapshot?: string | null;
   content?: ChatMessageContentSnapshot | null;
   usage?: ChatMessageUsage | null;
   working?: ChatMessageWorkingSummary | null;
@@ -494,6 +495,7 @@ export type ChatExportMessage = {
   created_at?: string | null;
   finished_at?: string | null;
   llm_configuration?: { label: string; tags: string[] } | null;
+  llm_configuration_label_snapshot?: string | null;
   usage?: ChatMessageUsage | null;
   content: ChatExportContentItem[];
   working_steps: ChatExportWorkingStep[];

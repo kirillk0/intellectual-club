@@ -15,6 +15,16 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
     table("llm_usage_records")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:usage_user, on_delete: :nilify)
+      reference(:configuration_owner, on_delete: :nilify)
+      reference(:llm_configuration, on_delete: :nilify)
+      reference(:provider, on_delete: :nilify)
+      reference(:chat, on_delete: :nilify)
+      reference(:chat_message, on_delete: :nilify)
+      reference(:chat_message_step, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:chat_id], name: "llm_usage_records_chat_id_index")
 

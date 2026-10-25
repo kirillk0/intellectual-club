@@ -14,6 +14,25 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   alias IntellectualClubWeb.Bff.Serializer
 
   describe "message and relation payloads" do
+    test "both message payloads expose historical labels without a configuration" do
+      message = %ChatMessage{
+        id: 1,
+        role: :assistant,
+        status: :done,
+        llm_configuration_id: nil,
+        llm_configuration_label_snapshot: "original (deleted)",
+        steps: []
+      }
+
+      for payload <- [
+            Serializer.branch_message(message),
+            Serializer.branch_message_light(message)
+          ] do
+        assert payload.llm_configuration_id == nil
+        assert payload.llm_configuration_label_snapshot == "original (deleted)"
+      end
+    end
+
     test "chat_relation_summary serializes spawn kind and the loaded last message status" do
       serialized =
         Serializer.chat_relation_summary(%Chat{

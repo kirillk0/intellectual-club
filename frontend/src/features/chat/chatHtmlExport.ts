@@ -266,7 +266,8 @@ const renderMessage = (
 ) => {
   const author = message.role === 'user' ? labels.user : labels.assistant;
   const incomplete = message.status === 'generating';
-  const meta = [formatDate(message.created_at, locale), message.llm_configuration?.label].filter(Boolean).join(' · ');
+  const configurationLabel = message.llm_configuration_label_snapshot?.trim() || message.llm_configuration?.label;
+  const meta = [formatDate(message.created_at, locale), configurationLabel].filter(Boolean).join(' · ');
   const children = childChats
     .map(
       (child) =>

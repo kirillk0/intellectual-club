@@ -187,6 +187,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
       :role,
       :parent_id,
       :llm_configuration_id,
+      :llm_configuration_label_snapshot,
       :status,
       :error_detail,
       :token_count,
@@ -268,6 +269,10 @@ defmodule IntellectualClub.Chat.MessageTreeCopy do
         token_count: message.token_count || 0
       },
       actor: actor
+    )
+    |> Ash.Changeset.force_change_attribute(
+      :llm_configuration_label_snapshot,
+      message.llm_configuration_label_snapshot
     )
     |> Ash.create!()
   end

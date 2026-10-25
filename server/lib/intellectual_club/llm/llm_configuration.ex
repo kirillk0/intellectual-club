@@ -8,7 +8,6 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
     extensions: [AshJsonApi.Resource],
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Llm.Changes.DeleteLlmConfigurationDependents
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmConfigurationTagBinding
   alias IntellectualClub.Llm.Validations.CompleteManualPricing
@@ -244,7 +243,6 @@ defmodule IntellectualClub.Llm.LlmConfiguration do
       primary?(true)
       require_atomic?(false)
       change(cascade_destroy(:tag_bindings, after_action?: false))
-      change({DeleteLlmConfigurationDependents, []})
     end
 
     create :create do

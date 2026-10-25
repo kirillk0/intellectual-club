@@ -116,6 +116,20 @@ defmodule IntellectualClubWeb.Bff.LlmUsageControllerTest do
     [recipient_row] = recipient_payload["rows"]
     refute Map.has_key?(recipient_row["cells"], Integer.to_string(other_user.id))
     assert recipient_row["cells"][Integer.to_string(recipient.id)]["step_count"] == 3
+
+    Ash.destroy!(configuration, actor: owner)
+
+    deleted_payload =
+      build_conn()
+      |> sign_in_conn(owner.username, owner_password)
+      |> get("/api/bff/llm-usage?from=2026-04-24&to=2026-04-24")
+      |> json_response(200)
+
+    [historical_row] = deleted_payload["rows"]
+    assert historical_row["deleted"] == true
+    assert historical_row["configuration_id"] == nil
+    assert historical_row["label"] == "usage-model (cfg)"
+    assert historical_row["cells"] == owner_row["cells"]
   end
 
   defp create_usage_record!(attrs) do

@@ -84,7 +84,8 @@ export function useChatHeaderControls(params: Params) {
     return `${prefix}${cfg.label || `Config #${cfg.id}`}`;
   };
 
-  const messageConfigLabel = (configId?: number | null) => {
+  const messageConfigLabel = (configId?: number | null, snapshot?: string | null) => {
+    if (snapshot?.trim()) return snapshot;
     if (!configId) return '';
     const cfg = (params.llmConfigurations.value || []).find((item) => item.id === configId);
     return cfg ? configLabel(cfg) : `Config #${configId}`;
@@ -106,8 +107,8 @@ export function useChatHeaderControls(params: Params) {
   const generationConfigMismatchLabel = (message: ChatBranchMessage | null | undefined) => {
     if (!message || message.role !== 'assistant' || message.status !== 'generating') return '';
     const generationConfigId = positiveConfigId(message.llm_configuration_id);
-    if (!generationConfigId || generationConfigId === nextGenerationConfigId.value) return '';
-    return messageConfigLabel(generationConfigId);
+    if (generationConfigId && generationConfigId === nextGenerationConfigId.value) return '';
+    return messageConfigLabel(generationConfigId, message.llm_configuration_label_snapshot);
   };
 
   const activeGenerationConfigMismatchLabel = computed(() => {

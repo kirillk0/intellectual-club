@@ -45,7 +45,7 @@ type Params = {
   // Upload policy of this chat with another configuration; used by the branch dialog.
   uploadPolicyForConfig?: (configId: number) => ChatUploadPolicy;
   waitForConfigSync: (timeoutMs?: number) => Promise<boolean>;
-  messageConfigLabel: (configId?: number | null) => string;
+  messageConfigLabel: (configId?: number | null, snapshot?: string | null) => string;
   startPolling: (messageId: number) => Promise<void>;
   scrollToLastMessage: ScrollToLastMessage;
   ensurePendingFilesUploaded: (
@@ -297,7 +297,7 @@ export function useChatMessageActions(params: Params) {
 
     if (!messageConfigId || !currentConfigId || messageConfigId === currentConfigId) return '';
 
-    const originalLabel = params.messageConfigLabel(messageConfigId);
+    const originalLabel = params.messageConfigLabel(messageConfigId, message.llm_configuration_label_snapshot);
     const selectedLabel = params.messageConfigLabel(currentConfigId);
 
     return `Warning: this retry will use the original message configuration (${originalLabel}), not the currently selected chat configuration (${selectedLabel}).`;

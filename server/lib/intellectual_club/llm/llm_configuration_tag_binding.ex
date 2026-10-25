@@ -14,6 +14,10 @@ defmodule IntellectualClub.Llm.LlmConfigurationTagBinding do
     table("llm_configuration_tag_bindings")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:llm_configuration, on_delete: :delete)
+    end
+
     custom_indexes do
       index([:owner_id], name: "llm_configuration_tag_bindings_owner_id_index")
 

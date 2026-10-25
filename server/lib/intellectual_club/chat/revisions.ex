@@ -63,6 +63,7 @@ defmodule IntellectualClub.Chat.Revisions do
     [
       :chat,
       chat.id,
+      chat.llm_configuration_id,
       datetime_revision_value(chat.updated_at),
       Map.get(chat, :last_message_id),
       active_generation_message_id(chat),

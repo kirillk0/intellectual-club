@@ -108,6 +108,27 @@ describe('useChatHeaderControls configuration selection', () => {
     ).toBe('');
   });
 
+  it('prefers message configuration snapshots and falls back for legacy messages', () => {
+    const { controls } = createControls();
+
+    expect(controls.messageConfigLabel(7, 'Original Model A')).toBe('Original Model A');
+    expect(controls.messageConfigLabel(null, 'Deleted configuration')).toBe('Deleted configuration');
+    expect(controls.messageConfigLabel(7, null)).toBe('Model A');
+    expect(controls.messageConfigLabel(99, '')).toBe('Config #99');
+    expect(controls.messageConfigLabel(null, null)).toBe('');
+  });
+
+  it('keeps the generation snapshot when its configuration is renamed or deleted', () => {
+    const { controls, activeGenerationId, branch } = createControls();
+    activeGenerationId.value = 42;
+    controls.selectedConfig.value = 8;
+    branch.value = [{ ...generatingMessage(7), llm_configuration_label_snapshot: 'Original Model A' }];
+
+    expect(controls.activeGenerationConfigMismatchLabel.value).toBe('Original Model A');
+    branch.value[0]!.llm_configuration_id = null;
+    expect(controls.activeGenerationConfigMismatchLabel.value).toBe('Original Model A');
+  });
+
   it('does not label a generation outside the visible branch', () => {
     const { controls, activeGenerationId, branch } = createControls();
     activeGenerationId.value = 99;

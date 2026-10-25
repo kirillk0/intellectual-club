@@ -16,6 +16,25 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
   require Ash.Query
 
   describe "idle-state revisions" do
+    test "deleting a shared current configuration invalidates the consumer chat revision", %{
+      conn: conn
+    } do
+      %{user: owner} = user_fixture()
+      %{user: consumer, password: password} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, consumer]})
+      configuration = create_configuration!(owner)
+      share_configuration!(owner, configuration, group)
+      chat = create_chat!(consumer, llm_configuration_id: configuration.id)
+      conn = sign_in_conn(conn, consumer.username, password)
+      path = "/api/bff/chat-state/#{chat.id}/idle-state"
+      first = conn |> get(path) |> json_response(200)
+      assert conn |> get(path, revision: first["revision"]) |> response(204)
+
+      Ash.destroy!(configuration, actor: owner)
+      changed = conn |> get(path, revision: first["revision"]) |> json_response(200)
+      assert changed["revision"] != first["revision"]
+    end
+
     for {scope, path} <- [
           {"chat list", "/api/bff/chat-list/idle-state"},
           {"chat state", "/api/bff/chat-state/:id/idle-state"}

@@ -27,6 +27,7 @@ export type ChatMessageSearchHit = {
   created_at?: string | null;
   finished_at?: string | null;
   llm_configuration_id?: number | null;
+  llm_configuration_label_snapshot?: string | null;
 };
 
 export type BranchSearchResults = {

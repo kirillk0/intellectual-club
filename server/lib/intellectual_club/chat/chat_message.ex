@@ -80,6 +80,10 @@ defmodule IntellectualClub.Chat.ChatMessage do
     table("chat_messages")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:llm_configuration, on_delete: :nilify)
+    end
+
     custom_indexes do
       index([:chat_id, :created_at, :id], name: "chat_messages_chat_created_id_index")
       index([:chat_id, :parent_id], name: "chat_messages_chat_parent_id_index")
@@ -106,6 +110,11 @@ defmodule IntellectualClub.Chat.ChatMessage do
       public?(true)
       default(:done)
       constraints(one_of: [:generating, :done, :canceled, :error])
+    end
+
+    attribute :llm_configuration_label_snapshot, :string do
+      allow_nil?(true)
+      public?(true)
     end
 
     attribute :error_detail, :string do
@@ -216,6 +225,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
          relationships: [:parent, :llm_configuration], access: :readable, required?: false}
       )
 
+      change({IntellectualClub.Chat.Changes.SnapshotMessageConfiguration, []})
       change({ValidateParentMessage, []})
       change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
@@ -282,6 +292,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
          relationships: [:parent, :llm_configuration], access: :readable, required?: false}
       )
 
+      change({IntellectualClub.Chat.Changes.SnapshotMessageConfiguration, []})
       change({ValidateParentMessage, []})
       change(set_attribute(:role, :assistant))
       change(set_attribute(:status, :generating))

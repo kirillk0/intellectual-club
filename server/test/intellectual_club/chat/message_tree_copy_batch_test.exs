@@ -20,6 +20,36 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
   require Ash.Query
 
+  test "both copy modes preserve the original label after rename and deletion" do
+    %{user: actor} = user_fixture()
+    configuration = create_configuration!(actor, model_name: "original", note: "source")
+
+    source =
+      create_message!(actor, create_empty_chat!(actor), llm_configuration_id: configuration.id)
+
+    configuration =
+      configuration
+      |> Ash.Changeset.for_update(:update, %{model_name: "renamed", note: "changed"},
+        actor: actor
+      )
+      |> Ash.update!()
+
+    for deleted? <- [false, true] do
+      if deleted?, do: Ash.destroy!(configuration, actor: actor)
+
+      source =
+        Ash.get!(ChatMessage, source.id, actor: actor, load: MessageTreeCopy.full_load_spec())
+
+      for copy <- [&MessageTreeCopy.copy_messages!/3, &MessageTreeCopy.copy_full_messages!/3] do
+        target = create_empty_chat!(actor)
+        copied_ids = copy.([source], target, actor)
+        copied = Ash.get!(ChatMessage, copied_ids[source.id], actor: actor)
+        assert copied.llm_configuration_label_snapshot == "original (source)"
+        assert copied.llm_configuration_id == if(deleted?, do: nil, else: configuration.id)
+      end
+    end
+  end
+
   describe "whole-message copying" do
     test "preserves trace links and independent attachments across messages" do
       %{user: actor} = user_fixture()

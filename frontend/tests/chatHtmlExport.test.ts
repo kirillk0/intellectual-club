@@ -146,6 +146,20 @@ const payload = (): ChatExportPayload => ({
 });
 
 describe('buildChatHtmlExport', () => {
+  it.each([null, { label: 'Renamed configuration', tags: [] }])(
+    'uses the historical label when the live configuration is %s',
+    async (configuration) => {
+      const data = payload();
+      const message = data.chats[1].messages[0];
+      message.llm_configuration = configuration;
+      message.llm_configuration_label_snapshot = 'Historical <model>';
+      const { html } = await buildChatHtmlExport(data, { locale: 'en' });
+      expect(html).toContain('Historical &lt;model&gt;');
+      expect(html).not.toContain('Renamed configuration');
+      expect(html).not.toContain('Historical <model>');
+    }
+  );
+
   it('creates a self-contained sanitized document with navigation and dialogs', async () => {
     const exported = await buildChatHtmlExport(payload(), { locale: 'en' });
 

@@ -13,6 +13,55 @@ defmodule IntellectualClub.Chat.ThreadsTest do
 
   require Ash.Query
 
+  describe "configuration label snapshots" do
+    test "generating messages capture labels and retain them through state changes" do
+      %{user: actor} = user_fixture()
+      configuration = create_configuration!(actor, model_name: "original", note: " label ")
+      chat = create_empty_chat!(actor)
+      message = create_generating_message!(actor, chat, llm_configuration_id: configuration.id)
+      assert message.llm_configuration_label_snapshot == "original (label)"
+
+      configuration
+      |> Ash.Changeset.for_update(:update, %{model_name: "renamed"}, actor: actor)
+      |> Ash.update!()
+
+      message =
+        message
+        |> Ash.Changeset.for_update(:set_generation_state, %{status: :done}, actor: actor)
+        |> Ash.update!()
+
+      assert message.llm_configuration_label_snapshot == "original (label)"
+      plain_configuration = create_configuration!(actor, model_name: "plain", note: "")
+      plain = create_message!(actor, chat, llm_configuration_id: plain_configuration.id)
+      assert plain.llm_configuration_label_snapshot == "plain"
+      assert create_message!(actor, chat).llm_configuration_label_snapshot == nil
+
+      assert create_message!(actor, chat, role: :user, llm_configuration_id: configuration.id).llm_configuration_label_snapshot ==
+               nil
+    end
+
+    test "snapshot labels cannot be supplied through public create parameters" do
+      %{user: actor} = user_fixture()
+      configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor)
+
+      changeset =
+        Ash.Changeset.for_create(
+          ChatMessage,
+          :add_message,
+          %{
+            chat_id: chat.id,
+            role: :assistant,
+            llm_configuration_id: configuration.id,
+            llm_configuration_label_snapshot: "spoofed"
+          },
+          actor: actor
+        )
+
+      assert {:error, _error} = Ash.create(changeset)
+    end
+  end
+
   describe "add_message_with_items/4" do
     setup do
       put_app_env(:missed_notifications, :raise, :ash)

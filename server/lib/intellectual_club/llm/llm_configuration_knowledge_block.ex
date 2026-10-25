@@ -14,6 +14,10 @@ defmodule IntellectualClub.Llm.LlmConfigurationKnowledgeBlock do
     table("llm_configuration_knowledge_blocks")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:llm_configuration, on_delete: :delete)
+    end
+
     custom_indexes do
       index([:llm_configuration_id, :enabled],
         name: "llm_configuration_knowledge_blocks_config_enabled_index"

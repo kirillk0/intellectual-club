@@ -343,6 +343,7 @@ defmodule IntellectualClub.Chat.Chat do
     repo(IntellectualClub.Repo)
 
     references do
+      reference(:llm_configuration, on_delete: :nilify)
       reference(:parent_chat, on_delete: :nilify)
       reference(:parent_message, on_delete: :nilify)
       reference(:parent_tool_instance, on_delete: :nilify)

@@ -321,6 +321,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
       created_at: Serializer.datetime_iso(message.created_at),
       finished_at: Serializer.datetime_iso(message.finished_at),
       llm_configuration: serialize_configuration(Map.get(message, :llm_configuration)),
+      llm_configuration_label_snapshot: message.llm_configuration_label_snapshot,
       usage: Serializer.usage_summary(steps),
       content: serialize_message_content(steps, role),
       working_steps:
