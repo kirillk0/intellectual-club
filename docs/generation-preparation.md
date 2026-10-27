@@ -28,11 +28,36 @@ Normal repeated publication is rejected after the first publication advances the
 No historical items/contents, prompt blocks or tool definitions are reread to validate
 freshness. Branch-state conflicts may retry preparation, then use the protected path.
 
-`QueueCoordinator` remains responsible for active-generation exclusion, FIFO queue
-state and queue-head changes. Lease/task fences still protect worker and subagent
+`QueueCoordinator` remains responsible for excluding unfinished ancestors on the
+selected branch, FIFO queue state and queue-head changes. Lease/task fences still protect worker and subagent
 publication. These frequently changing lifecycle checks are independent of content
 freshness and must not be removed. Tool/secret access at execution time is a separate
 concern; this change does not implement mid-cycle revocation of tool bindings.
+
+## Parallel branches
+
+Independent branches of one chat may generate concurrently, including sibling
+answers to the same user message with different models. Admission rejects a
+continuation whose selected parent or ancestor is still generating, not an
+unrelated generation elsewhere in the chat. Explicit `parent_id: null` selects
+an empty history. Callbacks that create or select a parent are checked again
+inside the publication transaction, and rejection rolls back their mutations.
+
+Worker registration, distributed ownership and durable lease/fence tokens remain
+exclusive per message. Short chat/message transaction locks still protect shared
+metadata; no worker reserves the whole chat for the duration of a provider call.
+Prepared starts and retries do not cancel neighboring generations. Retry rejects
+active ancestors or descendants rather than mutating a running branch. Cancellation
+of a message includes only its own subagent lineage; explicit chat-wide
+cancellation still stops all generations of that chat.
+
+The active leaf and configuration remain chat settings. Each started generation
+retains its pinned configuration and request. The queue remains one chat-wide
+FIFO: a nonempty queue still prevents a direct start, switching its anchor pauses
+it with `branch_changed`, and Send next explicitly reanchors it to the selected
+branch. A generating sibling does not block delivery on that selected branch.
+Handoff transfers only follow-ups anchored to its source message and steering
+addressed to that generation.
 
 ## Fallbacks and subchats
 
@@ -72,7 +97,7 @@ a replacement sibling; an assistant message is regenerated from its parent.
 
 For a new chat the configuration becomes the target chat configuration; the source
 chat is untouched. In-chat, the configuration is written to the chat under the
-same chat lock and active-generation/queue admission as the direct generation it
+same chat lock and branch-generation/queue admission as the direct generation it
 precedes, so a rejected branch leaves no partial change. With
 `start_generation: false` the branch only moves the active leaf (the replacement
 user message or the assistant's parent) through

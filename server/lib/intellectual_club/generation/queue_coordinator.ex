@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessageContent
   alias IntellectualClub.Chat.QueuedMessages
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Generation.Context.{PublicationError, StalePreparationError}
   alias IntellectualClub.Generation.Persistence
@@ -378,15 +379,11 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     with :ok <- direct_preflight(chat_id, actor) do
       transact(fn ->
         chat = lock_chat!(chat_id)
-        active_generation = lock_active_generation(chat.id)
         queue = Enum.reject(lock_active_queue!(chat.id), &quarantined_steer?/1)
 
         cond do
           Map.get(actor, :id) != chat.owner_id ->
             {:error, :forbidden}
-
-          match?(%ChatMessage{}, active_generation) ->
-            {:error, :generation_active}
 
           queue != [] ->
             {:error, :queue_not_empty}
@@ -416,7 +413,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   def run_direct_mutation(_chat_id, _actor, _fun), do: {:error, :invalid_chat_id}
 
   defp prepare_direct_attempt(chat_id, opts, attempts) do
-    with :ok <- direct_preflight(chat_id, Keyword.get(opts, :actor)) do
+    with :ok <- direct_preflight(chat_id, Keyword.get(opts, :actor), opts) do
       case Context.prepare(chat_id, opts) do
         {:ok, preparation} -> prepare_direct_locked(chat_id, opts, nil, preparation)
         {:fallback, _reason} -> prepare_direct_locked(chat_id, opts, nil, nil)
@@ -433,15 +430,12 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
       end
   end
 
-  defp direct_preflight(chat_id, %{id: actor_id} = actor) do
+  defp direct_preflight(chat_id, actor, opts \\ nil)
+
+  defp direct_preflight(chat_id, %{id: actor_id} = actor, opts) do
     case Ash.get(Chat, chat_id, actor: actor, authorize?: true) do
-      {:ok, %Chat{owner_id: ^actor_id}} ->
-        active =
-          ChatMessage
-          |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
-          |> Ash.Query.select([:id])
-          |> Ash.Query.limit(1)
-          |> Ash.read_one!(actor: actor, authorize?: true)
+      {:ok, %Chat{owner_id: ^actor_id} = chat} ->
+        active? = not is_nil(opts) and generation_parent_active?(chat, opts, actor)
 
         queued =
           QueuedMessage
@@ -455,7 +449,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
           |> Ash.read_one!(actor: actor, authorize?: true)
 
         cond do
-          not is_nil(active) -> {:error, :generation_active}
+          active? -> {:error, :generation_active}
           not is_nil(queued) -> {:error, :queue_not_empty}
           true -> :ok
         end
@@ -465,21 +459,22 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     end
   end
 
-  defp direct_preflight(_chat_id, _actor), do: {:error, :forbidden}
+  defp direct_preflight(_chat_id, _actor, _opts), do: {:error, :forbidden}
 
   defp prepare_direct_locked(chat_id, opts, prepare_parent, preparation) do
     actor = Keyword.get(opts, :actor)
 
     transact(fn ->
       chat = lock_chat!(chat_id)
-      active_generation = lock_active_generation(chat.id)
+      owned? = not is_nil(actor) and Map.get(actor, :id) == chat.owner_id
+      active? = owned? and generation_parent_active?(chat, opts, actor, true)
       queue = Enum.reject(lock_active_queue!(chat.id), &quarantined_steer?/1)
 
       cond do
-        is_nil(actor) or Map.get(actor, :id) != chat.owner_id ->
+        not owned? ->
           {:error, :forbidden}
 
-        match?(%ChatMessage{}, active_generation) ->
+        active? ->
           {:error, :generation_active}
 
         queue != [] ->
@@ -490,8 +485,20 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
         true ->
           case prepare_direct_context_opts(opts, prepare_parent) do
-            {:ok, context_opts} -> {:ok, Context.build!(chat.id, context_opts)}
-            {:error, reason} -> raise PublicationError, reason: reason
+            {:ok, context_opts} ->
+              # A callback may move the leaf without returning an explicit parent.
+              current_chat = Ash.get!(Chat, chat.id, actor: actor)
+              parent_id = generation_parent_id(current_chat, context_opts)
+              context_opts = Keyword.put(context_opts, :parent_id, parent_id)
+
+              if generation_parent_active?(chat, context_opts, actor, true) do
+                raise PublicationError, reason: :generation_active
+              end
+
+              {:ok, Context.build!(chat.id, context_opts)}
+
+            {:error, reason} ->
+              raise PublicationError, reason: reason
           end
       end
     end)
@@ -553,11 +560,11 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp prepare_next_in_transaction(chat_id, _boundary_message_id, mode) do
     chat = lock_chat!(chat_id)
 
-    case lock_active_generation(chat.id) do
-      %ChatMessage{} ->
+    case generation_parent_active?(chat, [], %User{id: chat.owner_id}, true) do
+      true ->
         :active
 
-      nil ->
+      false ->
         settle_terminal_steers_for_chat!(chat)
 
         case peek_head_follow_up(chat.id) do
@@ -814,7 +821,8 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
     transferable =
       Enum.filter(queue, fn queued_message ->
-        queued_message.kind == :follow_up or
+        (queued_message.kind == :follow_up and
+           queued_message.anchor_message_id == source_message.id) or
           (queued_message.kind == :steer and
              queued_message.blocked_reason != "steering_failed" and
              queued_message.target_generation_message_id == source_message.id)
@@ -968,13 +976,17 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
 
   defp lock_optional_message!(_message_id), do: nil
 
-  defp lock_active_generation(chat_id) do
-    ChatMessage
-    |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
-    |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.limit(1)
-    |> Ash.Query.lock("FOR NO KEY UPDATE")
-    |> Ash.read_one!(authorize?: false)
+  defp generation_parent_active?(chat, opts, actor, lock? \\ false) do
+    parent_id = generation_parent_id(chat, opts)
+    Threads.generation_active_in_branch?(chat.id, parent_id, actor, lock?: lock?)
+  end
+
+  # Keep the same fallback semantics as Context.generation_parent_id/2.
+  defp generation_parent_id(chat, opts) do
+    case Keyword.fetch(opts, :parent_id) do
+      {:ok, parent_id} when is_integer(parent_id) or is_nil(parent_id) -> parent_id
+      _other -> chat.last_message_id
+    end
   end
 
   defp peek_head_follow_up(chat_id) do

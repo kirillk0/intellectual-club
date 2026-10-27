@@ -175,7 +175,6 @@ defmodule IntellectualClub.Generation.Worker do
       }
 
       register_generation_key!({:message, context.message_id}, generation_identity)
-      register_generation_key!({:chat, context.chat_id}, generation_identity)
       register_global_generation_key!(context.message_id)
 
       state = %__MODULE__{

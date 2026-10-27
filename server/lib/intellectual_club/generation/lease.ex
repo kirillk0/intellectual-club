@@ -3,6 +3,8 @@ defmodule IntellectualClub.Generation.Lease do
 
   use GenServer
 
+  alias IntellectualClub.Accounts.User
+  alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Repo
@@ -149,8 +151,6 @@ defmodule IntellectualClub.Generation.Lease do
           with_lock_scope(opts, fn prepared ->
             with {:ok, _chat} <- lock_chat(chat_id),
                  {:ok, current} <- lock_message(lease.message_id) do
-              active_generation = lock_other_generating_message(chat_id, lease.message_id)
-
               cond do
                 not active?(lease) ->
                   {:error, :lease_lost}
@@ -161,7 +161,13 @@ defmodule IntellectualClub.Generation.Lease do
                 current.role != :assistant or current.status not in allowed_statuses ->
                   {:error, :invalid_status}
 
-                match?(%ChatMessage{}, active_generation) ->
+                Threads.generation_active_in_branch?(
+                  chat_id,
+                  current.id,
+                  %User{id: current.owner_id},
+                  include_descendants?: true,
+                  exclude_message_id: current.id
+                ) ->
                   {:error, :generation_active}
 
                 true ->
@@ -787,7 +793,7 @@ defmodule IntellectualClub.Generation.Lease do
     message =
       ChatMessage
       |> Ash.Query.filter(id == ^message_id)
-      |> Ash.Query.select([:id, :chat_id, :role, :status, :generation_fence_token])
+      |> Ash.Query.select([:id, :chat_id, :owner_id, :role, :status, :generation_fence_token])
       |> Ash.Query.lock("FOR NO KEY UPDATE")
       |> Ash.read_one!(authorize?: false)
 
@@ -795,17 +801,6 @@ defmodule IntellectualClub.Generation.Lease do
       %ChatMessage{} = message -> {:ok, message}
       nil -> {:error, :not_found}
     end
-  end
-
-  defp lock_other_generating_message(chat_id, excluded_message_id) do
-    ChatMessage
-    |> Ash.Query.filter(
-      chat_id == ^chat_id and id != ^excluded_message_id and status == :generating
-    )
-    |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.lock("FOR NO KEY UPDATE")
-    |> Ash.Query.limit(1)
-    |> Ash.read_one!(authorize?: false)
   end
 
   defp lock_chat(chat_id) do

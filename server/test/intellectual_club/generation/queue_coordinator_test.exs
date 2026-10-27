@@ -223,6 +223,135 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     end
   end
 
+  describe "branch-local admission" do
+    test "prepares sibling generations while refusing to continue an unfinished ancestor" do
+      %{user: actor} = user_fixture()
+      {chat, root, _anchor} = create_chat_with_anchor!(actor)
+
+      assert {:ok, first} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: root.id
+               )
+
+      assert {:ok, second} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: root.id
+               )
+
+      assert first.message_id != second.message_id
+      assert first.parent_message_id == root.id
+      assert second.parent_message_id == root.id
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(chat.id, actor: actor)
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: first.message_id
+               )
+
+      {:ok, descendant} =
+        Threads.add_message(chat, :user, "Unfinished context",
+          actor: actor,
+          parent_id: first.message_id
+        )
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: descendant.id
+               )
+    end
+
+    test "a parent callback cannot hide an unfinished ancestor and rolls back its writes" do
+      %{user: actor} = user_fixture()
+      {chat, root, _anchor} = create_chat_with_anchor!(actor)
+      assert {:ok, first} = QueueCoordinator.prepare_direct_generation(chat.id, actor: actor)
+      count = length(Threads.all_messages(chat.id, actor))
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(
+                 chat.id,
+                 [actor: actor, parent_id: root.id],
+                 fn ->
+                   Threads.add_message(chat, :user, "Must roll back",
+                     actor: actor,
+                     parent_id: first.message_id
+                   )
+                 end
+               )
+
+      assert length(Threads.all_messages(chat.id, actor)) == count
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == first.message_id
+    end
+
+    test "admission and publication use the same implicit parent after a callback" do
+      %{user: actor} = user_fixture()
+      {chat, _root, anchor} = create_chat_with_anchor!(actor)
+      assert {:ok, first} = QueueCoordinator.prepare_direct_generation(chat.id, actor: actor)
+      assert {:ok, _branch} = Threads.activate_branch(chat.id, anchor.id, actor)
+
+      # activate_branch selects the rightmost descendant, so select the finished parent explicitly.
+      chat = Ash.get!(Chat, chat.id, actor: actor)
+
+      chat
+      |> Ash.Changeset.for_update(:set_last_message, %{last_message_id: anchor.id}, actor: actor)
+      |> Ash.update!()
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(chat.id, [actor: actor], fn ->
+                 {:ok, _branch} = Threads.activate_branch(chat.id, first.message_id, actor)
+                 {:ok, []}
+               end)
+
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == anchor.id
+      assert length(Threads.all_messages(chat.id, actor)) == 3
+    end
+
+    test "an invalid parent uses the same active-leaf fallback as context preparation" do
+      %{user: actor} = user_fixture()
+      {chat, _root, _anchor} = create_chat_with_anchor!(actor)
+      assert {:ok, _first} = QueueCoordinator.prepare_direct_generation(chat.id, actor: actor)
+
+      assert {:error, :generation_active} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: "invalid"
+               )
+
+      assert length(Threads.all_messages(chat.id, actor)) == 3
+    end
+
+    test "the visible branch queue advances while a sibling generation is active" do
+      %{user: actor} = user_fixture()
+      {chat, root, anchor} = create_chat_with_anchor!(actor)
+
+      assert {:ok, background} =
+               QueueCoordinator.prepare_direct_generation(chat.id,
+                 actor: actor,
+                 parent_id: root.id
+               )
+
+      assert {:ok, _branch} = Threads.activate_branch(chat.id, anchor.id, actor)
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_follow_up(
+                 chat.id,
+                 %{content: "Continue this branch"},
+                 actor
+               )
+
+      assert {:ok, _head} = QueuedMessages.send_next(queued.id, actor)
+      assert {:ok, context} = QueueCoordinator.prepare_next(chat.id)
+      assert context.message_id != background.message_id
+      assert Ash.get!(ChatMessage, context.parent_message_id, actor: actor).parent_id == anchor.id
+      assert Ash.get!(ChatMessage, background.message_id, actor: actor).status == :generating
+    end
+  end
+
   describe "unlocked preparation" do
     test "editing the FIFO head during unlocked preparation publishes only the new contents" do
       %{user: actor} = user_fixture()

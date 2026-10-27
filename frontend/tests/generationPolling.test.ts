@@ -403,6 +403,57 @@ describe('revision-aware generation polling', () => {
     }
   );
 
+  it.each(['done', 'generating'] as const)(
+    'ignores a background terminal poll after switching to a %s branch',
+    async (status) => {
+      let resolve!: (value: PollResponse) => void;
+      mocks.get.mockReturnValueOnce(new Promise<PollResponse>((done) => { resolve = done; }))
+        .mockResolvedValue({ ...initial, message_id: 99, content: undefined });
+      const settled = vi.fn(async () => {});
+      const { runtime, branch, activeGenerationId, onQueuedMessagesUpdated } = setupRuntime(settled);
+      const oldPoll = runtime.startPolling(31);
+      const oldSignal = mocks.get.mock.calls[0][1].signal as AbortSignal;
+
+      branch.value = [{ id: 99, role: 'assistant', status }];
+      expect(oldSignal.aborted).toBe(true);
+      expect(activeGenerationId.value).toBeNull();
+      await nextTick();
+      resolve({ ...initial, status: 'done', active_generation_message_id: 32, queued_messages: [] });
+      await oldPoll;
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(settled).not.toHaveBeenCalled();
+      expect(onQueuedMessagesUpdated).not.toHaveBeenCalled();
+      expect(branch.value).toHaveLength(1);
+      expect(branch.value[0]).toMatchObject({ id: 99, role: 'assistant', status });
+      expect(branch.value[0]!.content).toBeUndefined();
+      expect(activeGenerationId.value).toBe(status === 'generating' ? 99 : null);
+      expect(mocks.get.mock.calls.some(([url]) => url.includes('/32/poll'))).toBe(false);
+      expect(mocks.get.mock.calls.filter(([url]) => url.includes('/31/poll'))).toHaveLength(1);
+    }
+  );
+
+  it('does not follow a terminal successor outside the visible branch', async () => {
+    mocks.get.mockResolvedValueOnce({ ...initial, status: 'done', active_generation_message_id: 32 });
+    const { runtime, activeGenerationId } = setupRuntime();
+    await runtime.startPolling(31);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(activeGenerationId.value).toBeNull();
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the visible polling session when given an unrelated server generation id', async () => {
+    mocks.get.mockResolvedValue(initial);
+    const { runtime, activeGenerationId } = setupRuntime();
+    await runtime.startPolling(31);
+    runtime.syncServerGenerationState(99);
+    await runtime.startPolling(99);
+    expect(activeGenerationId.value).toBe(31);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mocks.get).toHaveBeenCalledTimes(2);
+    expect(mocks.get.mock.calls.every(([url]) => url.includes('/31/poll'))).toBe(true);
+  });
+
   it('sends working revisions and never applies a late response to a new selection', async () => {
     let resolve!: (value: PollResponse) => void;
     mocks.get.mockReturnValueOnce(

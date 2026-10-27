@@ -10,6 +10,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessageContent
+  alias IntellectualClub.Chat.Threads
 
   require Ash.Query
 
@@ -429,7 +430,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   defp retry_queued_message(preliminary, actor) do
     transact(fn ->
       with {:ok, %Chat{} = chat} <- lock_owned_chat(preliminary.chat_id, actor),
-           :ok <- ensure_generation_idle(chat.id, actor),
+           :ok <- ensure_generation_idle(chat, actor),
            {:ok, %QueuedMessage{} = requested} <- lock_one(preliminary.id, actor),
            :ok <- ensure_follow_up(requested),
            :ok <- ensure_mutable(requested),
@@ -974,18 +975,10 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   defp ensure_message_chat(%ChatMessage{chat_id: chat_id}, %Chat{id: chat_id}), do: :ok
   defp ensure_message_chat(%ChatMessage{}, %Chat{}), do: {:error, :generation_not_active}
 
-  defp ensure_generation_idle(chat_id, actor) do
-    ChatMessage
-    |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
-    |> Ash.Query.sort(id: :asc)
-    |> Ash.Query.limit(1)
-    |> Ash.Query.lock("FOR NO KEY UPDATE")
-    |> Ash.read_one(actor: actor)
-    |> case do
-      {:ok, nil} -> :ok
-      {:ok, %ChatMessage{}} -> {:error, :generation_active}
-      {:error, error} -> {:error, error}
-    end
+  defp ensure_generation_idle(chat, actor) do
+    if Threads.generation_active_in_branch?(chat.id, chat.last_message_id, actor, lock?: true),
+      do: {:error, :generation_active},
+      else: :ok
   end
 
   defp ensure_follow_up(%QueuedMessage{kind: :follow_up}), do: :ok

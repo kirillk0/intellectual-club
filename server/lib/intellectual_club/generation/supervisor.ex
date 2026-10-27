@@ -71,8 +71,7 @@ defmodule IntellectualClub.Generation.Supervisor do
 
     with_generation_lease(message_id, fn lease ->
       gate_start(message_id, opts, lease, :start, fn ->
-        with :ok <- cancel_for_chat(chat_id, orphan_exception_message_ids: [message_id]),
-             {:ok, canonical_step} <- canonical_prepared_step(chat_id, message_id, actor) do
+        with {:ok, canonical_step} <- canonical_prepared_step(chat_id, message_id, actor) do
           context =
             Context.build_prepared!(
               chat_id,
@@ -114,7 +113,6 @@ defmodule IntellectualClub.Generation.Supervisor do
     allowed_statuses = Keyword.fetch!(retry_opts, :allowed_statuses)
 
     with {:ok, context} <- Context.prepare_retry(message_id, retry_opts),
-         :ok <- cancel_for_chat(context.chat_id, orphan_exception_message_ids: [message_id]),
          step_sequence when is_integer(step_sequence) and step_sequence > 0 <-
            Map.get(context, :initial_step_sequence),
          steering_specs when is_list(steering_specs) <-
@@ -374,12 +372,15 @@ defmodule IntellectualClub.Generation.Supervisor do
 
   def cancel_generation(message_id, opts)
       when is_integer(message_id) and is_list(opts) do
+    # Cancel persistence can remove a tool call that is the child's only anchor.
+    child_chat_ids = subagent_root_chat_ids_for_message(message_id, opts)
+
     case durable_cancel_and_signal(message_id) do
       {result, worker_pid}
       when result in [:ok, :not_found] and (is_nil(worker_pid) or is_pid(worker_pid)) ->
         if is_pid(worker_pid), do: await_worker_stopped(worker_pid)
 
-        case cancel_descendant_generations_for_message(message_id, opts) do
+        case cancel_descendant_generations_for_message(message_id, opts, child_chat_ids) do
           :ok -> result
           {:error, _reason} = error -> error
         end
@@ -472,23 +473,7 @@ defmodule IntellectualClub.Generation.Supervisor do
     chat_generations =
       chat_ids
       |> normalize_generation_ids()
-      |> Enum.flat_map(fn chat_id ->
-        case Registry.lookup(IntellectualClub.Generation.Registry, {:chat, chat_id}) do
-          [
-            {pid,
-             %{
-               chat_id: ^chat_id,
-               message_id: message_id,
-               owner_id: owner_id
-             }}
-          ]
-          when is_pid(pid) and is_integer(message_id) and is_integer(owner_id) ->
-            [%{chat_id: chat_id, message_id: message_id, owner_id: owner_id}]
-
-          _other ->
-            []
-        end
-      end)
+      |> Enum.flat_map(&local_generation_candidates_for_chat/1)
 
     message_generations =
       message_ids
@@ -723,15 +708,38 @@ defmodule IntellectualClub.Generation.Supervisor do
     end)
   end
 
-  defp cancel_descendant_generations_for_message(message_id, opts)
-       when is_integer(message_id) and is_list(opts) do
-    case message_chat_id(message_id) do
-      id when is_integer(id) -> cancel_descendant_generations_for_chat(id, opts)
-      _other -> :ok
-    end
+  defp cancel_descendant_generations_for_message(message_id, opts, known_child_ids) do
+    # Include children created while cancellation was waiting for the worker.
+    child_ids =
+      Enum.uniq(known_child_ids ++ subagent_root_chat_ids_for_message(message_id, opts))
+
+    child_ids
+    |> do_subagent_descendant_chat_ids(
+      MapSet.new(),
+      child_ids,
+      Keyword.get(opts, :include_background_tasks?, false)
+    )
+    |> cancel_generations_for_descendant_chats()
   end
 
-  defp cancel_descendant_generations_for_message(_message_id, _opts), do: :ok
+  defp subagent_root_chat_ids_for_message(message_id, opts) do
+    case message_chat_id(message_id) do
+      chat_id when is_integer(chat_id) ->
+        Chat
+        |> Ash.Query.filter(
+          parent_chat_id == ^chat_id and subagent == true and
+            (parent_message_id == ^message_id or
+               parent_tool_call_item.chat_message_step.chat_message_id == ^message_id)
+        )
+        |> Ash.Query.select([:id])
+        |> Ash.read!(authorize?: false)
+        |> Enum.map(& &1.id)
+        |> exclude_background_subagent_roots([chat_id], opts)
+
+      _other ->
+        []
+    end
+  end
 
   defp cancel_descendant_generations_for_chat(chat_id, opts \\ [])
 
@@ -739,25 +747,26 @@ defmodule IntellectualClub.Generation.Supervisor do
        when is_integer(chat_id) and is_list(opts) do
     chat_id
     |> subagent_descendant_chat_ids(opts)
-    |> Enum.reduce_while(:ok, fn descendant_chat_id, :ok ->
-      case cancel_active_workers_for_chat(descendant_chat_id) do
-        {:ok, active_message_ids} ->
-          result =
-            terminate_orphaned_generating_messages_for_chat(
-              descendant_chat_id,
-              active_message_ids,
-              :canceled
-            )
-
-          {:cont, result}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
+    |> cancel_generations_for_descendant_chats()
   end
 
   defp cancel_descendant_generations_for_chat(_chat_id, _opts), do: :ok
+
+  defp cancel_generations_for_descendant_chats(chat_ids) do
+    Enum.reduce_while(chat_ids, :ok, fn descendant_chat_id, :ok ->
+      with {:ok, active_message_ids} <- cancel_active_workers_for_chat(descendant_chat_id),
+           :ok <-
+             terminate_orphaned_generating_messages_for_chat(
+               descendant_chat_id,
+               active_message_ids,
+               :canceled
+             ) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
 
   defp terminate_orphaned_generating_messages_for_chat(
          chat_id,
@@ -866,6 +875,15 @@ defmodule IntellectualClub.Generation.Supervisor do
     end
   end
 
+  defp exclude_background_subagent_roots(child_ids, parent_ids, opts) do
+    if Keyword.get(opts, :include_background_tasks?, false) do
+      child_ids
+    else
+      background_roots = active_background_subagent_root_chat_ids(parent_ids)
+      Enum.reject(child_ids, &MapSet.member?(background_roots, &1))
+    end
+  end
+
   defp active_background_subagent_root_chat_ids(parent_chat_ids) when is_list(parent_chat_ids) do
     if Code.ensure_loaded?(IntellectualClub.BackgroundTasks) and
          function_exported?(
@@ -892,15 +910,22 @@ defmodule IntellectualClub.Generation.Supervisor do
       MapSet.new()
   end
 
-  defp registry_message_id(%{message_id: id}) when is_integer(id), do: id
-  defp registry_message_id(_metadata), do: nil
+  # A unique message key fences each Worker without reserving the whole chat.
+  defp local_generation_candidates_for_chat(chat_id) do
+    Registry.select(IntellectualClub.Generation.Registry, [
+      {
+        {{:message, :"$1"}, :"$2", %{chat_id: chat_id, owner_id: :"$3"}},
+        [{:is_integer, :"$1"}, {:is_pid, :"$2"}, {:is_integer, :"$3"}],
+        [%{chat_id: chat_id, message_id: :"$1", owner_id: :"$3"}]
+      }
+    ])
+  end
 
   defp active_generation_message_ids_for_chat(chat_id) when is_integer(chat_id) do
     local_message_ids =
-      IntellectualClub.Generation.Registry
-      |> Registry.lookup({:chat, chat_id})
-      |> Enum.map(fn {_pid, metadata} -> registry_message_id(metadata) end)
-      |> Enum.filter(&is_integer/1)
+      chat_id
+      |> local_generation_candidates_for_chat()
+      |> Enum.map(& &1.message_id)
 
     global_message_ids =
       ChatMessage

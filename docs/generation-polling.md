@@ -4,6 +4,19 @@ The SPA uses `poll_protocol=cursor` on the message poll endpoint. The Worker is
 already the canonical in-memory trace owner; there is no UI snapshot process,
 periodic snapshot publication, or full-text hashing on provider events.
 
+## Visible branch only
+
+The chat screen keeps one polling session for the visible branch, even when
+other branches are generating concurrently. Switching branches aborts observation
+of the old message, not its server-side worker. Returning to a branch reloads its
+persisted result and resumes polling if its message is still generating. There
+is no background-generation dashboard or polling loop for hidden branches.
+
+Send and Continue explicitly address the visible leaf. Responses to starts,
+branches and retries are discarded if navigation has replaced their originating
+branch. A scalar server generation ID cannot redirect polling to an invisible
+message; queue successors are followed only after they appear in the loaded branch.
+
 ## Runtime contract
 
 A reader keeps `runtime_cursor`, `view_revision`, `content_revision`, and

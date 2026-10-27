@@ -67,7 +67,8 @@ const queuedSteer = (id = 72): ChatQueuedMessage => ({
 const createRuntime = (
   activeMessageId: number | null,
   autoScrollEnabled = false,
-  initialQueue: ChatQueuedMessage[] = []
+  initialQueue: ChatQueuedMessage[] = [],
+  onGenerationSettled?: () => Promise<void> | void
 ) => {
   const branch = ref<ChatBranchMessage[]>(
     activeMessageId
@@ -77,11 +78,13 @@ const createRuntime = (
   const activeGenerationId = ref(activeMessageId);
   const loadError = ref('');
   const queuedMessages = ref(initialQueue);
+  const chatId = ref(12);
+  const waitForConfigSync = vi.fn(async () => true);
   const onQueuedMessageCreated = vi.fn();
   const onQueuedMessagesUpdated = vi.fn();
 
   const runtime = useChatComposerRuntime({
-    chatId: computed(() => 12),
+    chatId: computed(() => chatId.value),
     branch,
     readOnly: computed(() => false),
     loadError,
@@ -91,7 +94,7 @@ const createRuntime = (
       maxFileSizeBytes: 1024,
       accept: '',
     })),
-    waitForConfigSync: async () => true,
+    waitForConfigSync,
     activeGenerationId,
     cancelingGenerationId: ref(null),
     queuedMessages,
@@ -99,10 +102,13 @@ const createRuntime = (
     scrollToLastMessage: vi.fn(),
     onQueuedMessageCreated,
     onQueuedMessagesUpdated,
+    onGenerationSettled,
   });
 
   return {
     runtime,
+    chatId,
+    waitForConfigSync,
     branch,
     activeGenerationId,
     loadError,
@@ -330,7 +336,7 @@ describe('chat composer runtime', () => {
       expect(apiMocks.post).toHaveBeenNthCalledWith(
         1,
         '/api/bff/chat-generation/12/send',
-        { content: 'racing follow-up' }
+        { content: 'racing follow-up', parent_id: null }
       );
       expect(apiMocks.post).toHaveBeenNthCalledWith(
         2,
@@ -340,6 +346,190 @@ describe('chat composer runtime', () => {
       expect(runtime.draft.value).toBe('');
     }
   );
+
+  it.each(['send', 'continue'] as const)('anchors %s explicitly to the visible leaf', async (action) => {
+    const { runtime, branch } = createRuntime(null);
+    branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+    apiMocks.post.mockResolvedValue({ branch: branch.value, generation: null });
+    if (action === 'send') runtime.draft.value = 'next';
+
+    await (action === 'send' ? runtime.sendMessage() : runtime.continueGeneration());
+
+    expect(apiMocks.post).toHaveBeenCalledWith(
+      `/api/bff/chat-generation/12/${action === 'send' ? 'send' : 'generate'}`,
+      action === 'send' ? { content: 'next', parent_id: 20 } : { parent_id: 20 }
+    );
+    await runtime.dispose();
+  });
+
+  it('continues an empty visible branch with an explicit null parent', async () => {
+    const { runtime } = createRuntime(null);
+    apiMocks.post.mockResolvedValue({ branch: [], generation: null });
+    await runtime.continueGeneration();
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/12/generate', { parent_id: null });
+    await runtime.dispose();
+  });
+
+  it.each([
+    ['send', false], ['continue', false], ['send', true], ['continue', true],
+  ] as const)('ignores late %s responses after navigation (new chat: %s)', async (action, changeChat) => {
+    let resolve!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { runtime, branch, chatId, activeGenerationId } = createRuntime(null);
+    branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+    if (action === 'send') runtime.draft.value = 'next';
+    const pending = action === 'send' ? runtime.sendMessage() : runtime.continueGeneration();
+    await nextTick();
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+
+    if (changeChat) chatId.value = 13;
+    branch.value = [{ id: 99, role: 'assistant', status: 'done' }];
+    runtime.draft.value = 'new branch draft';
+    resolve({ branch: [{ id: 21, role: 'assistant', status: 'generating' }], generation: { message_id: 21 } });
+    await pending;
+
+    expect(branch.value.map((message) => message.id)).toEqual([99]);
+    expect(activeGenerationId.value).toBeNull();
+    expect(apiMocks.get).not.toHaveBeenCalled();
+    expect(runtime.draft.value).toBe('new branch draft');
+    await runtime.dispose();
+  });
+
+  it.each(['send', 'continue'] as const)('does not %s on a different branch after configuration sync', async (action) => {
+    let resolve!: (value: boolean) => void;
+    const { runtime, branch, waitForConfigSync } = createRuntime(null);
+    waitForConfigSync.mockReturnValue(new Promise((done) => { resolve = done; }));
+    if (action === 'send') runtime.draft.value = 'next';
+    const pending = action === 'send' ? runtime.sendMessage() : runtime.continueGeneration();
+    branch.value = [{ id: 99, role: 'assistant', status: 'done' }];
+    resolve(true);
+    await pending;
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    await runtime.dispose();
+  });
+
+  it.each([
+    ['send', 'config'], ['continue', 'config'], ['send', 'post'], ['continue', 'post'],
+  ] as const)('accepts %s after a same-branch reload during %s', async (action, stage) => {
+    const { runtime, branch, waitForConfigSync } = createRuntime(null);
+    branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+    let resolveConfig!: (value: boolean) => void;
+    let resolvePost!: (value: unknown) => void;
+    waitForConfigSync.mockReturnValue(new Promise((resolve) => { resolveConfig = resolve; }));
+    apiMocks.post.mockReturnValue(new Promise((resolve) => { resolvePost = resolve; }));
+    apiMocks.get.mockResolvedValue(completedPoll(21));
+    if (action === 'send') runtime.draft.value = 'next';
+    const pending = action === 'send' ? runtime.sendMessage() : runtime.continueGeneration();
+    if (stage === 'post') {
+      resolveConfig(true);
+      await nextTick();
+      expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    }
+    branch.value = branch.value.map((message) => ({ ...message, token_count: 100 }));
+    resolveConfig(true);
+    resolvePost({ branch: [{ id: 21, role: 'assistant', status: 'generating' }], generation: { message_id: 21 } });
+    await pending;
+
+    expect(apiMocks.post).toHaveBeenCalledWith(
+      `/api/bff/chat-generation/12/${action === 'send' ? 'send' : 'generate'}`,
+      action === 'send' ? { content: 'next', parent_id: 20 } : { parent_id: 20 }
+    );
+    expect(branch.value.map((message) => message.id)).toEqual([21]);
+    expect(apiMocks.get).toHaveBeenCalledTimes(1);
+    expect(runtime.draft.value).toBe('');
+    await runtime.dispose();
+  });
+
+  it('sends uploaded attachments after a same-branch reload during upload', async () => {
+    const { runtime, branch } = createRuntime(null);
+    branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+    runtime.pendingFiles.value = [pendingFile()];
+    let resolveUpload!: (value: unknown) => void;
+    apiMocks.post.mockReturnValueOnce(new Promise((resolve) => { resolveUpload = resolve; }))
+      .mockResolvedValueOnce({ branch: [{ id: 21, role: 'user', status: 'done' }], generation: null });
+    const pending = runtime.sendMessage();
+    await nextTick();
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-uploads/12', expect.anything());
+    branch.value = branch.value.map((message) => ({ ...message, token_count: 100 }));
+    resolveUpload({ upload: {
+      upload_id: 'uploaded', status: 'uploaded', uploaded_bytes: 4, chunk_size_bytes: 1024,
+    } });
+    await pending;
+
+    expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', {
+      content: '', upload_ids: ['uploaded'], parent_id: 20,
+    });
+    expect(branch.value.map((message) => message.id)).toEqual([21]);
+    expect(runtime.pendingFiles.value).toEqual([]);
+    await runtime.dispose();
+  });
+
+  it.each([
+    ['reload', false], ['reload', true], ['branch', false], ['branch', true],
+    ['extended', false], ['extended', true], ['chat', false], ['chat', true],
+  ] as const)('clears only the accepted send snapshot after %s (new text: %s)', async (change, newText) => {
+    const { runtime, branch, chatId, activeGenerationId } = createRuntime(null);
+    branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+    runtime.draft.value = 'sent';
+    runtime.pendingFiles.value = [uploadedPendingFile('submitted')];
+    await nextTick();
+    let acknowledge!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((resolve) => { acknowledge = resolve; }));
+    const pending = runtime.sendMessage();
+    await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+    if (change === 'reload') branch.value = branch.value.map((message) => ({ ...message }));
+    else if (change === 'extended') branch.value = [...branch.value, { id: 99, role: 'user', status: 'done' }];
+    else {
+      if (change === 'chat') chatId.value = 13;
+      branch.value = [{ id: 99, role: 'assistant', status: 'done' }];
+    }
+    await nextTick();
+    runtime.draft.value = newText ? 'new draft' : 'sent';
+    runtime.pendingFiles.value = [...runtime.pendingFiles.value, uploadedPendingFile('later')];
+    await nextTick();
+    const visibleBranch = branch.value;
+    acknowledge({ branch: [{ id: 21, role: 'assistant', status: 'done' }], generation: null });
+    await pending;
+    await nextTick();
+
+    expect(runtime.draft.value).toBe(newText ? 'new draft' : change === 'chat' ? 'sent' : '');
+    expect(runtime.pendingFiles.value.map((file) => file.id)).toEqual(
+      change === 'chat' ? ['submitted', 'later'] : ['later']
+    );
+    if (change === 'reload') expect(branch.value.map((message) => message.id)).toEqual([21]);
+    else expect(branch.value).toBe(visibleBranch);
+    expect(activeGenerationId.value).toBeNull();
+    expect(apiMocks.get).not.toHaveBeenCalled();
+    const stored = window.localStorage.getItem('ic.draft.chat.composer.12');
+    if (newText && change !== 'chat') expect(JSON.parse(stored!).text).toBe('new draft');
+    else expect(stored).toBeNull();
+    // Avoid aborting already uploaded test fixtures during cleanup.
+    runtime.pendingFiles.value = [];
+    await runtime.dispose();
+  });
+
+  it('preserves an edited stored draft in the original chat after a late send acknowledgement', async () => {
+    const { runtime, chatId } = createRuntime(null);
+    runtime.draft.value = 'sent';
+    await nextTick();
+    let acknowledge!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((resolve) => { acknowledge = resolve; }));
+    const pending = runtime.sendMessage();
+    await nextTick();
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    chatId.value = 13;
+    await nextTick();
+    runtime.draft.value = 'other chat';
+    const storageKey = 'ic.draft.chat.composer.12';
+    const stored = JSON.parse(window.localStorage.getItem(storageKey)!);
+    window.localStorage.setItem(storageKey, JSON.stringify({ ...stored, text: 'edited elsewhere' }));
+    acknowledge({ branch: [], generation: null });
+    await pending;
+
+    expect(runtime.draft.value).toBe('other chat');
+    expect(JSON.parse(window.localStorage.getItem(storageKey)!).text).toBe('edited elsewhere');
+    await runtime.dispose();
+  });
 
   it('keeps a new draft when the server appends messages to the branch', async () => {
     const { runtime, branch } = createRuntime(null);
@@ -373,7 +563,9 @@ describe('chat composer runtime', () => {
         active_generation_message_id: 32,
       })
       .mockResolvedValueOnce(completedPoll(32));
-    const { runtime } = createRuntime(31);
+    const { runtime, branch } = createRuntime(31, false, [], () => {
+      branch.value = [...branch.value, { id: 32, role: 'assistant', status: 'generating' }];
+    });
 
     await runtime.startPolling(31);
     await vi.waitFor(() => {
@@ -603,6 +795,7 @@ describe('chat composer runtime', () => {
     it('switches behavior after resizing without recreating the chat', async () => {
       const { composer, scroller } = setupPage(390, 24);
       const { runtime } = createRuntime(31, true);
+      apiMocks.get.mockResolvedValue({ ...completedPoll(31), status: 'generating' });
 
       await runtime.startPolling(31);
       await vi.waitFor(() => expect(composer.scrollIntoView).toHaveBeenCalledTimes(2));
@@ -614,6 +807,7 @@ describe('chat composer runtime', () => {
       viewportWidth = 390;
       await runtime.startPolling(31);
       await vi.waitFor(() => expect(composer.scrollIntoView).toHaveBeenCalledTimes(4));
+      await runtime.dispose();
     });
   });
 });

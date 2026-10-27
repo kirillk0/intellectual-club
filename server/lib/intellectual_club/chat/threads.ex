@@ -127,6 +127,62 @@ defmodule IntellectualClub.Chat.Threads do
     end)
   end
 
+  @doc "Checks unfinished ancestors (and optionally descendants), ignoring sibling branches."
+  def generation_active_in_branch?(chat_id, leaf_id, actor, opts \\ [])
+
+  def generation_active_in_branch?(chat_id, leaf_id, actor, opts) when is_integer(leaf_id) do
+    require Ash.Query
+
+    generating_ids =
+      ChatMessage
+      |> Ash.Query.filter(chat_id == ^chat_id and status == :generating)
+      |> Ash.Query.select([:id])
+      |> Ash.read!(actor: actor)
+      |> Enum.map(& &1.id)
+      |> Enum.reject(&(&1 == Keyword.get(opts, :exclude_message_id)))
+
+    generating_ids =
+      cond do
+        generating_ids == [] ->
+          []
+
+        leaf_id in generating_ids ->
+          [leaf_id]
+
+        true ->
+          messages =
+            ChatMessage
+            |> Ash.Query.filter(chat_id == ^chat_id)
+            |> Ash.Query.select([:id, :parent_id])
+            |> Ash.read!(actor: actor)
+            |> Map.new(&{&1.id, &1})
+
+          ancestors = leaf_id |> chain_from_leaf(messages) |> MapSet.new()
+
+          Enum.filter(generating_ids, fn id ->
+            MapSet.member?(ancestors, id) or
+              (Keyword.get(opts, :include_descendants?, false) and
+                 leaf_id in chain_from_leaf(id, messages))
+          end)
+      end
+
+    if generating_ids != [] and Keyword.get(opts, :lock?, false) do
+      # Callers acquire the chat lock first, preserving the chat/message lock order.
+      ChatMessage
+      |> Ash.Query.filter(id in ^generating_ids and status == :generating)
+      |> Ash.Query.select([:id])
+      |> Ash.Query.sort(id: :asc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.lock("FOR NO KEY UPDATE")
+      |> Ash.read_one!(actor: actor)
+      |> is_struct(ChatMessage)
+    else
+      generating_ids != []
+    end
+  end
+
+  def generation_active_in_branch?(_chat_id, _leaf_id, _actor, _opts), do: false
+
   @doc """
   Returns active branch messages from root to `chat.last_message`.
   """

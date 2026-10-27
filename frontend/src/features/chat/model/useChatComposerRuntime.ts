@@ -820,6 +820,8 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const startPolling = async (messageId: number) => {
+    // A scalar polling session belongs only to the visible branch.
+    if (!params.branch.value.some((message) => message.id === messageId && message.status === 'generating')) return;
     const sameGeneration = params.activeGenerationId.value === messageId;
     stopPolling({ resetConnectionState: !sameGeneration });
     params.activeGenerationId.value = messageId;
@@ -865,14 +867,23 @@ export function useChatComposerRuntime(params: Params) {
     if (pollingChatId !== params.chatId.value || params.activeGenerationId.value == null) return;
     const messageId = params.activeGenerationId.value;
     const index = next.findIndex((message) => message.id === messageId);
-    if (index === -1) return;
+    if (index === -1) {
+      params.activeGenerationId.value = null;
+      params.cancelingGenerationId.value = null;
+      stopPolling();
+      return;
+    }
     const current = previous.find((message) => message.id === messageId);
     // Merge synchronously, before Vue can render the persisted-only replacement.
     next[index] = preserveStreamingMessageContent(current, next[index]!);
   }, { flush: 'sync' });
   watch(
     () => params.chatId.value,
-    () => stopPolling(),
+    () => {
+      params.activeGenerationId.value = null;
+      params.cancelingGenerationId.value = null;
+      stopPolling();
+    },
     { flush: 'sync' }
   );
 
@@ -960,6 +971,17 @@ export function useChatComposerRuntime(params: Params) {
     pendingFileIds: ReadonlySet<string>,
     storageKey: string | null
   ) => {
+    if (chatDraftStorageKey.value !== storageKey) {
+      // A late acknowledgement must not mutate another chat's composer.
+      // Remove the original persisted snapshot only if it has not been edited.
+      try {
+        const stored = storageKey ? window.localStorage.getItem(storageKey) : null;
+        if (stored && JSON.parse(stored)?.text === content) chatTextDraft.clear(storageKey);
+      } catch {
+        // Ignore unavailable storage or malformed drafts.
+      }
+      return;
+    }
     if (draft.value === content) draft.value = '';
     if (pendingFileIds.size > 0) {
       pendingFiles.value = pendingFiles.value.filter((file) => !pendingFileIds.has(file.id));
@@ -992,6 +1014,11 @@ export function useChatComposerRuntime(params: Params) {
     if (params.activeGenerationId.value) return;
     if (!hasSendPayload.value) return;
 
+    const requestedChatId = params.chatId.value;
+    const parentId = params.branch.value.at(-1)?.id ?? null;
+    // A data refresh preserves the leaf; only a different chat or path invalidates the action.
+    const isCurrentBranch = () => params.chatId.value === requestedChatId &&
+      (params.branch.value.at(-1)?.id ?? null) === parentId;
     const draftStorageKeyBeforeSend = chatDraftStorageKey.value;
     const content = draft.value;
     const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
@@ -1006,6 +1033,7 @@ export function useChatComposerRuntime(params: Params) {
         return;
       }
 
+      if (!isCurrentBranch()) return;
       const hasUserText = content !== '';
       const uploadIds = pendingFileIds.size > 0
         ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
@@ -1013,13 +1041,16 @@ export function useChatComposerRuntime(params: Params) {
       const hasPendingFiles = uploadIds.length > 0;
       if (!hasUserText && !hasPendingFiles) return;
 
+      if (!isCurrentBranch()) return;
+
       let payload: GenerationStartPayload;
       try {
         payload = await api.post<GenerationStartPayload>(
-          `/api/bff/chat-generation/${params.chatId.value}/send`,
-          buildSendPayload(content, uploadIds)
+          `/api/bff/chat-generation/${requestedChatId}/send`,
+          { ...buildSendPayload(content, uploadIds), parent_id: parentId }
         );
       } catch (error) {
+        if (!isCurrentBranch()) return;
         if (
           isHttpError(error) &&
           error.status === 409 &&
@@ -1033,7 +1064,9 @@ export function useChatComposerRuntime(params: Params) {
         throw error;
       }
 
+      // Acceptance owns the submitted snapshot, not the currently visible history.
       clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSend);
+      if (!isCurrentBranch()) return;
 
       await applyGenerationStart(payload);
     } catch (error) {
@@ -1090,6 +1123,12 @@ export function useChatComposerRuntime(params: Params) {
     if (!params.chatId.value || sending.value) return;
     if (params.activeGenerationId.value || hasSendPayload.value) return;
 
+    const requestedChatId = params.chatId.value;
+    const parentId = params.branch.value.at(-1)?.id ?? null;
+    // A data refresh preserves the leaf; only a different chat or path invalidates the action.
+    const isCurrentBranch = () => params.chatId.value === requestedChatId &&
+      (params.branch.value.at(-1)?.id ?? null) === parentId;
+
     sending.value = true;
     sendingMode.value = 'continue';
     params.loadError.value = '';
@@ -1101,10 +1140,12 @@ export function useChatComposerRuntime(params: Params) {
         return;
       }
 
+      if (!isCurrentBranch()) return;
       const payload = await api.post<GenerationStartPayload>(
-        `/api/bff/chat-generation/${params.chatId.value}/generate`,
-        {}
+        `/api/bff/chat-generation/${requestedChatId}/generate`,
+        { parent_id: parentId }
       );
+      if (!isCurrentBranch()) return;
       await applyGenerationStart(payload);
     } catch (error) {
       console.error(error);
@@ -1217,7 +1258,9 @@ export function useChatComposerRuntime(params: Params) {
   };
 
   const syncServerGenerationState = (messageId: number | null | undefined) => {
-    const generationId = messageId || null;
+    const generationId = params.branch.value.some(
+      (message) => message.id === messageId && message.status === 'generating'
+    ) ? messageId : generatingMessageIdInBranch.value;
     if (generationId) {
       if (params.activeGenerationId.value !== generationId) {
         void startPolling(generationId);

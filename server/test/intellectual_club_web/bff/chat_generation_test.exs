@@ -1069,42 +1069,102 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
       assert Ash.get!(ChatMessage, answer.id, actor: actor).parent_id == question.id
     end
 
-    test "rejects branching while a generation is active without side effects" do
-      %{user: actor, password: password} = user_fixture()
+    for start_generation <- [true, false] do
+      @tag start_generation: start_generation
+      test "branches a user message during another generation with start_generation=#{start_generation}",
+           %{start_generation: start_generation, conn: conn} do
+        %{user: actor, password: password} = user_fixture()
+        conn = sign_in_conn(conn, actor.username, password)
+        original_configuration = create_configuration!(actor)
+        branch_configuration = create_configuration!(actor)
+        chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+        {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
 
-      original_configuration = create_configuration!(actor)
-      branch_configuration = create_configuration!(actor)
-      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
-      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+        generating =
+          create_generating_message!(actor, chat,
+            parent_id: question.id,
+            llm_configuration_id: original_configuration.id
+          )
 
-      generating =
-        create_generating_message!(actor, chat,
-          parent_id: question.id,
-          llm_configuration_id: original_configuration.id
-        )
-
-      for start_generation <- [true, false] do
-        conn =
-          build_conn()
-          |> sign_in_conn(actor.username, password)
+        payload =
+          conn
           |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
             "message_id" => question.id,
             "content" => "Edited question",
             "llm_configuration_id" => branch_configuration.id,
             "start_generation" => start_generation
           })
+          |> json_response(200)
 
-        assert json_response(conn, 409)["code"] == "generation_active"
+        assert hd(payload["branch"])["id"] != question.id
+        assert all_text_contents(hd(payload["branch"])) == ["Edited question"]
+
+        assert Ash.get!(Chat, chat.id, actor: actor).llm_configuration_id ==
+                 branch_configuration.id
+
+        assert Ash.get!(ChatMessage, generating.id, actor: actor).status == :generating
+
+        assert Ash.get!(ChatMessage, generating.id, actor: actor).llm_configuration_id ==
+                 original_configuration.id
+
+        if start_generation do
+          generation_id = get_in(payload, ["generation", "message_id"])
+
+          assert Ash.get!(ChatMessage, generation_id, actor: actor).llm_configuration_id ==
+                   branch_configuration.id
+
+          wait_for_generation_to_finish(conn, generation_id)
+        else
+          assert payload["generation"] == nil
+        end
+      end
+    end
+
+    test "runs sibling answers with different configurations without canceling either", %{
+      conn: conn
+    } do
+      alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+      put_app_env(:demo_chunk_delay_ms, 60_000)
+      original_configuration = create_configuration!(actor)
+      branch_configuration = create_configuration!(actor)
+      chat = create_empty_chat!(actor, llm_configuration_id: original_configuration.id)
+      {:ok, question} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+
+      first_payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/generate", %{"parent_id" => question.id})
+        |> json_response(200)
+
+      first_id = get_in(first_payload, ["generation", "message_id"])
+      on_exit(fn -> GenerationSupervisor.cancel_generation(first_id) end)
+
+      second_payload =
+        conn
+        |> post(~p"/api/bff/chat-generation/#{chat.id}/branch", %{
+          "message_id" => first_id,
+          "llm_configuration_id" => branch_configuration.id
+        })
+        |> json_response(200)
+
+      second_id = get_in(second_payload, ["generation", "message_id"])
+      on_exit(fn -> GenerationSupervisor.cancel_generation(second_id) end)
+
+      for {id, configuration} <- [
+            {first_id, original_configuration},
+            {second_id, branch_configuration}
+          ] do
+        message = Ash.get!(ChatMessage, id, actor: actor)
+        assert message.status == :generating
+        assert message.parent_id == question.id
+        assert message.llm_configuration_id == configuration.id
+        assert is_pid(GenerationSupervisor.generation_worker_pid(id))
       end
 
-      chat = Ash.get!(Chat, chat.id, actor: actor)
-      assert chat.llm_configuration_id == original_configuration.id
-      assert chat.last_message_id == generating.id
-
-      assert messages_for_chat!(actor, chat) |> Enum.map(& &1.id) == [
-               question.id,
-               generating.id
-             ]
+      assert :ok = GenerationSupervisor.cancel_generation(first_id)
+      assert Ash.get!(ChatMessage, second_id, actor: actor).status == :generating
+      assert :ok = GenerationSupervisor.cancel_generation(second_id)
     end
 
     test "rejects an inaccessible configuration without side effects", %{conn: conn} do

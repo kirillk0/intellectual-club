@@ -164,7 +164,10 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
 
         media_contents = Enum.map(file_ids, &%{kind: :media, file_id: &1})
 
-        QueueCoordinator.prepare_direct_generation(chat_id, [actor: actor], fn ->
+        opts =
+          if explicit_parent?, do: [actor: actor, parent_id: parent_id], else: [actor: actor]
+
+        QueueCoordinator.prepare_direct_generation(chat_id, opts, fn ->
           create_user_message(
             chat_id,
             text_contents ++ media_contents,
@@ -268,7 +271,11 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
         end
 
         if options.start_generation? do
-          QueueCoordinator.prepare_direct_generation(chat.id, [actor: actor], mutation)
+          QueueCoordinator.prepare_direct_generation(
+            chat.id,
+            [actor: actor, parent_id: selected.parent_id],
+            mutation
+          )
         else
           QueueCoordinator.run_direct_mutation(chat.id, actor, fn ->
             with {:ok, _message} <- mutation.(), do: {:ok, nil}

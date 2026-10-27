@@ -207,19 +207,66 @@ defmodule IntellectualClub.Generation.LeaseTest do
       assert :ok = Lease.release(reservation)
     end
 
-    test "a retry claim is rejected when another generation won the chat turn" do
+    test "a retry claim keeps another generating branch independently fenced" do
       %{actor: actor, chat: chat, message: message} = fixture = failed_generation!()
-      other = create_generating_message!(actor, chat, %{parent_id: message.id, token_count: 0})
-      assert other.status == :generating
+
+      other =
+        create_generating_message!(actor, chat, %{parent_id: message.parent_id, token_count: 0})
+
+      assert {:ok, other_lease} = Lease.acquire(other.id)
       assert {:ok, reservation} = Lease.reserve(message.id)
 
-      assert {:error, :generation_active} =
-               Lease.claim_and_run_with_chat(reservation, chat.id, [:error], fn -> :claimed end)
+      try do
+        assert {:ok, {lease, :claimed}} =
+                 Lease.claim_and_run_with_chat(reservation, chat.id, [:error], fn -> :claimed end)
 
-      target = message!(fixture)
-      assert target.status == :error
-      assert target.generation_fence_token == nil
-      assert :ok = Lease.release(reservation)
+        assert message!(fixture).generation_fence_token == lease.fence_token
+        assert lease.fence_token != other_lease.fence_token
+        assert {:ok, :target_write} = Lease.with_fence(lease, fn -> :target_write end)
+        assert {:ok, :other_write} = Lease.with_fence(other_lease, fn -> :other_write end)
+        assert {:error, :already_running} = Lease.reserve(message.id)
+        assert {:error, :already_running} = Lease.reserve(other.id)
+        assert Ash.get!(ChatMessage, other.id, actor: actor).status == :generating
+
+        assert :ok = Lease.release(lease)
+        assert message!(fixture).generation_fence_token == nil
+        assert {:ok, :still_owned} = Lease.with_fence(other_lease, fn -> :still_owned end)
+      after
+        Lease.release(reservation)
+        Lease.release(other_lease)
+      end
+    end
+
+    for relation <- [:ancestor, :descendant] do
+      @tag relation: relation
+      test "a retry claim rejects a generating #{relation} without publishing a fence", %{
+        relation: relation
+      } do
+        %{actor: actor, chat: chat, message: message} = fixture = failed_generation!()
+        parent_id = if relation == :descendant, do: message.id, else: message.parent_id
+        other = create_generating_message!(actor, chat, parent_id: parent_id)
+
+        if relation == :ancestor do
+          message
+          |> Ash.Changeset.for_update(:reparent, %{parent_id: other.id}, actor: actor)
+          |> Ash.update!()
+        end
+
+        assert {:ok, reservation} = Lease.reserve(message.id)
+
+        try do
+          assert {:error, :generation_active} =
+                   Lease.claim_and_run_with_chat(reservation, chat.id, [:error], fn ->
+                     flunk("a related generation must prevent retry publication")
+                   end)
+
+          assert message!(fixture).generation_fence_token == nil
+          assert message!(fixture).status == :error
+          assert Ash.get!(ChatMessage, other.id, actor: actor).status == :generating
+        after
+          Lease.release(reservation)
+        end
+      end
     end
 
     test "a retry claim rolls back its fence token when the mutation raises" do

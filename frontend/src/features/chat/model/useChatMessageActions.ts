@@ -207,6 +207,14 @@ export function useChatMessageActions(params: Params) {
     openWorking.value = { ...current, open: false, loading: false, error: '' };
   };
 
+  // Reloads may replace every object without changing the visible path's identity.
+  const currentBranchGuard = () => {
+    const chatId = params.chatId.value;
+    const leafId = params.branch.value.at(-1)?.id ?? null;
+    return () => params.chatId.value === chatId &&
+      (params.branch.value.at(-1)?.id ?? null) === leafId;
+  };
+
   const replaceBranch = (nextBranch: ChatBranchMessage[] | null | undefined) => {
     clearWorking();
     params.branch.value = nextBranch || [];
@@ -272,10 +280,12 @@ export function useChatMessageActions(params: Params) {
 
   const applyInChatBranch = async (payload: InChatBranchPayload) => {
     replaceBranch(payload.branch);
+    const isCurrentBranch = currentBranchGuard();
     if (payload.chat) {
       await params.applyServerConfiguration?.(payload.chat.llm_configuration_id ?? null);
     }
 
+    if (!isCurrentBranch()) return;
     const messageId = payload.generation?.message_id;
     if (messageId) {
       await params.startPolling(messageId);
@@ -524,6 +534,7 @@ export function useChatMessageActions(params: Params) {
     if (retryWarning && !confirm(`${retryWarning}\n\nRetry anyway?`)) return;
 
     retryingMessageId.value = messageId;
+    const isCurrentBranch = currentBranchGuard();
 
     try {
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
@@ -531,6 +542,7 @@ export function useChatMessageActions(params: Params) {
         {}
       );
 
+      if (!isCurrentBranch()) return;
       replaceBranch(payload.branch);
 
       const generationId = payload.generation?.message_id;
@@ -646,6 +658,7 @@ export function useChatMessageActions(params: Params) {
     if (!msg.id || !params.chatId.value) return;
     if (branchingAssistantId.value === msg.id) return;
     branchingAssistantId.value = msg.id;
+    const isCurrentBranch = currentBranchGuard();
 
     const configReady = await params.waitForConfigSync();
     if (!configReady) {
@@ -655,10 +668,12 @@ export function useChatMessageActions(params: Params) {
     }
 
     try {
+      if (!isCurrentBranch()) return;
       const payload = await api.post<{ branch: ChatBranchMessage[]; generation: { message_id: number } }>(
         `/api/bff/chat-generation/${params.chatId.value}/generate`,
         { parent_id: msg.parent_id ?? null }
       );
+      if (!isCurrentBranch()) return;
       replaceBranch(payload.branch);
       const messageId = payload.generation?.message_id;
       if (messageId) {
@@ -812,6 +827,7 @@ export function useChatMessageActions(params: Params) {
     if (!editingMessage.value?.id || savingEdit.value) return;
     if (editAttachmentPolicyError.value) return;
     const savingMessageId = editingMessage.value.id;
+    const isCurrentBranch = currentBranchGuard();
     savingEdit.value = true;
     editError.value = '';
 
@@ -879,10 +895,12 @@ export function useChatMessageActions(params: Params) {
           return;
         }
 
+        if (!isCurrentBranch()) return;
         const payload = await api.post<InChatBranchPayload>(
           `/api/bff/chat-generation/${params.chatId.value}/branch`,
           branchPayload
         );
+        if (!isCurrentBranch()) return;
         resetEditState();
         await applyInChatBranch(payload);
       }

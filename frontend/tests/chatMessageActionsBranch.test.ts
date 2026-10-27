@@ -68,20 +68,22 @@ const createActions = (
   } = {}
 ) => {
   const branch = ref<ChatBranchMessage[]>([userMessage, assistantMessage]);
+  const chatId = ref(1);
+  const waitForConfigSync = vi.fn(async () => true);
   const startPolling = vi.fn(async () => undefined);
   const scrollToLastMessage = vi.fn();
   const pushChatRoute = vi.fn();
   const applyServerConfiguration = vi.fn();
   const ensurePendingFilesUploaded = vi.fn(async () => ['upload-1']);
   const actions = useChatMessageActions({
-    chatId: computed(() => 1),
+    chatId: computed(() => chatId.value),
     chat: ref({ id: 1, llm_configuration_id: 7 } as Chat),
     readOnly: computed(() => false),
     branch,
     selectedConfig: ref(overrides.selectedConfig ?? 7),
     fileUploadPolicy: computed(() => overrides.chatUploadPolicy ?? anyFiles),
     uploadPolicyForConfig: overrides.uploadPolicyForConfig,
-    waitForConfigSync: async () => true,
+    waitForConfigSync,
     messageConfigLabel: overrides.messageConfigLabel ?? (() => ''),
     startPolling,
     scrollToLastMessage,
@@ -94,6 +96,8 @@ const createActions = (
 
   return {
     actions,
+    chatId,
+    waitForConfigSync,
     branch,
     startPolling,
     scrollToLastMessage,
@@ -131,6 +135,120 @@ describe('chat message branch options', () => {
     expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/1/generate', { parent_id: 10 });
     expect(branch.value).toEqual(nextBranch);
     expect(actions.editingMessage.value).toBeNull();
+  });
+
+  it('branches a generating assistant with the newly selected model after configuration sync', async () => {
+    const { actions, branch, startPolling, waitForConfigSync } = createActions({ selectedConfig: 9 });
+    branch.value = [userMessage, { ...assistantMessage, status: 'generating' }];
+    let resolve!: (value: boolean) => void;
+    waitForConfigSync.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const nextBranch = [userMessage, { ...assistantMessage, id: 12, status: 'generating', llm_configuration_id: 9 }];
+    apiMocks.post.mockResolvedValue({ branch: nextBranch, generation: { message_id: 12 } });
+
+    actions.startBranch(branch.value[1]!);
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    resolve(true);
+    await vi.waitFor(() => expect(startPolling).toHaveBeenCalledWith(12));
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/1/generate', { parent_id: 10 });
+    expect(branch.value).toEqual(nextBranch);
+    expect(actions.editingMessage.value).toBeNull();
+  });
+
+  it('retries an earlier response while another response is generating', async () => {
+    const { actions, branch, startPolling } = createActions();
+    branch.value = [...branch.value, { ...assistantMessage, id: 12, status: 'generating' }];
+    const nextBranch = [userMessage, { ...assistantMessage, id: 13, status: 'generating' }];
+    apiMocks.post.mockResolvedValue({ branch: nextBranch, generation: { message_id: 13 } });
+
+    await actions.retryLastStep(assistantMessage);
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-messages/11/retry-last-step', {});
+    expect(startPolling).toHaveBeenCalledWith(13);
+    expect(branch.value).toEqual(nextBranch);
+  });
+
+  it.each([
+    ['assistant', false], ['user', false], ['retry', false],
+    ['assistant', true], ['user', true], ['retry', true],
+  ] as const)('ignores late %s branch starts after navigation (new chat: %s)', async (action, changeChat) => {
+    const { actions, branch, chatId, startPolling, applyServerConfiguration } = createActions();
+    let resolve!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((done) => { resolve = done; }));
+    let pending: Promise<void> | undefined;
+    if (action === 'assistant') actions.startBranch(assistantMessage);
+    else if (action === 'retry') pending = actions.retryLastStep(assistantMessage);
+    else {
+      actions.startBranch(userMessage);
+      pending = actions.saveEdit();
+    }
+    await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+    if (changeChat) chatId.value = 2;
+    branch.value = [{ ...assistantMessage, id: 99 }];
+    resolve({
+      branch: [userMessage, { ...assistantMessage, id: 12, status: 'generating' }],
+      chat: { llm_configuration_id: 9 },
+      generation: { message_id: 12 },
+    });
+    await pending;
+    await Promise.resolve();
+    expect(branch.value.map((message) => message.id)).toEqual([99]);
+    expect(startPolling).not.toHaveBeenCalled();
+    expect(applyServerConfiguration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['assistant', 'config'], ['user', 'config'], ['user', 'upload'],
+    ['assistant', 'post'], ['user', 'post'], ['retry', 'post'],
+  ] as const)('accepts %s branch starts after a same-branch reload during %s', async (action, stage) => {
+    const { actions, branch, waitForConfigSync, ensurePendingFilesUploaded, startPolling } = createActions();
+    let resolveConfig!: (value: boolean) => void;
+    let resolveUpload!: (value: string[]) => void;
+    let resolvePost!: (value: unknown) => void;
+    waitForConfigSync.mockReturnValue(new Promise((resolve) => { resolveConfig = resolve; }));
+    ensurePendingFilesUploaded.mockReturnValue(new Promise((resolve) => { resolveUpload = resolve; }));
+    apiMocks.post.mockReturnValue(new Promise((resolve) => { resolvePost = resolve; }));
+    let pending: Promise<void> | undefined;
+    if (action === 'assistant') actions.startBranch(assistantMessage);
+    else if (action === 'retry') pending = actions.retryLastStep(assistantMessage);
+    else {
+      actions.startBranch(userMessage);
+      if (stage === 'upload') actions.addEditPendingFiles([new File(['file'], 'note.txt', { type: 'text/plain' })]);
+      pending = actions.saveEdit();
+    }
+    if (stage !== 'config') {
+      resolveConfig(true);
+      if (stage === 'upload') await vi.waitFor(() => expect(ensurePendingFilesUploaded).toHaveBeenCalledTimes(1));
+      else await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+    }
+    branch.value = branch.value.map((message) => ({ ...message, token_count: 100 }));
+    resolveConfig(true);
+    resolveUpload(['upload-1']);
+    const nextBranch = [userMessage, { ...assistantMessage, id: 12, status: 'generating' }];
+    resolvePost({ branch: nextBranch, generation: { message_id: 12 } });
+    await pending;
+    await vi.waitFor(() => expect(startPolling).toHaveBeenCalledWith(12));
+    expect(branch.value).toEqual(nextBranch);
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    if (stage === 'upload') expect(apiMocks.post).toHaveBeenCalledWith(
+      '/api/bff/chat-generation/1/branch', expect.objectContaining({ upload_ids: ['upload-1'] })
+    );
+  });
+
+  it.each([false, true])('keeps polling ownership after applying branch configuration (navigation: %s)', async (navigate) => {
+    const { actions, branch, applyServerConfiguration, startPolling } = createActions();
+    let resolveConfig!: () => void;
+    applyServerConfiguration.mockReturnValue(new Promise<void>((resolve) => { resolveConfig = resolve; }));
+    apiMocks.post.mockResolvedValue({
+      branch: [userMessage, { ...assistantMessage, id: 12, status: 'generating' }],
+      chat: { llm_configuration_id: 9 }, generation: { message_id: 12 },
+    });
+    actions.startBranch(userMessage);
+    const pending = actions.saveEdit();
+    await vi.waitFor(() => expect(applyServerConfiguration).toHaveBeenCalledWith(9));
+    branch.value = branch.value.map((message) => ({ ...message, id: navigate ? message.id + 100 : message.id }));
+    resolveConfig();
+    await pending;
+    if (navigate) expect(startPolling).not.toHaveBeenCalled();
+    else expect(startPolling).toHaveBeenCalledWith(12);
   });
 
   it('branches an assistant response to a new chat immediately without branch options', async () => {
