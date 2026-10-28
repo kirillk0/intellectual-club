@@ -144,7 +144,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       select_by_default?(false)
     end
 
-    create_timestamp(:created_at)
+    create_timestamp(:created_at, public?: true)
     update_timestamp(:updated_at)
   end
 
@@ -159,11 +159,13 @@ defmodule IntellectualClub.Chat.ChatMessage do
 
     belongs_to :chat, IntellectualClub.Chat.Chat,
       allow_nil?: false,
-      attribute_type: :integer
+      attribute_type: :integer,
+      attribute_public?: true
 
     belongs_to :parent, IntellectualClub.Chat.ChatMessage,
       allow_nil?: true,
-      attribute_type: :integer
+      attribute_type: :integer,
+      attribute_public?: true
 
     belongs_to :llm_configuration, IntellectualClub.Llm.LlmConfiguration,
       allow_nil?: true,
@@ -178,12 +180,55 @@ defmodule IntellectualClub.Chat.ChatMessage do
     end
   end
 
+  calculations do
+    calculate :text, :string, IntellectualClub.Chat.Calculations.MessageText do
+      public?(true)
+      allow_nil?(false)
+      description("User input or assistant answer text, without reasoning or tool traces.")
+    end
+
+    calculate :active_branch, :boolean, IntellectualClub.Chat.Calculations.MessageActiveBranch do
+      public?(true)
+      allow_nil?(false)
+      description("Whether this stored message belongs to its own chat's active local branch.")
+    end
+  end
+
   json_api do
     type "chat-messages"
   end
 
   actions do
     defaults([:read])
+
+    read :search do
+      description(
+        "Search user-facing message text by case-insensitive literal substring. Returns every matching stored message, including inactive branches, without UI ranking or grouping."
+      )
+
+      argument :q, :string do
+        allow_nil?(false)
+        constraints(min_length: 1)
+      end
+
+      argument :chat_id, :integer
+      argument :bot_id, :integer
+
+      argument :role, :atom do
+        constraints(one_of: [:user, :assistant])
+      end
+
+      pagination do
+        offset?(true)
+        keyset?(true)
+        required?(false)
+        default_limit(25)
+        max_page_size(100)
+        countable(true)
+      end
+
+      prepare IntellectualClub.Chat.Preparations.SearchMessages
+    end
 
     destroy :destroy do
       primary?(true)

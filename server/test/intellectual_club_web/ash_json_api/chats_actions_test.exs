@@ -23,6 +23,183 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
 
   require Ash.Query
 
+  describe "message search and flat conversation reads" do
+    test "search returns all matching messages with flat text and real pagination", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+      chat = create_empty_chat!(actor)
+      {:ok, first} = Threads.add_message_to_end(chat, :user, "Привет alpha", actor: actor)
+      {:ok, second} = Threads.add_message_to_end(chat, :assistant, "Another ALPHA", actor: actor)
+      {:ok, _third} = Threads.add_message_to_end(chat, :user, "Other text", actor: actor)
+
+      {:ok, inactive} =
+        Threads.add_message(chat, :assistant, "Inactive alpha", actor: actor, parent_id: first.id)
+
+      {:ok, _branch} = Threads.activate_branch(chat.id, second.id, actor)
+
+      path =
+        "/api/ash/chat-messages/search?" <>
+          Plug.Conn.Query.encode(%{
+            "q" => "AlPhA",
+            "sort" => "id",
+            "page" => %{"limit" => "2", "count" => "true"}
+          })
+
+      payload = conn |> json_api_get(path) |> json_response(200)
+      assert Enum.map(payload["data"], & &1["id"]) == Enum.map([first, second], &to_string(&1.id))
+
+      assert Enum.map(payload["data"], & &1["attributes"]["text"]) == [
+               "Привет alpha",
+               "Another ALPHA"
+             ]
+
+      assert Enum.all?(payload["data"], & &1["attributes"]["active_branch"])
+      assert Enum.all?(payload["data"], &(&1["attributes"]["chat_id"] == chat.id))
+      assert payload["links"]["next"]
+
+      next =
+        conn
+        |> recycle()
+        |> sign_in_conn(actor.username, password)
+        |> json_api_get(payload["links"]["next"])
+        |> json_response(200)
+
+      assert [hit] = next["data"]
+      assert hit["id"] == to_string(inactive.id)
+      assert hit["attributes"]["active_branch"] == false
+
+      unicode =
+        conn
+        |> recycle()
+        |> sign_in_conn(actor.username, password)
+        |> json_api_get("/api/ash/chat-messages/search?" <> URI.encode_query(%{q: "ПРИВ"}))
+        |> json_response(200)
+
+      assert ids_from_data(unicode) == [first.id]
+    end
+
+    test "search filters by chat, bot and role without exposing private messages", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      %{user: stranger} = user_fixture()
+      bot = create_bot!(actor)
+      chat = create_empty_chat!(actor, bot_id: bot.id)
+      other_chat = create_empty_chat!(actor)
+      private_chat = create_empty_chat!(stranger)
+      {:ok, expected} = Threads.add_message_to_end(chat, :assistant, "needle", actor: actor)
+      Threads.add_message_to_end(chat, :user, "needle", actor: actor)
+      Threads.add_message_to_end(other_chat, :assistant, "needle", actor: actor)
+      Threads.add_message_to_end(private_chat, :assistant, "needle secret", actor: stranger)
+      conn = sign_in_conn(conn, actor.username, password)
+
+      params =
+        URI.encode_query(%{q: "needle", chat_id: chat.id, bot_id: bot.id, role: "assistant"})
+
+      payload =
+        conn |> json_api_get("/api/ash/chat-messages/search?" <> params) |> json_response(200)
+
+      assert ids_from_data(payload) == [expected.id]
+
+      private =
+        conn
+        |> recycle()
+        |> sign_in_conn(actor.username, password)
+        |> json_api_get(
+          "/api/ash/chat-messages/search?" <>
+            URI.encode_query(%{q: "secret", chat_id: private_chat.id})
+        )
+        |> json_response(200)
+
+      assert private["data"] == []
+
+      conn =
+        conn
+        |> recycle()
+        |> sign_in_conn(actor.username, password)
+        |> json_api_get("/api/ash/chats/#{private_chat.id}/messages")
+
+      assert conn.status in [403, 404]
+      refute conn.resp_body =~ "needle secret"
+    end
+
+    test "read_messages pages only the active branch in conversation order", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      chat = create_empty_chat!(actor)
+      {:ok, first} = Threads.add_message_to_end(chat, :user, "Question", actor: actor)
+      {:ok, answer} = Threads.add_message_to_end(chat, :assistant, "Answer", actor: actor)
+      Threads.add_message(chat, :assistant, "Inactive answer", actor: actor, parent_id: first.id)
+      {:ok, _branch} = Threads.activate_branch(chat.id, answer.id, actor)
+      conn = sign_in_conn(conn, actor.username, password)
+
+      payload =
+        conn |> json_api_get("/api/ash/chats/#{chat.id}/messages?limit=1") |> json_response(200)
+
+      assert payload["chat_id"] == chat.id
+      assert [%{"id" => id, "text" => "Question", "inherited" => false}] = payload["messages"]
+      assert id == first.id
+      assert payload["has_more"]
+      assert payload["next_offset"] == 1
+
+      next =
+        conn
+        |> recycle()
+        |> sign_in_conn(actor.username, password)
+        |> json_api_get("/api/ash/chats/#{chat.id}/messages?limit=1&offset=1")
+        |> json_response(200)
+
+      assert [%{"id" => id, "text" => "Answer"}] = next["messages"]
+      assert id == answer.id
+      assert next["has_more"] == false
+      assert next["next_offset"] == nil
+    end
+
+    test "search and read actions validate arguments", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      chat = create_empty_chat!(actor)
+
+      for path <- [
+            "/api/ash/chat-messages/search",
+            "/api/ash/chat-messages/search?q=abc&role=system",
+            "/api/ash/chats/#{chat.id}/messages?limit=101",
+            "/api/ash/chats/#{chat.id}/messages?offset=-1"
+          ] do
+        response =
+          conn |> recycle() |> sign_in_conn(actor.username, password) |> json_api_get(path)
+
+        assert response.status in [400, 422], "#{path}: #{response.resp_body}"
+      end
+    end
+
+    test "OpenAPI describes the search arguments and typed flat message page", %{conn: conn} do
+      spec = conn |> get("/api/ash/open_api") |> response(200) |> Jason.decode!()
+      search = get_in(spec, ["paths", "/api/ash/chat-messages/search", "get"])
+      assert search
+
+      assert Enum.all?(["q", "chat_id", "bot_id", "role", "page", "sort"], fn name ->
+               Enum.any?(search["parameters"], &(&1["name"] == name))
+             end)
+
+      operation = get_in(spec, ["paths", "/api/ash/chats/{id}/messages", "get"])
+      assert operation
+
+      schema =
+        get_in(operation, ["responses", "200", "content", "application/vnd.api+json", "schema"])
+
+      assert schema
+      assert schema["properties"]["messages"]["items"]["properties"]["text"]["type"] == "string"
+
+      text_schema =
+        spec["components"]["schemas"]["chat-messages"]["properties"]["attributes"]["properties"][
+          "text"
+        ]
+
+      assert Enum.any?(text_schema["anyOf"], &(&1["type"] == "string"))
+
+      assert spec["components"]["schemas"]["chat-messages"]["properties"]["attributes"][
+               "properties"
+             ]["chat_id"]["type"] == "integer"
+    end
+  end
+
   describe "POST /api/ash/chats default configuration" do
     test "POST /api/ash/chats applies default configuration and preserves explicit null", %{
       conn: conn

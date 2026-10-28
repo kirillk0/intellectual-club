@@ -553,6 +553,29 @@ defmodule IntellectualClub.Chat.Chat do
   actions do
     defaults([:read])
 
+    action :read_messages, IntellectualClub.Chat.Types.MessagePage do
+      description(
+        "Read a bounded page of the active conversation as flat messages, root to leaf. Includes authorized linked-fork context; does not expand reasoning or tool traces."
+      )
+
+      transaction?(false)
+      argument :id, :integer, allow_nil?: false
+
+      argument :offset, :integer do
+        allow_nil?(true)
+        default(0)
+        constraints(min: 0)
+      end
+
+      argument :limit, :integer do
+        allow_nil?(true)
+        default(25)
+        constraints(min: 1, max: 100)
+      end
+
+      run IntellectualClub.Chat.ReadMessages
+    end
+
     destroy :destroy do
       primary?(true)
       require_atomic?(false)
@@ -817,6 +840,10 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   policies do
+    policy action(:read_messages) do
+      authorize_if(actor_present())
+    end
+
     policy action_type(:read) do
       authorize_if(relates_to_actor_via(:owner))
 

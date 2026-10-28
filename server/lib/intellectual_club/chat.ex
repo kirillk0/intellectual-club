@@ -29,6 +29,7 @@ defmodule IntellectualClub.Chat do
       base_route "/chats", IntellectualClub.Chat.Chat do
         index(:read)
         get(:read)
+        route(:get, "/:id/messages", :read_messages, query_params: [:offset, :limit])
         post(:create)
         post(:copy, route: "/:id/copy")
         post(:continue, route: "/:id/continue")
@@ -40,6 +41,20 @@ defmodule IntellectualClub.Chat do
       end
 
       base_route "/chat-messages", IntellectualClub.Chat.ChatMessage do
+        index(:search,
+          route: "/search",
+          default_fields: [
+            :chat_id,
+            :parent_id,
+            :role,
+            :status,
+            :created_at,
+            :finished_at,
+            :text,
+            :active_branch
+          ]
+        )
+
         index(:read)
         get(:read)
         post(:add_user_message_with_contents, route: "/add-user")

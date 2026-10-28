@@ -8,11 +8,9 @@ defmodule IntellectualClub.Chat.Search do
   alias Ash.CiString
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.ChatMessageContent
-  alias IntellectualClub.Chat.ChatMessageItem
-  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Listing
+  alias IntellectualClub.Chat.MessageText
   alias IntellectualClub.Chat.Threads
 
   require Ash.Query
@@ -22,16 +20,6 @@ defmodule IntellectualClub.Chat.Search do
   @default_message_candidate_limit 500
   @snippet_radius 240
   @snippet_preview_limit @snippet_radius * 2
-  @trace_read_chunk_size 200
-  @searchable_trace_item_types [
-    :input,
-    :handoff_request,
-    :handoff_context,
-    :handoff_history,
-    :handoff_message,
-    :answer,
-    :handoff_summary
-  ]
 
   @type bot_filter :: nil | :none | integer()
   @type content_search :: {:contains, String.t()}
@@ -78,13 +66,12 @@ defmodule IntellectualClub.Chat.Search do
 
         messages =
           ChatMessage
-          |> Ash.Query.filter(chat_id == ^chat_id)
-          |> filter_trace_search(search)
           |> Ash.Query.sort(created_at: :asc, id: :asc)
+          |> Ash.Query.for_read(:search, %{q: term, chat_id: chat_id}, actor: actor)
           |> Ash.Query.limit(limit)
-          |> Ash.read!(actor: actor)
+          |> Ash.read!(actor: actor, page: false)
 
-        trace_text_by_message = load_message_trace_texts(messages, actor)
+        trace_text_by_message = MessageText.load_texts(messages, actor)
 
         {active_hits, inactive_hits} =
           Enum.reduce(messages, {[], []}, fn message, {active_acc, inactive_acc} ->
@@ -221,7 +208,7 @@ defmodule IntellectualClub.Chat.Search do
             |> Map.values()
           )
 
-        snippet_by_message = load_message_snippets(selected_messages, search, actor)
+        snippet_by_message = MessageText.load_snippets(selected_messages, search, actor)
 
         match_by_chat =
           Map.new(selected_messages, fn message ->
@@ -282,32 +269,12 @@ defmodule IntellectualClub.Chat.Search do
     {:contains, term}
   end
 
-  defp filter_trace_search(query, {:contains, term}) when is_binary(term) do
-    term = contains_query_term(term)
-
-    Ash.Query.filter(
-      query,
-      exists(
-        steps,
-        exists(
-          items,
-          type in ^@searchable_trace_item_types and
-            exists(
-              contents,
-              item_type in ^@searchable_trace_item_types and kind == :text and
-                contains(content_text, ^term)
-            )
-        )
-      )
-    )
-  end
-
   defp message_to_hit(message, search, content) do
     %{
       id: message.id,
       role: role_to_string(message.role),
       content: content,
-      snippet: build_snippet(content, search),
+      snippet: MessageText.snippet(content, search),
       created_at: datetime_iso(message.created_at),
       finished_at: datetime_iso(Map.get(message, :finished_at)),
       llm_configuration_id: message.llm_configuration_id,
@@ -324,289 +291,6 @@ defmodule IntellectualClub.Chat.Search do
   end
 
   defp datetime_iso(_other), do: nil
-
-  defp load_message_trace_texts([], _actor), do: %{}
-
-  defp load_message_trace_texts(messages, actor) when is_list(messages) do
-    message_ids =
-      messages
-      |> Enum.map(&Map.get(&1, :id))
-      |> Enum.filter(&is_integer/1)
-      |> Enum.uniq()
-
-    if message_ids == [] do
-      %{}
-    else
-      wanted_type_by_message =
-        Map.new(messages, fn message ->
-          {message.id, wanted_trace_item_type(message)}
-        end)
-
-      steps = read_steps_for_messages(message_ids, actor)
-
-      items =
-        steps
-        |> Enum.map(& &1.id)
-        |> read_items_for_steps(actor)
-
-      contents =
-        items
-        |> Enum.map(& &1.id)
-        |> read_text_contents_for_items(actor)
-
-      steps_by_message = Enum.group_by(steps, & &1.chat_message_id)
-      items_by_step = Enum.group_by(items, & &1.chat_message_step_id)
-      contents_by_item = Enum.group_by(contents, & &1.chat_message_item_id)
-
-      Map.new(messages, fn message ->
-        text =
-          steps_by_message
-          |> Map.get(message.id, [])
-          |> Enum.sort_by(&sort_key/1)
-          |> Enum.flat_map(fn step ->
-            items_by_step
-            |> Map.get(step.id, [])
-            |> Enum.sort_by(&sort_key/1)
-          end)
-          |> Enum.filter(fn item ->
-            trace_item_type_matches?(item, Map.get(wanted_type_by_message, message.id))
-          end)
-          |> Enum.map(fn item ->
-            contents_by_item
-            |> Map.get(item.id, [])
-            |> Enum.sort_by(&sort_key/1)
-            |> Enum.map_join("", fn content -> to_string(content.content_text || "") end)
-          end)
-          |> Enum.reject(&(String.trim(&1) == ""))
-          |> Enum.join("\n\n")
-
-        {message.id, text}
-      end)
-    end
-  end
-
-  defp read_steps_for_messages(message_ids, actor) when is_list(message_ids) do
-    message_ids
-    |> chunk_ids()
-    |> Enum.flat_map(fn chunk ->
-      ChatMessageStep
-      |> Ash.Query.filter(chat_message_id in ^chunk)
-      |> Ash.Query.select([:id, :chat_message_id, :sequence])
-      |> Ash.read!(actor: actor)
-    end)
-  end
-
-  defp read_items_for_steps([], _actor), do: []
-
-  defp read_items_for_steps(step_ids, actor) when is_list(step_ids) do
-    step_ids
-    |> chunk_ids()
-    |> Enum.flat_map(fn chunk ->
-      ChatMessageItem
-      |> Ash.Query.filter(
-        chat_message_step_id in ^chunk and type in ^@searchable_trace_item_types
-      )
-      |> Ash.Query.select([:id, :chat_message_step_id, :sequence, :type])
-      |> Ash.read!(actor: actor)
-    end)
-  end
-
-  defp read_text_contents_for_items([], _actor), do: []
-
-  defp read_text_contents_for_items(item_ids, actor) when is_list(item_ids) do
-    item_ids
-    |> chunk_ids()
-    |> Enum.flat_map(fn chunk ->
-      ChatMessageContent
-      |> Ash.Query.filter(chat_message_item_id in ^chunk and kind == :text)
-      |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
-      |> Ash.read!(actor: actor)
-    end)
-  end
-
-  defp load_message_snippets([], _search, _actor), do: %{}
-
-  defp load_message_snippets(messages, search, actor) when is_list(messages) do
-    message_ids =
-      messages
-      |> Enum.map(&Map.get(&1, :id))
-      |> Enum.filter(&is_integer/1)
-      |> Enum.uniq()
-
-    if message_ids == [] do
-      %{}
-    else
-      wanted_type_by_message =
-        Map.new(messages, fn message ->
-          {message.id, wanted_trace_item_type(message)}
-        end)
-
-      steps = read_steps_for_messages(message_ids, actor)
-      step_by_id = Map.new(steps, &{&1.id, &1})
-
-      items =
-        steps
-        |> Enum.map(& &1.id)
-        |> read_items_for_steps(actor)
-        |> Enum.filter(fn item ->
-          case Map.get(step_by_id, item.chat_message_step_id) do
-            nil ->
-              false
-
-            step ->
-              trace_item_type_matches?(
-                item,
-                Map.get(wanted_type_by_message, step.chat_message_id)
-              )
-          end
-        end)
-
-      item_by_id = Map.new(items, &{&1.id, &1})
-
-      contents =
-        items
-        |> Enum.map(& &1.id)
-        |> read_matching_text_contents_for_items(search, actor)
-
-      best_content_by_message =
-        Enum.reduce(contents, %{}, fn content, acc ->
-          with %ChatMessageItem{} = item <- Map.get(item_by_id, content.chat_message_item_id),
-               %ChatMessageStep{} = step <- Map.get(step_by_id, item.chat_message_step_id) do
-            message_id = step.chat_message_id
-            candidate = {sort_key(step), sort_key(item), sort_key(content), content}
-
-            case Map.get(acc, message_id) do
-              nil ->
-                Map.put(acc, message_id, candidate)
-
-              current when candidate < current ->
-                Map.put(acc, message_id, candidate)
-
-              _current ->
-                acc
-            end
-          else
-            _other ->
-              acc
-          end
-        end)
-
-      Map.new(messages, fn message ->
-        snippet =
-          case Map.get(best_content_by_message, message.id) do
-            {_step_key, _item_key, _content_key, content} ->
-              build_snippet(content.content_text, search)
-
-            _other ->
-              nil
-          end
-
-        {message.id, snippet}
-      end)
-    end
-  end
-
-  defp read_matching_text_contents_for_items([], _search, _actor), do: []
-
-  defp read_matching_text_contents_for_items(item_ids, {:contains, term}, actor)
-       when is_list(item_ids) and is_binary(term) do
-    term = contains_query_term(term)
-
-    item_ids
-    |> chunk_ids()
-    |> Enum.flat_map(fn chunk ->
-      ChatMessageContent
-      |> Ash.Query.filter(
-        chat_message_item_id in ^chunk and item_type in ^@searchable_trace_item_types and
-          kind == :text and contains(content_text, ^term)
-      )
-      |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
-      |> Ash.read!(actor: actor)
-    end)
-  end
-
-  defp chunk_ids(ids) when is_list(ids) do
-    ids
-    |> Enum.filter(&is_integer/1)
-    |> Enum.uniq()
-    |> Enum.chunk_every(@trace_read_chunk_size)
-  end
-
-  defp wanted_trace_item_type(message) do
-    case Map.get(message, :role) do
-      :user -> [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
-      :assistant -> [:answer, :handoff_summary]
-      _ -> []
-    end
-  end
-
-  defp trace_item_type_matches?(_item, []), do: false
-
-  defp trace_item_type_matches?(item, wanted_types) when is_list(wanted_types) do
-    Map.get(item, :type) in wanted_types
-  end
-
-  defp sort_seq(%{sequence: sequence}) when is_integer(sequence), do: sequence
-  defp sort_seq(_other), do: 0
-
-  defp sort_key(record) do
-    {sort_seq(record), Map.get(record, :id, 0)}
-  end
-
-  defp build_snippet(text, search, radius \\ @snippet_radius)
-
-  defp build_snippet(text, {:contains, term}, radius) when is_integer(radius) do
-    build_exact_snippet(text, term, radius)
-  end
-
-  defp build_snippet(_text, _search, _radius), do: nil
-
-  defp build_exact_snippet(text, term, radius) when is_integer(radius) do
-    text = to_string(text || "")
-    term = normalize_term(term)
-
-    if text == "" or term == "" do
-      nil
-    else
-      regex = Regex.compile!(Regex.escape(term), "iu")
-
-      case Regex.run(regex, text, return: :index) do
-        nil ->
-          nil
-
-        [{match_start_bytes, match_len_bytes} | _] ->
-          prefix_len =
-            if match_start_bytes <= 0 do
-              0
-            else
-              text
-              |> binary_part(0, match_start_bytes)
-              |> String.length()
-            end
-
-          match_end_bytes = match_start_bytes + match_len_bytes
-
-          match_end_len =
-            if match_end_bytes <= 0 do
-              0
-            else
-              text
-              |> binary_part(0, match_end_bytes)
-              |> String.length()
-            end
-
-          total_len = String.length(text)
-          start_idx = max(0, prefix_len - radius)
-          end_idx = min(total_len, match_end_len + radius)
-
-          snippet = String.slice(text, start_idx, end_idx - start_idx)
-          prefix = if start_idx > 0, do: "...", else: ""
-          suffix = if end_idx < total_len, do: "...", else: ""
-
-          prefix <> snippet <> suffix
-      end
-    end
-  end
 
   defp search_meta_chats(term, bot_filter, limit, actor) do
     term = contains_query_term(term)
@@ -643,6 +327,8 @@ defmodule IntellectualClub.Chat.Search do
     handoff_relation_kind = Handoff.relation_kind()
 
     ChatMessage
+    |> Ash.Query.sort(created_at: :desc, id: :desc)
+    |> Ash.Query.for_read(:search, %{q: elem(search, 1)}, actor: actor)
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(
       exists(
@@ -655,12 +341,10 @@ defmodule IntellectualClub.Chat.Search do
       )
     )
     |> Ash.Query.filter(role in [:user, :assistant])
-    |> filter_trace_search(search)
     |> maybe_exclude_chat_ids(meta_list)
     |> apply_bot_filter_via_chat(bot_filter)
-    |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
-    |> Ash.read!(actor: actor)
+    |> Ash.read!(actor: actor, page: false)
   end
 
   defp put_message_candidate(acc, message) do
@@ -681,7 +365,7 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
-  defp preferred_message_candidate?(message), do: :input in wanted_trace_item_type(message)
+  defp preferred_message_candidate?(message), do: message.role == :user
 
   defp select_message_candidates(candidates_by_chat) when is_map(candidates_by_chat) do
     Map.new(candidates_by_chat, fn {chat_id, candidate} ->
