@@ -36,12 +36,15 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     refute result.raw["isError"]
     assert length(result.raw["warnings"]) == 2
     assert Enum.map(result.raw["attempts"], & &1["provider"]) == ~w(brave tavily exa)
+    assert result.raw["provider"] == "exa"
+    assert result.text =~ "Provider: exa"
     assert result.text =~ "[REDACTED]"
     refute result.text =~ "secret-brave"
     limited = Executor.limit_execution_result(result, 20)
     assert limited.raw["truncated"]
     assert limited.raw["attempts"] == result.raw["attempts"]
     assert limited.raw["warnings"] == result.raw["warnings"]
+    assert limited.raw["provider"] == "exa"
     assert_receive {:web_request, "/brave/web/search", _, _}
     assert_receive {:web_request, "/exa/search", _, _}
     refute_received {:web_request, "/brave/web/search", _, _}
@@ -83,6 +86,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     assert length(result.raw["warnings"]) == 2
     assert result.text =~ "tinyfish (tinyfish): Provider returned no search results."
     assert hd(result.raw["results"])["url"] == "https://example.org/interview"
+    assert result.raw["provider"] == "firecrawl"
+    assert result.text =~ "Provider: firecrawl"
 
     limited = Executor.limit_execution_result(result, 20)
     assert limited.raw["attempts"] == result.raw["attempts"]
@@ -106,6 +111,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
     refute result.raw["isError"]
     assert length(result.raw["attempts"]) == 1
     assert result.raw["warnings"] == []
+    assert result.raw["provider"] == "brave"
+    assert result.text =~ "Provider: brave"
     assert_receive {:web_request, "/brave/web/search", _, _}
     refute_received {:web_request, "/tavily/search", _, _}
   end
@@ -126,6 +133,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
       assert result.raw["results"] == []
       assert result.text =~ "(no results)"
       refute result.text =~ "All configured providers failed."
+      assert Map.has_key?(result.raw, "provider") and is_nil(result.raw["provider"])
+      refute result.text =~ "Provider:"
       assert Enum.map(result.raw["attempts"], & &1["provider"]) == providers
       assert Enum.all?(result.raw["attempts"], &(&1["status"] == "empty"))
       if "tavily" in providers, do: assert(result.text =~ "tavily: Provider warning")
@@ -158,6 +167,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearchTest do
 
     assert failed.raw["isError"]
     assert failed.text =~ "All configured providers failed."
+    assert is_nil(failed.raw["provider"])
   end
 
   test "filters are not silently dropped and invalid arguments make no requests" do

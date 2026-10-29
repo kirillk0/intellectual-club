@@ -909,6 +909,7 @@ defmodule IntellectualClub.Tools.Executor do
         |> Map.put("warnings", Enum.take(List.wrap(raw["warnings"]), 40))
         |> Map.put("attempts", Enum.take(List.wrap(raw["attempts"]), 30))
         |> Map.put("errors", Enum.take(List.wrap(raw["errors"]), 10))
+        |> Map.merge(Map.take(raw, ["provider"]))
       else
         out
       end

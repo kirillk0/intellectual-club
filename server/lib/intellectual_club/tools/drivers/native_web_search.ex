@@ -213,7 +213,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
         "name" => "web_search",
         "safe_to_interrupt" => true,
         "description" =>
-          "Search the web and return ranked links and snippets. Provider failures and empty results proceed through the configured fallback chain; warnings report failed or empty attempts.",
+          "Search the web and return ranked links and snippets. Provider failures and empty results proceed through the configured fallback chain; warnings report failed or empty attempts, and the provider that produced the results is reported.",
         "enabled" => true,
         "schema" => %{
           "type" => "object",
@@ -372,7 +372,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
     state =
       Enum.reduce_while(
         config["providers"],
-        %{results: [], attempts: [], warnings: [], success: false},
+        %{results: [], attempts: [], warnings: [], success: false, provider: nil},
         fn provider, state ->
           cfg = provider_config(tool, config, provider, "web_search")
           started = System.monotonic_time(:millisecond)
@@ -409,6 +409,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
                %{
                  state
                  | success: true,
+                   provider: provider,
                    results: Enum.take(result.results, args["count"]),
                    attempts: state.attempts ++ [attempt],
                    warnings: warnings
@@ -654,7 +655,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
         do: [],
         else: ["Warnings:"] ++ Enum.map(state.warnings, &("- " <> &1)) ++ [""]
 
-    header = header ++ ["Operation: #{operation}"] ++ if(query, do: ["Query: #{query}"], else: [])
+    provider = Map.get(state, :provider)
+
+    header =
+      header ++
+        ["Operation: #{operation}"] ++
+        if(query, do: ["Query: #{query}"], else: []) ++
+        if(provider, do: ["Provider: #{provider}"], else: [])
 
     body =
       Enum.with_index(state.results, 1)
@@ -679,6 +686,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebSearch do
       "errors" => Map.get(state, :errors, []),
       "isError" => not state.success
     }
+
+    # Fetch results carry their provider per URL; search reports the one that answered.
+    raw = if operation == "web_search", do: Map.put(raw, "provider", provider), else: raw
 
     {:ok, %ExecutionResult{text: Enum.join(header ++ [""] ++ body, "\n"), raw: raw}}
   end
