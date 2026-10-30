@@ -70,7 +70,7 @@
               />
               <div v-else class="chat-sections">
                 <section v-for="section in visibleSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
-                  <h3 class="chat-section__heading">{{ section.label }} <span class="muted">{{ section.total }}</span></h3>
+                  <h3 v-if="section.key !== 'other' || visibleSections.length > 1" class="chat-section__heading">{{ section.label }} <span class="muted">{{ section.total }}</span></h3>
                   <div class="list">
                     <div v-for="c in section.chats" :key="c.id" class="chat-list-entry">
                       <ChatListRow
