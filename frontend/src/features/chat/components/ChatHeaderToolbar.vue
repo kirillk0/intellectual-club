@@ -2,6 +2,8 @@
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
       <div class="chat-toolbar__title-wrap" :class="{ 'chat-toolbar__title-wrap--with-continuations': hasContinuationNav }">
+        <span v-if="isUnread" class="chat-read-dot" :title="t('Unread')" :aria-label="t('Unread')" role="status"></span>
+        <span v-else-if="isSnoozed" class="chat-snooze-marker" :title="snoozeLabel" :aria-label="snoozeLabel" role="status">◷</span>
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
           <span class="chat-toolbar__title-main">{{ chatBaseTitle }}</span>
           <button
@@ -110,6 +112,27 @@
 
         <Teleport to="body">
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
+            <template v-if="readState">
+              <button class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="toggle"
+                @click="isUnread ? emit('mark-read') : emit('mark-unread')">
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="check" size="16" /></span>
+                <span class="chat-menu-item__label">{{ t(isUnread ? 'Mark as read' : 'Mark as unread') }}</span>
+              </button>
+              <button v-if="isSnoozed" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="read"
+                @click="emit('mark-read')">
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="check" size="16" /></span>
+                <span class="chat-menu-item__label">{{ t('Mark as read') }}</span>
+              </button>
+              <button class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="snooze" @click="emit('open-snooze')">
+                <span class="chat-menu-item__icon" aria-hidden="true">◷</span>
+                <span class="chat-menu-item__label">{{ t('Snooze') }}</span>
+              </button>
+              <button v-if="isSnoozed" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="unsnooze" @click="emit('unsnooze')">
+                <span class="chat-menu-item__icon" aria-hidden="true">◷</span>
+                <span class="chat-menu-item__label">{{ t('Unsnooze') }}</span>
+              </button>
+              <div class="menu-divider" aria-hidden="true"></div>
+            </template>
             <button v-if="canEdit" class="menu-item chat-menu-item" type="button" @click="emit('open-share')">
               <span class="chat-menu-item__icon" aria-hidden="true">
                 <SvgIcon name="share-outgoing" size="16" />
@@ -242,7 +265,7 @@ import SvgIcon from '@/components/icons/SvgIcon.vue';
 import ContinuationNav from '@/components/ContinuationNav.vue';
 import { translate } from '@/i18n';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
-import type { ChatContinuationNavItem, LlmConfiguration } from '@/types/api';
+import type { ChatReadState, ChatContinuationNavItem, LlmConfiguration } from '@/types/api';
 
 interface Props {
   selectedConfig: number | '';
@@ -272,6 +295,10 @@ interface Props {
   creatingChat: boolean;
   deleting: boolean;
   canEdit: boolean;
+  readState?: ChatReadState | null;
+  readStateBusy?: boolean;
+  isUnread?: boolean;
+  isSnoozed?: boolean;
   handoffPending: boolean;
   handoffDisabled: boolean;
   showMissingToolsBanner: boolean;
@@ -298,6 +325,10 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   close: [];
+  'mark-read': [];
+  'mark-unread': [];
+  'open-snooze': [];
+  unsnooze: [];
   'open-continuation': [to: RouteLocationRaw];
   'update:selectedConfig': [value: number | ''];
   'change-config': [];
@@ -313,6 +344,10 @@ const emit = defineEmits<{
   'open-bot-tools': [];
   'dismiss-missing-tools-banner': [];
 }>();
+
+const snoozeLabel = computed(() => t('Snoozed until {date}', {
+  date: props.readState?.snoozed_until ? new Date(props.readState.snoozed_until).toLocaleString() : '',
+}));
 
 // A running generation keeps its pinned configuration, so the selector stays
 // available and applies to the next message.
@@ -371,6 +406,19 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 </script>
 
 <style scoped>
+.chat-read-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary, #3b82f6);
+}
+
+.chat-snooze-marker {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
 .chat-header-toolbar {
   width: 100%;
   min-width: 0;

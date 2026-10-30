@@ -13,6 +13,217 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
 
+  describe "global read-state sections" do
+    @tag :whitebox
+    test "personal state loading uses a fixed number of queries as the list grows" do
+      %{user: actor} = user_fixture()
+      chats = for _ <- 1..10, do: create_chat!(actor)
+
+      {single, one} =
+        IntellectualClub.SqlCapture.measure(fn ->
+          IntellectualClub.Chat.ReadState.load_many(Enum.take(chats, 1), actor)
+        end)
+
+      {batch, many} =
+        IntellectualClub.SqlCapture.measure(fn ->
+          IntellectualClub.Chat.ReadState.load_many(chats, actor)
+        end)
+
+      assert map_size(single) == 1
+      assert map_size(batch) == 10
+      assert length(one.queries) == length(many.queries)
+      assert length(many.queries) <= 3
+    end
+
+    @tag :whitebox
+    test "personal markers return compact aggregates and advance at the snooze deadline" do
+      %{user: actor} = user_fixture()
+      alias IntellectualClub.Chat.ReadState
+      now = DateTime.utc_now()
+      deadline = DateTime.add(now, 3600)
+      chats = for _ <- 1..20, do: create_chat!(actor)
+
+      for chat <- chats do
+        assert {:ok, _} =
+                 ReadState.mutate(
+                   chat.id,
+                   %{
+                     "action" => "snooze",
+                     "expected_state_version" => 0,
+                     "snoozed_until" => DateTime.to_iso8601(deadline)
+                   },
+                   actor
+                 )
+      end
+
+      {before, capture} =
+        IntellectualClub.SqlCapture.measure(fn -> ReadState.list_marker(actor, now) end)
+
+      assert before.next_expiry == DateTime.to_iso8601(deadline)
+      assert before.rows.row_count == 20
+      assert before.rows.snoozed_count == 20
+      assert before.rows.version_sum == 20
+      assert Enum.all?(capture.queries, &(&1.row_count <= 1))
+
+      after_expiry = ReadState.list_marker(actor, DateTime.add(deadline, 1))
+      assert is_nil(after_expiry.next_expiry)
+      assert after_expiry.rows.snoozed_count == 0
+      refute after_expiry.rows == before.rows
+
+      assert {:ok, _} =
+               ReadState.mutate(
+                 hd(chats).id,
+                 %{"action" => "unread", "expected_state_version" => 1},
+                 actor
+               )
+
+      assert ReadState.list_marker(actor, now).rows.version_sum == 21
+    end
+
+    test "working uses the same active branch as the generation indicator", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor, note: "branch-working")
+      root = create_message!(actor, chat, role: :user)
+
+      completed =
+        create_message!(actor, chat, role: :assistant, parent_id: root.id, status: :done)
+
+      create_generating_message!(actor, chat, parent_id: root.id)
+      assert {:ok, _} = Threads.activate_branch(chat.id, completed.id, actor)
+
+      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
+        working =
+          conn |> get(path, %{section: "working", q: "branch-working"}) |> json_response(200)
+
+        assert working["chats"] == []
+        assert working["page"]["total"] == 0
+        other = conn |> get(path, %{section: "other", q: "branch-working"}) |> json_response(200)
+        assert [%{"id" => id, "active_generation_message_id" => nil}] = other["chats"]
+        assert id == chat.id
+      end
+    end
+
+    test "generation completion and observed reads move chats between sections", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      child = create_subchat!(actor, chat, :spawn)
+      child_message = create_generating_message!(actor, child)
+      set_message_status!(actor, child_message, :done)
+      message = create_generating_message!(actor, chat)
+
+      for {status, section} <- [{:generating, "working"}, {:done, "unread"}] do
+        set_message_status!(actor, Ash.get!(ChatMessage, message.id, actor: actor), status)
+        response = conn |> get("/api/bff/chat-list", %{section: section}) |> json_response(200)
+        assert Enum.map(response["chats"], & &1["id"]) == [chat.id]
+        subchat = hd(hd(response["chats"])["subchats"])
+        assert subchat["read_state"]["activity_revision"] == 1
+        assert subchat["read_state"]["is_unread"]
+        assert subchat["last_message_status"] == "done"
+      end
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "read",
+                   "observed_revision" => 1,
+                   "expected_state_version" => 0,
+                   "explicit" => true
+                 },
+                 actor
+               )
+
+      other = conn |> get("/api/bff/chat-list", %{section: "other"}) |> json_response(200)
+      assert Enum.map(other["chats"], & &1["id"]) == [chat.id]
+      unread = conn |> get("/api/bff/chat-list", %{section: "unread"}) |> json_response(200)
+      assert unread["page"]["total"] == 0
+      assert unread["chats"] == []
+    end
+
+    test "sections paginate after filtering and preserve unsectioned stats and sorting", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      unread = for _ <- 1..3, do: create_chat!(actor, note: "section-match")
+      working = create_chat!(actor, note: "section-match")
+      other = create_chat!(actor, note: "section-match")
+      snoozed = create_chat!(actor, note: "section-match")
+      create_generating_message!(actor, working)
+
+      for chat <- unread do
+        assert {:ok, _} =
+                 IntellectualClub.Chat.ReadState.mutate(
+                   chat.id,
+                   %{"action" => "unread", "expected_state_version" => 0},
+                   actor
+                 )
+      end
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 snoozed.id,
+                 %{
+                   "action" => "snooze",
+                   "expected_state_version" => 0,
+                   "snoozed_until" =>
+                     DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+                 },
+                 actor
+               )
+
+      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
+        first =
+          conn
+          |> get(path, %{section: "unread", per_page: 2, q: "section-match"})
+          |> json_response(200)
+
+        second =
+          conn
+          |> get(path, %{section: "unread", per_page: 2, page: 2, q: "section-match"})
+          |> json_response(200)
+
+        assert first["page"]["total"] == 3
+        assert first["page"]["has_next"]
+        refute second["page"]["has_next"]
+
+        assert Enum.sort(Enum.map(first["chats"] ++ second["chats"], & &1["id"])) ==
+                 Enum.sort(Enum.map(unread, & &1.id))
+
+        active =
+          conn |> get(path, %{section: "working", q: "section-match"}) |> json_response(200)
+
+        assert Enum.map(active["chats"], & &1["id"]) == [working.id]
+        assert hd(active["chats"])["last_message_status"] == "generating"
+
+        inactive =
+          conn |> get(path, %{section: "other", q: "section-match"}) |> json_response(200)
+
+        assert Enum.sort(Enum.map(inactive["chats"], & &1["id"])) ==
+                 Enum.sort([other.id, snoozed.id])
+      end
+
+      all = conn |> get("/api/bff/chat-list") |> json_response(200)
+      filtered = conn |> get("/api/bff/chat-list", %{section: "unread"}) |> json_response(200)
+      assert all["stats"] == filtered["stats"]
+      assert all["page"]["total"] == 6
+      assert Enum.all?(all["chats"], &is_map(&1["read_state"]))
+      ids = Enum.map(all["chats"], & &1["id"])
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 other.id,
+                 %{"action" => "unread", "expected_state_version" => 0},
+                 actor
+               )
+
+      changed = conn |> get("/api/bff/chat-list") |> json_response(200)
+      assert Enum.map(changed["chats"], & &1["id"]) == ids
+    end
+  end
+
   describe "GET /api/bff/chat-list" do
     test "returns first_message_preview from the first message", %{
       conn: conn

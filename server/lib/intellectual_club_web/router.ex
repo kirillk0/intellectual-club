@@ -110,6 +110,11 @@ defmodule IntellectualClubWeb.Router do
   end
 
   scope "/api/bff", IntellectualClubWeb.Bff do
+    pipe_through :api_mixed_session
+    get "/chat-events", ChatEventsController, :index
+  end
+
+  scope "/api/bff", IntellectualClubWeb.Bff do
     pipe_through :api_session
 
     get "/auth/bootstrap", SessionController, :bootstrap
@@ -143,6 +148,7 @@ defmodule IntellectualClubWeb.Router do
     get "/chat-list/:id/summary", ChatListController, :summary
 
     get "/chat-state/:id", ChatStateController, :state
+    post "/chat-state/:id/read-state", ChatStateController, :read_state
     get "/chat-state/:id/export", ChatStateController, :export
     get "/chat-state/:id/settings", ChatStateController, :settings
     get "/chat-state/:id/prompt-context", ChatStateController, :prompt_context

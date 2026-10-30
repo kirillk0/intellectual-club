@@ -8,7 +8,13 @@
       :aria-label="t('Chat actions')"
       :style="menuStyle"
     >
+      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="unread ? emit('mark-read') : emit('mark-unread')">
+        {{ t(unread ? 'Mark as read' : 'Mark as unread') }}
+      </button>
+      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('snooze')">{{ t('Snooze') }}</button>
+      <button v-if="readable && snoozed" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('unsnooze')">{{ t('Unsnooze') }}</button>
       <button
+        v-if="canEdit"
         class="menu-item chat-list-actions-menu__item"
         type="button"
         role="menuitem"
@@ -21,6 +27,7 @@
         <span class="chat-list-actions-menu__label">{{ t('Edit note') }}</span>
       </button>
       <button
+        v-if="canEdit"
         class="menu-item chat-list-actions-menu__item danger"
         type="button"
         role="menuitem"
@@ -56,9 +63,19 @@ const props = withDefaults(
   defineProps<{
     anchor: ChatListActionsAnchor | null;
     deleting?: boolean;
+    canEdit?: boolean;
+    readable?: boolean;
+    unread?: boolean;
+    snoozed?: boolean;
+    busy?: boolean;
   }>(),
   {
     deleting: false,
+    canEdit: false,
+    readable: true,
+    unread: false,
+    snoozed: false,
+    busy: false,
   }
 );
 
@@ -66,6 +83,10 @@ const emit = defineEmits<{
   close: [];
   'edit-note': [];
   delete: [];
+  'mark-read': [];
+  'mark-unread': [];
+  snooze: [];
+  unsnooze: [];
 }>();
 
 const t = translate;

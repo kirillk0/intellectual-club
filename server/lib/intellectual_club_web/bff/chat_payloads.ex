@@ -29,7 +29,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
   require Ash.Query
 
   def state(%Chat{} = chat, actor) do
-    chat = Ash.load!(chat, [:last_message], actor: actor)
+    chat = Ash.load!(chat, [:last_message, :read_state], actor: actor)
     {messages, branch_meta_by_id} = load_branch(chat, actor)
     subchat_cost_summary = SubchatCosts.summary(chat.id, actor, refresh?: true)
     child_relations = Relations.child_relation_chats(chat.id, actor)
@@ -40,6 +40,10 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
 
     %{
       chat: Serializer.chat_detail(chat),
+      next_read_state_expiry:
+        IntellectualClub.Chat.ReadState.next_expiry(
+          Enum.map([chat | child_relations], & &1.read_state)
+        ),
       fork_context: fork_context,
       branch:
         serialize_branch(messages, branch_meta_by_id, actor,

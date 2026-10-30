@@ -92,6 +92,60 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
+  @doc "Paginates matching chat IDs in SQL before loading snippets and branch metadata."
+  def search_chat_page(term, actor, bot_filter, pagination) do
+    term = normalize_term(term)
+
+    if term == "" do
+      %{entries: [], total: 0}
+    else
+      text_predicate =
+        ChatMessage
+        |> MessageText.filter({:contains, term})
+        |> Map.fetch!(:filter)
+        |> Map.fetch!(:expression)
+
+      meta_term = contains_query_term(term)
+
+      page =
+        Chat
+        |> Ash.Query.filter(owner_id == ^actor.id and subagent == false)
+        |> Listing.without_handoff_children(actor)
+        |> Listing.apply_bot_filter(bot_filter)
+        |> Listing.apply_section(pagination.section)
+        |> Ash.Query.filter(
+          contains(note, ^meta_term) or exists(bot, contains(name, ^meta_term)) or
+            exists(
+              messages,
+              owner_id == ^actor.id and role in [:user, :assistant] and ^text_predicate
+            )
+        )
+        |> Ash.Query.sort(updated_at: :desc, id: :desc)
+        |> Ash.Query.select([:id])
+        |> Ash.Query.page(
+          limit: pagination.per_page,
+          offset: (pagination.page - 1) * pagination.per_page,
+          count: true
+        )
+        |> Ash.read!(actor: actor)
+
+      ids = Enum.map(page.results, & &1.id)
+
+      entries =
+        if ids == [] do
+          []
+        else
+          by_id =
+            search_chats(term, actor, bot_filter: bot_filter, chat_ids: ids)
+            |> Map.new(&{&1.chat.id, &1})
+
+          Enum.flat_map(ids, fn id -> List.wrap(Map.get(by_id, id)) end)
+        end
+
+      %{entries: entries, total: page.count}
+    end
+  end
+
   @spec search_chats(String.t() | nil, any(), keyword()) :: list(chat_search_entry())
   def search_chats(term, actor, opts \\ []) when is_list(opts) do
     term = normalize_term(term)
@@ -101,16 +155,25 @@ defmodule IntellectualClub.Chat.Search do
     else
       search = message_content_search(term)
       bot_filter = Keyword.get(opts, :bot_filter)
-      chat_limit = Keyword.get(opts, :limit, @default_chat_limit)
+
+      scoped_ids = Keyword.get(opts, :chat_ids)
+
+      chat_limit =
+        if is_list(scoped_ids),
+          do: nil,
+          else: Keyword.get(opts, :limit, @default_chat_limit)
 
       message_limit =
         Keyword.get(
           opts,
           :message_candidate_limit,
-          min(max(chat_limit * 10, chat_limit), @default_message_candidate_limit)
+          if(is_nil(chat_limit),
+            do: nil,
+            else: min(max(chat_limit * 10, chat_limit), @default_message_candidate_limit)
+          )
         )
 
-      meta_chats = search_meta_chats(term, bot_filter, chat_limit, actor)
+      meta_chats = search_meta_chats(term, bot_filter, chat_limit, actor, scoped_ids)
       meta_ids = MapSet.new(Enum.map(meta_chats, & &1.id))
 
       meta_active_branch_summaries =
@@ -141,7 +204,7 @@ defmodule IntellectualClub.Chat.Search do
           }
         end)
 
-      remaining_limit = max(chat_limit - length(meta_entries), 0)
+      remaining_limit = remaining_limit(chat_limit, length(meta_entries))
 
       if remaining_limit == 0 do
         meta_entries
@@ -152,7 +215,14 @@ defmodule IntellectualClub.Chat.Search do
               []
 
             search ->
-              search_message_candidates(search, bot_filter, meta_ids, message_limit, actor)
+              search_message_candidates(
+                search,
+                bot_filter,
+                meta_ids,
+                message_limit,
+                actor,
+                scoped_ids
+              )
           end
 
         chat_ids = message_candidates |> Enum.map(& &1.chat_id) |> Enum.uniq()
@@ -187,7 +257,7 @@ defmodule IntellectualClub.Chat.Search do
           |> Enum.map(& &1.id)
           |> MapSet.new()
 
-        remaining_limit = max(remaining_limit - length(active_chats), 0)
+        remaining_limit = remaining_limit(remaining_limit, length(active_chats))
 
         inactive_chat_ids = Map.keys(inactive_match)
         inactive_chats = load_chats_by_ids(inactive_chat_ids, remaining_limit, actor)
@@ -253,6 +323,9 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
+  defp remaining_limit(nil, _used), do: nil
+  defp remaining_limit(limit, used), do: max(limit - used, 0)
+
   defp normalize_term(term) do
     term
     |> to_string()
@@ -292,18 +365,20 @@ defmodule IntellectualClub.Chat.Search do
 
   defp datetime_iso(_other), do: nil
 
-  defp search_meta_chats(term, bot_filter, limit, actor) do
+  defp search_meta_chats(term, bot_filter, limit, actor, scoped_ids) do
     term = contains_query_term(term)
 
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(subagent == false)
     |> Listing.without_handoff_children(actor)
+    |> maybe_filter_chat_ids(scoped_ids, :id)
     |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
     |> Ash.Query.load([
+      :read_state,
       :bot,
       :last_message,
       :blocks_count,
@@ -316,12 +391,19 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.read!(actor: actor)
   end
 
-  defp search_message_candidates(search, bot_filter, meta_ids, limit, actor)
+  defp search_message_candidates(search, bot_filter, meta_ids, limit, actor, scoped_ids)
        when is_tuple(search) do
-    read_message_candidates(search, bot_filter, meta_ids, limit * 2, actor)
+    read_message_candidates(
+      search,
+      bot_filter,
+      meta_ids,
+      if(is_nil(limit), do: nil, else: limit * 2),
+      actor,
+      scoped_ids
+    )
   end
 
-  defp read_message_candidates(search, bot_filter, meta_ids, limit, actor)
+  defp read_message_candidates(search, bot_filter, meta_ids, limit, actor, scoped_ids)
        when is_tuple(search) do
     meta_list = MapSet.to_list(meta_ids)
     handoff_relation_kind = Handoff.relation_kind()
@@ -341,6 +423,7 @@ defmodule IntellectualClub.Chat.Search do
       )
     )
     |> Ash.Query.filter(role in [:user, :assistant])
+    |> maybe_filter_chat_ids(scoped_ids, :chat_id)
     |> maybe_exclude_chat_ids(meta_list)
     |> apply_bot_filter_via_chat(bot_filter)
     |> Ash.Query.limit(limit)
@@ -373,6 +456,10 @@ defmodule IntellectualClub.Chat.Search do
     end)
   end
 
+  defp maybe_filter_chat_ids(query, nil, _field), do: query
+  defp maybe_filter_chat_ids(query, ids, :id), do: Ash.Query.filter(query, id in ^ids)
+  defp maybe_filter_chat_ids(query, ids, :chat_id), do: Ash.Query.filter(query, chat_id in ^ids)
+
   defp maybe_exclude_chat_ids(query, []), do: query
 
   defp maybe_exclude_chat_ids(query, chat_ids) when is_list(chat_ids) do
@@ -403,7 +490,7 @@ defmodule IntellectualClub.Chat.Search do
   defp load_chats_by_ids(_chat_ids, limit, _actor) when is_integer(limit) and limit <= 0, do: []
 
   defp load_chats_by_ids(chat_ids, limit, actor)
-       when is_list(chat_ids) and is_integer(limit) do
+       when is_list(chat_ids) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(subagent == false)
@@ -412,6 +499,7 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
     |> Ash.Query.load([
+      :read_state,
       :bot,
       :last_message,
       :blocks_count,

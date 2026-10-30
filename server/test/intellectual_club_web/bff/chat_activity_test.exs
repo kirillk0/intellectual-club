@@ -15,6 +15,256 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
 
   require Ash.Query
 
+  describe "concurrent read-state mutations" do
+    @describetag sandbox: false
+
+    setup do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+
+      on_exit(fn ->
+        Ecto.Adapters.SQL.Sandbox.unboxed_run(IntellectualClub.Repo, fn ->
+          Ash.destroy!(chat, actor: actor)
+
+          actor
+          |> Ash.Changeset.for_destroy(:destroy, %{}, authorize?: false)
+          |> Ash.destroy!(authorize?: false)
+        end)
+      end)
+
+      %{read_state_actor: actor, read_state_chat: chat}
+    end
+
+    @tag :whitebox
+    test "terminal activity does not acquire the chat lock after locking the message", %{
+      read_state_actor: actor,
+      read_state_chat: chat
+    } do
+      message = create_generating_message!(actor, chat)
+      supervisor = start_supervised!({Task.Supervisor, []})
+      parent = self()
+
+      holder =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Ecto.Adapters.SQL.Sandbox.unboxed_run(IntellectualClub.Repo, fn ->
+            IntellectualClub.Repo.transaction(fn ->
+              IntellectualClub.Chat.Chat
+              |> Ash.Query.filter(id == ^chat.id)
+              |> Ash.Query.lock("FOR UPDATE")
+              |> Ash.read_one!(actor: actor)
+
+              send(parent, :chat_locked)
+
+              receive do
+                :release -> :ok
+              end
+            end)
+          end)
+        end)
+
+      assert_receive :chat_locked, 5000
+
+      writer =
+        Task.Supervisor.async_nolink(supervisor, fn ->
+          Ecto.Adapters.SQL.Sandbox.unboxed_run(IntellectualClub.Repo, fn ->
+            set_message_status!(actor, message, :done)
+          end)
+        end)
+
+      try do
+        assert Task.await(writer, 5000).status == :done
+      after
+        send(holder.pid, :release)
+        Task.await(holder, 5000)
+      end
+
+      assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].activity_revision ==
+               1
+    end
+
+    test "one request wins each CAS version, including concurrent initial inserts", %{
+      read_state_actor: actor,
+      read_state_chat: chat
+    } do
+      for version <- 0..1 do
+        results =
+          concurrent_read_state_calls(
+            for _ <- 1..6 do
+              fn ->
+                IntellectualClub.Chat.ReadState.mutate(
+                  chat.id,
+                  %{"action" => "unread", "expected_state_version" => version},
+                  actor
+                )
+              end
+            end
+          )
+
+        assert Enum.count(results, &match?({:ok, %{conflict: false}}, &1)) == 1
+        assert Enum.count(results, &match?({:ok, %{conflict: true}}, &1)) == 5
+
+        assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].state_version ==
+                 version + 1
+      end
+    end
+
+    test "concurrent terminal repeats increment once and an observed zero ack cannot hide their result",
+         %{read_state_actor: actor, read_state_chat: chat} do
+      message = create_generating_message!(actor, chat)
+      writes = for _ <- 1..4, do: fn -> set_message_status!(actor, message, :done) end
+
+      reads = [
+        fn ->
+          IntellectualClub.Chat.ReadState.mutate(
+            chat.id,
+            %{
+              "action" => "read",
+              "observed_revision" => 0,
+              "explicit" => true,
+              "expected_state_version" => 0
+            },
+            actor
+          )
+        end
+      ]
+
+      concurrent_read_state_calls(writes ++ reads)
+      state = IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id]
+      assert state.activity_revision == 1
+      assert state.read_revision == 0
+      assert state.is_unread
+    end
+  end
+
+  defp concurrent_read_state_calls(functions) do
+    supervisor = start_supervised!({Task.Supervisor, []})
+    parent = self()
+
+    workers =
+      Enum.map(functions, fn fun ->
+        ref = make_ref()
+
+        {:ok, pid} =
+          Task.Supervisor.start_child(supervisor, fn ->
+            Ecto.Adapters.SQL.Sandbox.unboxed_run(IntellectualClub.Repo, fn ->
+              send(parent, {:ready, self()})
+
+              receive do
+                :go -> send(parent, {:result, ref, fun.()})
+              end
+            end)
+          end)
+
+        {pid, ref, Process.monitor(pid)}
+      end)
+
+    for {pid, _, _} <- workers, do: assert_receive({:ready, ^pid}, 5000)
+    for {pid, _, _} <- workers, do: send(pid, :go)
+
+    results =
+      Enum.map(workers, fn {pid, ref, monitor} ->
+        assert_receive {:result, ^ref, result}, 5000
+        assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5000
+        result
+      end)
+
+    stop_supervised(Task.Supervisor)
+    results
+  end
+
+  describe "durable terminal activity" do
+    test "terminal status and activity roll back together" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      message = create_generating_message!(actor, chat)
+
+      assert {:error, :rollback} =
+               IntellectualClub.Repo.transaction(fn ->
+                 message
+                 |> Ash.Changeset.for_update(:set_generation_state, %{status: :done},
+                   actor: actor
+                 )
+                 |> Ash.update!(actor: actor, return_notifications?: true)
+
+                 assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].activity_revision ==
+                          1
+
+                 IntellectualClub.Repo.rollback(:rollback)
+               end)
+
+      assert Ash.get!(ChatMessage, message.id, actor: actor).status == :generating
+
+      assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].activity_revision ==
+               0
+    end
+
+    test "only generating to terminal transitions advance revisions, including retries" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      message = create_generating_message!(actor, chat)
+
+      for {status, expected} <- [
+            {:done, 1},
+            {:done, 1},
+            {:error, 1},
+            {:generating, 1},
+            {:error, 2},
+            {:generating, 2},
+            {:canceled, 3},
+            {:canceled, 3}
+          ] do
+        set_message_status!(actor, Ash.get!(ChatMessage, message.id, actor: actor), status)
+
+        assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].activity_revision ==
+                 expected
+      end
+    end
+
+    test "personal changes invalidate list and detail and pending expiry is never hidden by 204",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+
+      for path <- ["/api/bff/chat-list/idle-state", "/api/bff/chat-state/#{chat.id}/idle-state"] do
+        initial = conn |> get(path) |> json_response(200)
+        state = IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id]
+
+        assert {:ok, _} =
+                 IntellectualClub.Chat.ReadState.mutate(
+                   chat.id,
+                   %{
+                     "action" => "snooze",
+                     "expected_state_version" => state.state_version,
+                     "snoozed_until" =>
+                       DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+                   },
+                   actor
+                 )
+
+        snoozed = conn |> get(path, %{revision: initial["revision"]}) |> json_response(200)
+        assert initial["revision"] != snoozed["revision"]
+        assert is_binary(snoozed["next_read_state_expiry"])
+        unchanged = conn |> get(path, %{revision: snoozed["revision"]}) |> json_response(200)
+        assert unchanged["next_read_state_expiry"] == snoozed["next_read_state_expiry"]
+      end
+    end
+
+    test "snooze expires without changing the durable state version" do
+      now = DateTime.utc_now()
+      expiry = DateTime.add(now, 60)
+      state = %{manual_unread: true, snoozed_until: expiry, state_version: 7, read_revision: 1}
+      before = IntellectualClub.Chat.ReadState.payload(state, 2, now)
+      after_expiry = IntellectualClub.Chat.ReadState.payload(state, 2, expiry)
+      assert before.is_snoozed
+      refute before.is_unread
+      refute after_expiry.is_snoozed
+      assert after_expiry.is_unread
+      assert after_expiry.state_version == 7
+      assert after_expiry.snoozed_until == before.snoozed_until
+    end
+  end
+
   describe "idle-state revisions" do
     test "deleting a shared current configuration invalidates the consumer chat revision", %{
       conn: conn

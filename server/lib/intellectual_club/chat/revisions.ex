@@ -16,6 +16,8 @@ defmodule IntellectualClub.Chat.Revisions do
       when is_list(chats) and is_map(lifecycle_states) do
     revision_parts = [
       :chat_list,
+      Map.get(pagination, :section),
+      Map.get(page, :read_state_marker),
       Map.get(pagination, :page),
       Map.get(pagination, :per_page),
       normalize_bot_filter(bot_filter),
@@ -62,6 +64,7 @@ defmodule IntellectualClub.Chat.Revisions do
 
     [
       :chat,
+      chat.read_state,
       chat.id,
       chat.llm_configuration_id,
       datetime_revision_value(chat.updated_at),
@@ -121,6 +124,7 @@ defmodule IntellectualClub.Chat.Revisions do
 
     [
       chat.id,
+      chat.read_state,
       datetime_revision_value(chat.updated_at),
       Map.get(chat, :last_message_id),
       count_revision_value(Map.get(chat, :blocks_count)),
@@ -139,6 +143,7 @@ defmodule IntellectualClub.Chat.Revisions do
 
       [
         chat.id,
+        chat.read_state,
         Map.get(chat, :parent_message_id),
         Map.get(chat, :parent_relation_kind),
         datetime_revision_value(chat.updated_at),
@@ -160,6 +165,7 @@ defmodule IntellectualClub.Chat.Revisions do
         Map.get(state, :message_id),
         Map.get(state, :active_generation_message_id),
         Map.get(state, :last_message_status),
+        Map.get(state, :read_state),
         datetime_revision_value(Map.get(state, :updated_at))
       ]
     end)

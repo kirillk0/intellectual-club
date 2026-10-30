@@ -111,3 +111,20 @@ it('hides the generation configuration marker when it matches the selection', ()
   wrapper = mountToolbar({ isGenerating: true });
   expect(wrapper.find('.config-generation-mismatch').exists()).toBe(false);
 });
+
+
+it('allows personal read and snooze actions in a shared read-only chat', async () => {
+  wrapper = mountToolbar({ canEdit: false, readState: { has_unread: true }, isUnread: true });
+  await menu().get('[data-read-action="toggle"]').trigger('click');
+  await menu().get('[data-read-action="snooze"]').trigger('click');
+  expect(wrapper.emitted('mark-read')).toHaveLength(1);
+  expect(wrapper.emitted('open-snooze')).toHaveLength(1);
+});
+
+it('offers an immediate unread mark and cancellation for a snoozed chat', async () => {
+  wrapper = mountToolbar({ readState: { snoozed_until: '2030-01-01T12:00:00Z' }, isSnoozed: true });
+  await menu().get('[data-read-action="toggle"]').trigger('click');
+  await menu().get('[data-read-action="unsnooze"]').trigger('click');
+  expect(wrapper.emitted('mark-unread')).toHaveLength(1);
+  expect(wrapper.emitted('unsnooze')).toHaveLength(1);
+});

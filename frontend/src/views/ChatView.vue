@@ -40,6 +40,10 @@
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
         :can-edit="vm.canEdit"
+        :read-state="vm.chatReadState"
+        :read-state-busy="vm.readStateBusy"
+        :is-unread="vm.chatIsUnread"
+        :is-snoozed="vm.chatIsSnoozed"
         :handoff-pending="vm.handoffPending"
         :handoff-disabled="vm.handoffDisabled"
         :show-missing-tools-banner="vm.showMissingToolsBanner"
@@ -59,11 +63,17 @@
         @open-note-modal="vm.openNoteModal"
         @open-share="vm.openShareModal"
         @handoff="vm.handoffChat"
+        @mark-read="vm.markChatRead"
+        @mark-unread="vm.markChatUnread"
+        @open-snooze="vm.openSnooze"
+        @unsnooze="vm.unsnoozeChat"
         @delete-chat="vm.removeChat"
         @open-bot-tools="vm.openBotTools"
         @dismiss-missing-tools-banner="vm.dismissMissingToolsBanner"
       />
     </StackToolbarTeleport>
+
+    <ChatSnoozeModal v-model:open="vm.snoozeOpen" :saving="vm.readStateBusy" @confirm="vm.snoozeChat" />
 
     <p v-if="vm.loadError" class="error-text">{{ vm.loadError }}</p>
     <section
@@ -824,6 +834,7 @@ import KnowledgeBlocksPickerModal from '@/components/KnowledgeBlocksPickerModal.
 import ChatAttachmentPreviewModal from '@/components/chat/ChatAttachmentPreviewModal.vue';
 import ChatEditMessageModal from '@/components/chat/ChatEditMessageModal.vue';
 import ChatPromptModal from '@/components/chat/ChatPromptModal.vue';
+import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
 import ChatMessageStatsModal from '@/components/chat/ChatMessageStatsModal.vue';
 import ChatStepDetailsModal from '@/components/chat/ChatStepDetailsModal.vue';

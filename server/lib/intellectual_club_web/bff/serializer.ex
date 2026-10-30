@@ -103,6 +103,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   def chat_summary(%Chat{} = chat, opts \\ []) do
     %{
+      read_state: loaded_value(chat.read_state),
+      last_message_status: Keyword.get(opts, :last_message_status, last_message_status(chat)),
       id: chat.id,
       note: chat.note,
       bot_id: chat.bot_id,
@@ -157,6 +159,8 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   def chat_detail(%Chat{} = chat) do
     %{
+      read_state: loaded_value(chat.read_state),
+      last_message_status: last_message_status(chat),
       id: chat.id,
       history_read_only: IntellectualClubWeb.Bff.ChatForkContext.linked?(chat),
       note: chat.note,
@@ -176,6 +180,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
   def chat_relation_summary(%Chat{} = chat, opts \\ []) do
     %{
+      read_state: loaded_value(chat.read_state),
       chat_id: chat.id,
       message_id: Keyword.get(opts, :message_id, chat.parent_message_id),
       parent_chat_id: Keyword.get(opts, :parent_chat_id, chat.parent_chat_id),

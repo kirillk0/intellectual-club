@@ -19,6 +19,30 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
   alias IntellectualClubWeb.Bff.ChatQueuedMessagePayload
   alias IntellectualClubWeb.Bff.Helpers
 
+  def read_state(conn, %{"id" => id} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, chat_id} <- ChatParams.resource_id(id),
+         {:ok, result} <- IntellectualClub.Chat.ReadState.mutate(chat_id, params, actor) do
+      case result do
+        %{error: :not_found} ->
+          ChatAccess.render_error(conn, :not_found)
+
+        %{error: error} ->
+          ChatAccess.render_error(conn, {:validation, error})
+
+        %{conflict: true, read_state: state} ->
+          conn |> put_status(:conflict) |> json(%{error: "stale_read_state", read_state: state})
+
+        %{read_state: state} ->
+          IntellectualClub.Chat.ReadStateEvents.publish(actor.id, chat_id)
+          json(conn, %{read_state: state})
+      end
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, error} -> ChatAccess.render_error(conn, error)
+    end
+  end
+
   def state(conn, %{"id" => id}) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, chat_id} <- ChatParams.resource_id(id),
@@ -103,11 +127,18 @@ defmodule IntellectualClubWeb.Bff.ChatStateController do
         )
         |> ChatForkContext.combine_revision(ChatForkContext.revision(chat, actor))
 
-      if Revisions.client_revision_matches?(params, revision) do
+      next_expiry =
+        IntellectualClub.Chat.ReadState.next_expiry(
+          Enum.map([chat | child_relations], & &1.read_state)
+        )
+
+      if is_nil(next_expiry) and Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")
       else
         json(conn, %{
           revision: revision,
+          read_state: chat.read_state,
+          next_read_state_expiry: next_expiry,
           active_generation_message_id: Revisions.active_generation_message_id(chat),
           queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages)
         })

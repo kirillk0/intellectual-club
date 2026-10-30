@@ -41,6 +41,8 @@ function loadedChatViewModel({
 }: { historyReadOnly?: boolean; sharedReadOnly?: boolean } = {}) {
   return {
     loaded: ref(true),
+    snoozeOpen: ref(false),
+    readStateBusy: ref(false),
     chatUnavailable: ref(false),
     chat: ref({ id: 1, bot_id: null, llm_configuration_id: 27, history_read_only: historyReadOnly }),
     historyReadonly: ref(historyReadOnly || sharedReadOnly),

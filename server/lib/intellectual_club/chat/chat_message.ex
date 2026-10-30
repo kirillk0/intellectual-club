@@ -6,6 +6,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
   use IntellectualClub.Resource,
     domain: IntellectualClub.Chat,
     extensions: [AshJsonApi.Resource],
+    notifiers: [IntellectualClub.Chat.ChatActivityNotifier],
     authorizers: [Ash.Policy.Authorizer]
 
   alias IntellectualClub.Chat.Threads

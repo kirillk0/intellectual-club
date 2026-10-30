@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicI
 import { useRoute, useRouter } from 'vue-router';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
+import { isChatReadStateConflict } from '@/features/chat/chatReadState';
 import { continueChatRecord } from '@/features/chat/chatAshApi';
 import { buildChatHtmlExport } from '@/features/chat/chatHtmlExport';
 import { useChatContextPanel } from '@/features/chat/model/useChatContextPanel';
@@ -10,6 +11,7 @@ import { useChatHeaderControls } from '@/features/chat/model/useChatHeaderContro
 import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
 import { useChatLibraryDraft } from '@/features/chat/model/useChatLibraryDraft';
 import { useChatMessageActions } from '@/features/chat/model/useChatMessageActions';
+import { useChatReadStateRuntime } from '@/features/chat/model/useChatReadStateRuntime';
 import { useChatQueueRuntime } from '@/features/chat/model/useChatQueueRuntime';
 import { useOutletStatusPolling } from '@/features/tools/model/useOutletStatusPolling';
 import {
@@ -35,6 +37,7 @@ import { useStackLayer } from '@/features/stack/useStackLayer';
 import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
+import { useChatServerEvents } from '@/features/chat/chatServerEvents';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import type {
   Bot,
@@ -155,6 +158,30 @@ export function useChatViewModel() {
 
   const chat = ref<Chat | null>(null);
   const chatNote = ref('');
+  const snoozeOpen = ref(false);
+  const readRuntime = useChatReadStateRuntime({
+    chatId,
+    active: layer.active,
+    refresh: async () => {
+      if (loaded.value && chat.value) await loadChatSafe({ mode: 'soft', includeSettings: false });
+    },
+  });
+  const changeReadState = async (action: () => Promise<void>) => {
+    ui.closeMenu();
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      window.alert(isChatReadStateConflict(error)
+        ? translate('Chat state changed. Please try again.')
+        : getApiErrorMessage(error, translate('Failed to update chat state.')));
+      return false;
+    }
+  };
+  const snoozeChat = async (until: string) => {
+    if (await changeReadState(() => readRuntime.snooze(until))) snoozeOpen.value = false;
+  };
+
   const canEdit = computed(() => chat.value?.can_edit !== false);
   const sharedReadonly = computed(() => chat.value?.can_edit === false && chat.value?.shared_incoming === true);
   const historyReadonly = computed(() => !canEdit.value || chat.value?.history_read_only === true);
@@ -409,8 +436,10 @@ export function useChatViewModel() {
     onQueuedMessageCreated: upsertQueuedMessage,
     onGenerationSettled: async (messageId, status) => {
       const settledChatId = chatId.value;
-      markWebPushGenerationSeen(chatId.value, messageId, status);
-      closeWebPushNotificationsForChat(chatId.value);
+      if (layer.active.value && document.visibilityState === 'visible' && document.hasFocus()) {
+        markWebPushGenerationSeen(chatId.value, messageId, status);
+        closeWebPushNotificationsForChat(chatId.value);
+      }
       await loadChatSafe({ mode: 'soft', includeSettings: false });
       if (status === 'done' && chatId.value === settledChatId) {
         await navigateToHandoffChildForMessage(settledChatId, messageId);
@@ -567,6 +596,7 @@ export function useChatViewModel() {
   };
 
   const markLatestVisibleGenerationSeen = () => {
+    if (!layer.active.value || document.visibilityState !== 'visible' || !document.hasFocus()) return;
     const latest = [...branch.value]
       .reverse()
       .find(
@@ -736,8 +766,11 @@ export function useChatViewModel() {
 
       loaded.value = true;
       setActiveWebPushChat(requestedChatId);
+      readRuntime.receiveSnapshot(payload.chat?.read_state);
       markLatestVisibleGenerationSeen();
-      closeWebPushNotificationsForChat(requestedChatId);
+      if (layer.active.value && document.visibilityState === 'visible' && document.hasFocus()) {
+        closeWebPushNotificationsForChat(requestedChatId);
+      }
       startChatIdlePolling();
       if (mode === 'initial' && !contextPanel.hasFocusMessageQuery()) {
         void scrollToLastMessageIfLayerActive();
@@ -791,6 +824,18 @@ export function useChatViewModel() {
       }
     }
   };
+
+  let serverRefreshTimer: number | null = null;
+  useChatServerEvents(({ chatId: changedChatId }) => {
+    if (changedChatId !== null && changedChatId !== chatId.value) return;
+    if (serverRefreshTimer !== null) window.clearTimeout(serverRefreshTimer);
+    serverRefreshTimer = window.setTimeout(() => {
+      serverRefreshTimer = null;
+      if (!disposed && loaded.value && chat.value && layer.active.value && document.visibilityState === 'visible') {
+        void loadChatSafe({ mode: 'soft', includeSettings: false });
+      }
+    }, 150);
+  });
 
   const loadInitialChatSafe = async () => {
     await loadChatSafe({ mode: 'initial' });
@@ -1115,6 +1160,7 @@ export function useChatViewModel() {
   });
 
   onBeforeUnmount(() => {
+    if (serverRefreshTimer !== null) window.clearTimeout(serverRefreshTimer);
     disposed = true;
     chatLoadSeq += 1;
     chatVisibleLoadSeq += 1;
@@ -1147,6 +1193,16 @@ export function useChatViewModel() {
     chatUnavailable,
     chat,
     chatNote,
+    chatReadState: readRuntime.state,
+    readStateBusy: readRuntime.busy,
+    chatIsUnread: readRuntime.isUnread,
+    chatIsSnoozed: readRuntime.isSnoozed,
+    snoozeOpen,
+    markChatRead: () => changeReadState(readRuntime.markRead),
+    markChatUnread: () => changeReadState(readRuntime.markUnread),
+    unsnoozeChat: () => changeReadState(readRuntime.unsnooze),
+    openSnooze: () => { ui.closeMenu(); snoozeOpen.value = true; },
+    snoozeChat,
     canEdit,
     sharedReadonly,
     historyReadonly,

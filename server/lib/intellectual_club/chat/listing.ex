@@ -19,7 +19,8 @@ defmodule IntellectualClub.Chat.Listing do
     |> without_handoff_children(actor)
     |> apply_bot_filter(bot_filter)
     |> apply_sort()
-    |> Ash.Query.load(loads, strict?: true)
+    |> apply_section(Map.get(pagination, :section))
+    |> Ash.Query.load([:read_state | loads], strict?: true)
     |> Ash.Query.page(
       limit: pagination.per_page,
       offset: (pagination.page - 1) * pagination.per_page,
@@ -27,6 +28,24 @@ defmodule IntellectualClub.Chat.Listing do
     )
     |> Ash.read!(actor: actor)
   end
+
+  def apply_section(query, "unread"), do: Ash.Query.filter(query, inbox_unread == true)
+
+  def apply_section(query, "working"),
+    do:
+      Ash.Query.filter(
+        query,
+        inbox_unread == false and exists(last_message, status == :generating)
+      )
+
+  def apply_section(query, "other"),
+    do:
+      Ash.Query.filter(
+        query,
+        inbox_unread == false and not exists(last_message, status == :generating)
+      )
+
+  def apply_section(query, _section), do: query
 
   @spec without_handoff_children(Ash.Query.t(), map()) :: Ash.Query.t()
   def without_handoff_children(query, actor) do
@@ -157,7 +176,7 @@ defmodule IntellectualClub.Chat.Listing do
           subagent == true
       )
       |> Ash.Query.sort(created_at: :asc, id: :asc)
-      |> Ash.Query.load(loads, strict?: true)
+      |> Ash.Query.load([:read_state | loads], strict?: true)
       |> Ash.read(actor: actor)
       |> case do
         {:ok, children} when is_list(children) ->

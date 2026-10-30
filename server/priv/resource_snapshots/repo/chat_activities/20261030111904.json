@@ -1,0 +1,99 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "chat_activities_chat_id_fkey",
+        "on_delete": "delete",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "chats"
+      },
+      "scale": null,
+      "size": null,
+      "source": "chat_id",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "revision",
+      "type": "bigint"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [],
+  "create_table_options": null,
+  "custom_indexes": [],
+  "custom_statements": [
+    {
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS initialize_chat_activity()",
+      "global?": false,
+      "name": "initialize_chat_activity",
+      "up": "CREATE OR REPLACE FUNCTION initialize_chat_activity() RETURNS trigger AS $$\nBEGIN\n  INSERT INTO chat_activities (chat_id, revision) VALUES (NEW.id, 0);\n  RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;\n"
+    },
+    {
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS chat_initial_activity ON chats",
+      "global?": false,
+      "name": "chat_initial_activity",
+      "up": "CREATE TRIGGER chat_initial_activity AFTER INSERT ON chats FOR EACH ROW EXECUTE FUNCTION initialize_chat_activity()"
+    },
+    {
+      "code?": false,
+      "down": "SELECT 1",
+      "global?": false,
+      "name": "baseline_chat_activity",
+      "up": "INSERT INTO chat_activities (chat_id, revision) SELECT id, 0 FROM chats ON CONFLICT (chat_id) DO NOTHING"
+    },
+    {
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS advance_chat_activity()",
+      "global?": false,
+      "name": "advance_chat_activity",
+      "up": "CREATE OR REPLACE FUNCTION advance_chat_activity() RETURNS trigger AS $$\nBEGIN\n  IF OLD.status = 'generating' AND NEW.status IN ('done', 'error', 'canceled')\n     AND NEW.role = 'assistant' THEN\n    UPDATE chat_activities SET revision = revision + 1 WHERE chat_id = NEW.chat_id;\n  END IF;\n  RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;\n"
+    },
+    {
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS chat_terminal_activity ON chat_messages",
+      "global?": false,
+      "name": "chat_terminal_activity",
+      "up": "CREATE TRIGGER chat_terminal_activity AFTER UPDATE OF status ON chat_messages FOR EACH ROW EXECUTE FUNCTION advance_chat_activity()"
+    }
+  ],
+  "has_create_action": false,
+  "hash": "D91361F71F965AFACFC6FA2EED9A6189922A4C5364C606F3005A33DE1063FE14",
+  "identities": [],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.IntellectualClub.Repo",
+  "schema": null,
+  "table": "chat_activities"
+}

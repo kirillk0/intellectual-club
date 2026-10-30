@@ -100,7 +100,7 @@ describe('ChatsIndexView stack navigation', () => {
     const fullListRequests = () =>
       apiMocks.get.mock.calls.filter(([path]) => String(path).startsWith('/api/bff/chat-list?'));
 
-    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(1));
+    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(3));
 
     active.value = false;
     await nextTick();
@@ -108,7 +108,7 @@ describe('ChatsIndexView stack navigation', () => {
     await nextTick();
     await flushPromises();
 
-    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(2));
+    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(6));
 
     wrapper.unmount();
     queryClient.clear();

@@ -38,7 +38,7 @@ defmodule IntellectualClubWeb.Bff.ChatAccess do
 
   def fetch_readable_chat_for_idle(chat_id, actor) do
     with {:ok, %Chat{} = chat} <- fetch_readable_chat(chat_id, actor) do
-      {:ok, Ash.load!(chat, [:last_message], actor: actor)}
+      {:ok, Ash.load!(chat, [:last_message, :read_state], actor: actor)}
     end
   end
 

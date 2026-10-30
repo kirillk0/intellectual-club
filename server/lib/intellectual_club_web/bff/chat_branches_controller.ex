@@ -103,7 +103,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesController do
         {target_messages, target_meta_by_id} = ChatPayloads.load_branch(target.id, actor)
 
         json(conn, %{
-          chat: Serializer.chat_detail(target),
+          chat:
+            Serializer.chat_detail(Ash.load!(target, [:last_message, :read_state], actor: actor)),
           branch: ChatPayloads.serialize_branch(target_messages, target_meta_by_id, actor),
           source_branch: ChatPayloads.branch_payload(chat_id, actor)
         })

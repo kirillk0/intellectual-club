@@ -1,5 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
-import { defineComponent, h, markRaw } from 'vue';
+import { defineComponent, h, markRaw, ref, type Ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { VueQueryPlugin } from '@tanstack/vue-query';
 
@@ -41,6 +41,8 @@ import type {
   ChatStatePayload,
 } from '@/features/chat/model/chatViewModel.shared';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
+import { useChatReadStateRuntime } from '@/features/chat/model/useChatReadStateRuntime';
+import type { ChatReadState } from '@/types/api';
 import { useChatViewModel } from '@/features/chat/useChatViewModel';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import StackRouterView from '@/components/StackRouterView.vue';
@@ -1019,5 +1021,168 @@ describe('useChatViewModel loading', () => {
     expect(viewModel.exportHtmlSaving.value).toBe(false);
     expect(viewModel.shareModalOpen.value).toBe(true);
     expect(errorSpy).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe('chat read-state presence and manual intent', () => {
+  let wrapper: VueWrapper;
+  let runtime: ReturnType<typeof useChatReadStateRuntime>;
+  let active: Ref<boolean>;
+  let refresh: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  let visible: boolean;
+  let focused: boolean;
+  const state = (patch: Partial<ChatReadState> = {}): ChatReadState => ({
+    activity_revision: 1, read_revision: 0, manual_unread: false,
+    snoozed_until: null, state_version: 0, has_unread: true,
+    is_unread: true, is_snoozed: false, ...patch,
+  });
+  const receive = async (next: ChatReadState) => {
+    runtime.receiveSnapshot(next);
+    await flushPromises();
+  };
+  const presence = async (next: boolean) => {
+    visible = next;
+    focused = next;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flushPromises();
+  };
+
+  beforeEach(() => {
+    visible = true;
+    focused = true;
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visible ? 'visible' : 'hidden');
+    vi.spyOn(document, 'hasFocus').mockImplementation(() => focused);
+    apiMocks.post.mockReset();
+    apiMocks.post.mockImplementation(async (_url, input) => ({ read_state: state({
+      read_revision: input.action === 'read' ? input.observed_revision : 1,
+      manual_unread: input.action !== 'read',
+      state_version: input.expected_state_version + 1,
+      snoozed_until: input.snoozed_until ?? null,
+      has_unread: input.action !== 'read',
+      is_unread: input.action !== 'read' && !input.snoozed_until,
+      is_snoozed: Boolean(input.snoozed_until),
+    }) }));
+    active = ref(true);
+    refresh = vi.fn().mockResolvedValue(undefined);
+    wrapper = mount(defineComponent({
+      setup() {
+        runtime = useChatReadStateRuntime({ chatId: ref(1), active, refresh });
+        return () => h('div');
+      },
+    }));
+  });
+
+  afterEach(() => {
+    wrapper.unmount();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('acknowledges only the displayed revision on entry', async () => {
+    await receive(state());
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-state/1/read-state', {
+      action: 'read', expected_state_version: 0, observed_revision: 1, explicit: true,
+    }, expect.objectContaining({ retry: false }));
+  });
+
+  it('does not read a background result and refreshes before reading on return', async () => {
+    await presence(false);
+    await receive(state());
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    await presence(true);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    await receive(state());
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+  });
+
+  it('does not read a chat behind another stack layer', async () => {
+    active.value = false;
+    await receive(state());
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    active.value = true;
+    await flushPromises();
+    expect(refresh).toHaveBeenCalledOnce();
+    await receive(state());
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+  });
+
+  it('automatically reads a new displayed result without treating it as a new entry', async () => {
+    await receive(state({ read_revision: 1, has_unread: false, is_unread: false }));
+    await receive(state({ activity_revision: 2, read_revision: 1 }));
+    expect(apiMocks.post).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
+      observed_revision: 2, explicit: false,
+    }), expect.anything());
+  });
+
+  it('keeps a manual unread mark through refreshes and new results until re-entry', async () => {
+    await receive(state());
+    await runtime.markUnread();
+    apiMocks.post.mockClear();
+    await receive(state({ activity_revision: 2, read_revision: 1, manual_unread: true, state_version: 2 }));
+    expect(apiMocks.post).not.toHaveBeenCalled();
+    expect(runtime.isUnread.value).toBe(true);
+    await presence(false);
+    await presence(true);
+    await receive(state({ activity_revision: 2, read_revision: 1, manual_unread: true, state_version: 2 }));
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+  });
+
+  it('does not undo a manual unread mark received from another device', async () => {
+    await receive(state({ read_revision: 1, has_unread: false, is_unread: false }));
+    await receive(state({ manual_unread: true, read_revision: 1, state_version: 1 }));
+    expect(apiMocks.post).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a conflicted read with a newer manual state version', async () => {
+    apiMocks.post.mockRejectedValueOnce({ status: 409 });
+    await receive(state());
+    await receive(state({ manual_unread: true, state_version: 1 }));
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+  });
+
+  it('never acknowledges a newer revision learned only from a mutation response', async () => {
+    apiMocks.post.mockResolvedValueOnce({ read_state: state({ activity_revision: 3, read_revision: 1, state_version: 1 }) });
+    await receive(state());
+    await receive(state({ activity_revision: 2, read_revision: 1, state_version: 1 }));
+    expect(apiMocks.post).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ observed_revision: 2 }), expect.anything());
+  });
+
+  it('recovers a failed entry acknowledgement without discarding manual state semantics', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    apiMocks.post.mockRejectedValueOnce(new Error('offline'));
+    runtime.receiveSnapshot(state({ manual_unread: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(apiMocks.post).toHaveBeenCalledTimes(2);
+    expect(apiMocks.post).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ explicit: true, expected_state_version: 0 }), expect.anything());
+  });
+
+  it('does not replay a failed entry over a newer remote manual intent', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    apiMocks.post.mockRejectedValueOnce(new Error('offline'));
+    runtime.receiveSnapshot(state({ manual_unread: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    runtime.receiveSnapshot(state({ manual_unread: true, state_version: 1 }));
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(apiMocks.post).toHaveBeenCalledOnce();
+  });
+
+  it('shows a snoozed chat at the deadline without immediately reading it', async () => {
+    await receive(state());
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T12:00:00Z'));
+    await runtime.snooze('2030-01-01T13:00:00Z');
+    expect(runtime.isSnoozed.value).toBe(true);
+    expect(runtime.isUnread.value).toBe(false);
+    apiMocks.post.mockClear();
+    await vi.advanceTimersByTimeAsync(3_600_100);
+    expect(runtime.isSnoozed.value).toBe(false);
+    expect(runtime.isUnread.value).toBe(true);
+    expect(apiMocks.post).not.toHaveBeenCalled();
   });
 });

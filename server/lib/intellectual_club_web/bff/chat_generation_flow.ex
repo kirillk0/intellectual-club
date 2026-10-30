@@ -85,7 +85,8 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
          {:ok, context} <- maybe_start_branch_generation(target, options, actor) do
       {:ok,
        %{
-         chat: Serializer.chat_detail(target),
+         chat:
+           Serializer.chat_detail(Ash.load!(target, [:last_message, :read_state], actor: actor)),
          generation: generation_payload(context)
        }}
     end
@@ -112,7 +113,10 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
       {:ok,
        %{
          branch: ChatPayloads.serialize_branch(messages, branch_meta_by_id, actor),
-         chat: Serializer.chat_detail(Ash.get!(Chat, chat_id, actor: actor)),
+         chat:
+           Serializer.chat_detail(
+             Ash.get!(Chat, chat_id, actor: actor, load: [:last_message, :read_state])
+           ),
          generation: generation_payload(context)
        }}
     end

@@ -10,6 +10,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
+  alias IntellectualClub.Chat.ReadState
   alias IntellectualClub.Chat.Search, as: ChatSearch
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -25,7 +26,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(conn.params) do
       preview_len = ChatParams.preview_len(conn.params)
-      pagination = ChatParams.pagination(conn.params)
+      pagination = Map.put(ChatParams.pagination(conn.params), :section, conn.params["section"])
 
       page =
         Listing.read_page(actor, bot_filter, pagination, [
@@ -40,6 +41,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           llm_configuration: [:model_name, :note, :provider]
         ])
 
+      marker = ReadState.list_marker(actor)
+      page = Map.put(page, :read_state_marker, marker.rows)
       chats = Map.get(page, :results, [])
       active_branch_summaries = Listing.active_branch_summaries(chats, actor)
 
@@ -75,6 +78,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
       json(conn, %{
         chats: payload,
+        next_read_state_expiry: marker.next_expiry,
         page: %{
           number: pagination.page,
           per_page: pagination.per_page,
@@ -102,14 +106,22 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   def search(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn) do
       term = params |> Map.get("q", "") |> to_string()
-      pagination = ChatParams.pagination(params)
+      pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
 
       with {:ok, bot_filter} <- ChatParams.bot_filter(params) do
-        entries =
-          ChatSearch.search_chats(term, actor,
-            bot_filter: bot_filter,
-            limit: pagination.per_page
-          )
+        {entries, total} =
+          if pagination.section in ["unread", "working", "other"] do
+            result = ChatSearch.search_chat_page(term, actor, bot_filter, pagination)
+            {result.entries, result.total}
+          else
+            entries =
+              ChatSearch.search_chats(term, actor,
+                bot_filter: bot_filter,
+                limit: pagination.per_page
+              )
+
+            {entries, length(entries)}
+          end
 
         chats = Enum.map(entries, & &1.chat)
 
@@ -136,7 +148,26 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             |> Map.put(:message_role, entry.message_role)
           end)
 
-        json(conn, %{chats: payload})
+        response = %{chats: payload}
+
+        response =
+          if pagination.section in ["unread", "working", "other"],
+            do:
+              Map.put(response, :next_read_state_expiry, ReadState.list_marker(actor).next_expiry),
+            else: response
+
+        response =
+          if pagination.section in ["unread", "working", "other"],
+            do:
+              Map.put(response, :page, %{
+                number: pagination.page,
+                per_page: pagination.per_page,
+                total: total,
+                has_next: pagination.page * pagination.per_page < total
+              }),
+            else: response
+
+        json(conn, response)
       else
         {:error, error_message} ->
           conn
@@ -156,6 +187,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         Ash.load!(
           chat,
           [
+            :read_state,
             :bot,
             :last_message,
             :last_activity_at,
@@ -218,7 +250,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   def idle_state(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
-      pagination = ChatParams.pagination(params)
+      pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
 
       page =
         Listing.read_page(actor, bot_filter, pagination, [
@@ -227,6 +259,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           :tools_count
         ])
 
+      marker = ReadState.list_marker(actor)
+      page = Map.put(page, :read_state_marker, marker.rows)
       chats = Map.get(page, :results, [])
       subchat_lifecycle_states = direct_subchat_lifecycle_states(chats, actor)
 
@@ -239,11 +273,12 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           subchat_lifecycle_states
         )
 
-      if Revisions.client_revision_matches?(params, revision) do
+      if is_nil(marker.next_expiry) and Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")
       else
         json(conn, %{
           revision: revision,
+          next_read_state_expiry: marker.next_expiry,
           active_generation_message_id:
             Revisions.visible_active_generation_message_id(chats, subchat_lifecycle_states)
         })
@@ -357,7 +392,11 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> List.flatten()
 
     child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
-    lifecycle_states = Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
+
+    lifecycle_states =
+      Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
+      |> with_read_states(subchats)
+
     active_branch_summaries = Listing.active_branch_summaries(subchats, actor)
 
     first_message_previews =
@@ -407,13 +446,29 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> List.flatten()
 
     child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
-    Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
+    Subagent.lifecycle_states(subchats, actor, child_handoff_counts) |> with_read_states(subchats)
+  end
+
+  defp with_read_states(states, chats) do
+    Enum.reduce(chats, states, fn chat, acc ->
+      Map.update(
+        acc,
+        chat.id,
+        %{read_state: chat.read_state},
+        &Map.put(&1, :read_state, chat.read_state)
+      )
+    end)
   end
 
   defp summary_opts(chat, lifecycle_states, opts) do
     case Map.get(lifecycle_states, chat.id) do
       %{active_generation_message_id: message_id} ->
-        Keyword.put(opts, :active_generation_message_id, message_id)
+        opts
+        |> Keyword.put(:active_generation_message_id, message_id)
+        |> Keyword.put(
+          :last_message_status,
+          lifecycle_states[chat.id].last_message_status |> to_string()
+        )
 
       _other ->
         opts

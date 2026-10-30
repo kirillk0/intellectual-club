@@ -5,6 +5,10 @@
         <a ref="primaryLinkRef" class="chat-list-row__primary" :href="href" @click="handleClick($event, navigate)">
           <div class="chat-result-main">
             <div class="chat-result-title">
+              <span v-if="readState?.is_unread" class="chat-unread-dot" :title="t('Unread')" :aria-label="t('Unread')"></span>
+              <span v-if="readState?.is_snoozed" class="chat-snoozed" :title="snoozeLabel" :aria-label="snoozeLabel">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>
+              </span>
               <span class="chat-result-name">{{ title }}</span>
               <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
             </div>
@@ -48,12 +52,14 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import type { ChatReadState } from '@/types/api';
+import { translate as t } from '@/i18n';
 import { RouterLink, type RouteLocationRaw } from 'vue-router';
 import type { ChatListActionsAnchor } from '@/components/ChatListActionsMenu.vue';
 import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
-type GenerationState = 'generating' | 'reconnecting' | 'done';
+type GenerationState = 'generating' | 'reconnecting' | 'done' | 'error' | 'canceled';
 
 export type ChatListRowActionsRequest = {
   anchor: ChatListActionsAnchor;
@@ -71,6 +77,7 @@ interface Props {
   previewRole?: 'user' | 'assistant' | null;
   snippet?: string | null;
   generationState?: GenerationState | null;
+  readState?: ChatReadState;
   rowRole?: 'user' | 'assistant' | null;
   actions?: boolean;
   actionsOpen?: boolean;
@@ -143,7 +150,10 @@ function handleClick(event: MouseEvent, navigate: (event?: MouseEvent) => void) 
   emit('navigate', props.to, event);
 }
 
+const snoozeLabel = computed(() => t('Snoozed until {date}', { date: props.readState?.snoozed_until ? new Date(props.readState.snoozed_until).toLocaleString() : '' }));
+
 const rowToneClass = computed(() => ({
+  'chat-list-row--unread': Boolean(props.readState?.is_unread),
   'chat-list-row--user': props.rowRole === 'user',
   'chat-list-row--assistant': props.rowRole === 'assistant',
 }));
@@ -202,8 +212,12 @@ const previewToneClass = computed(() => ({
 }
 
 .chat-result-name {
-  font-weight: 600;
+  font-weight: 400;
 }
+
+.chat-list-row--unread .chat-result-name { font-weight: 700; }
+.chat-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; align-self: center; }
+.chat-snoozed { display: inline-flex; color: var(--color-text-muted); align-self: center; }
 
 .chat-result-config {
   color: var(--color-text-muted);

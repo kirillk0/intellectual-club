@@ -25,6 +25,271 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Tools.ToolInstance
   alias IntellectualClubWeb.Bff.ChatBranchPayload
 
+  describe "GET /api/bff/chat-events" do
+    test "requires a signed-in session", %{conn: conn} do
+      conn = conn |> put_req_header("accept", "text/event-stream") |> get("/api/bff/chat-events")
+      assert conn.status == 401
+    end
+
+    test "accepts EventSource requests and streams only invalidation IDs", %{conn: conn} do
+      fixture = user_fixture()
+      put_app_env(:chat_events_stream_ttl_ms, 5)
+      put_app_env(:chat_events_heartbeat_ms, 1)
+      send(self(), {:chat_state_changed, 123})
+
+      conn =
+        conn
+        |> sign_in_conn(fixture)
+        |> put_req_header("accept", "text/event-stream")
+        |> get("/api/bff/chat-events")
+
+      assert conn.status == 200
+      assert [content_type] = get_resp_header(conn, "content-type")
+      assert String.starts_with?(content_type, "text/event-stream")
+      assert conn.resp_body =~ "event: chat_state_changed"
+      assert conn.resp_body =~ ~s({"chat_id":123})
+    end
+
+    test "publishes successful changes only to their user's topic", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      %{user: other} = user_fixture()
+      chat = create_chat!(actor)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          IntellectualClub.PubSub,
+          IntellectualClub.Chat.ReadStateEvents.topic(actor.id)
+        )
+
+      :ok = IntellectualClub.Chat.ReadStateEvents.publish(other.id, chat.id)
+      refute_received {:chat_state_changed, _}
+
+      conn = sign_in_conn(conn, fixture)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+
+      assert conn
+             |> post(path, %{action: "unread", expected_state_version: 0})
+             |> json_response(200)
+
+      chat_id = chat.id
+      assert_receive {:chat_state_changed, ^chat_id}
+
+      assert conn
+             |> post(path, %{
+               action: "read",
+               expected_state_version: 0,
+               observed_revision: 0,
+               explicit: true
+             })
+             |> json_response(409)
+
+      refute_received {:chat_state_changed, _}
+    end
+  end
+
+  describe "POST /api/bff/chat-state/:id/read-state" do
+    test "legacy baseline is read and explicit read only acknowledges the observed revision", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      create_message!(actor, chat)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+      initial = conn |> get("/api/bff/chat-state/#{chat.id}") |> json_response(200)
+
+      assert initial["chat"]["read_state"] == %{
+               "activity_revision" => 0,
+               "read_revision" => 0,
+               "manual_unread" => false,
+               "snoozed_until" => nil,
+               "state_version" => 0,
+               "has_unread" => false,
+               "is_unread" => false,
+               "is_snoozed" => false
+             }
+
+      message = create_generating_message!(actor, chat)
+      set_message_status!(actor, message, :done)
+      message = create_generating_message!(actor, chat)
+      set_message_status!(actor, message, :error)
+
+      state =
+        conn
+        |> post(path, %{
+          action: "read",
+          observed_revision: 1,
+          expected_state_version: 0,
+          explicit: true
+        })
+        |> json_response(200)
+
+      assert state["read_state"]["activity_revision"] == 2
+      assert state["read_state"]["read_revision"] == 1
+      assert state["read_state"]["is_unread"]
+      assert state["read_state"]["state_version"] == 1
+
+      assert conn
+             |> post(path, %{action: "read", observed_revision: 3, expected_state_version: 1})
+             |> json_response(422)
+
+      assert conn
+             |> post(path, %{action: "read", expected_state_version: 1})
+             |> json_response(422)
+    end
+
+    test "stale acknowledgments cannot clear manual unread or snooze and auto acknowledgments preserve both",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+      snooze = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+
+      state =
+        conn
+        |> post(path, %{action: "snooze", snoozed_until: snooze, expected_state_version: 0})
+        |> json_response(200)
+
+      assert state["read_state"]["has_unread"]
+      refute state["read_state"]["is_unread"]
+      assert state["read_state"]["is_snoozed"]
+
+      stale =
+        conn
+        |> post(path, %{
+          action: "read",
+          observed_revision: 0,
+          explicit: true,
+          expected_state_version: 0
+        })
+        |> json_response(409)
+
+      assert stale["read_state"] == state["read_state"]
+
+      auto =
+        conn
+        |> post(path, %{
+          action: "read",
+          observed_revision: 0,
+          explicit: false,
+          expected_state_version: 1
+        })
+        |> json_response(200)
+
+      assert auto["read_state"]["manual_unread"]
+      assert auto["read_state"]["snoozed_until"] == snooze
+
+      unsnoozed =
+        conn |> post(path, %{action: "unsnooze", expected_state_version: 2}) |> json_response(200)
+
+      assert unsnoozed["read_state"]["is_unread"]
+      assert unsnoozed["read_state"]["manual_unread"]
+      assert unsnoozed["read_state"]["snoozed_until"] == nil
+
+      read =
+        conn
+        |> post(path, %{
+          action: "read",
+          observed_revision: 0,
+          explicit: true,
+          expected_state_version: 3
+        })
+        |> json_response(200)
+
+      refute read["read_state"]["is_unread"]
+      refute read["read_state"]["manual_unread"]
+      assert read["read_state"]["state_version"] == 4
+      assert Ash.get!(Chat, chat.id, actor: actor).updated_at == chat.updated_at
+    end
+
+    test "mark unread removes snooze and stale manual actions cannot undo newer explicit reads",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+
+      for params <- [
+            %{action: "unread"},
+            %{action: "snooze", expected_state_version: 0, snoozed_until: "invalid"},
+            %{action: "snooze", expected_state_version: 0, snoozed_until: "2000-01-01T00:00:00Z"}
+          ] do
+        assert conn |> post(path, params) |> json_response(422)
+      end
+
+      snooze = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+
+      conn
+      |> post(path, %{action: "snooze", snoozed_until: snooze, expected_state_version: 0})
+      |> json_response(200)
+
+      unread =
+        conn |> post(path, %{action: "unread", expected_state_version: 1}) |> json_response(200)
+
+      assert unread["read_state"]["snoozed_until"] == nil
+      assert unread["read_state"]["is_unread"]
+
+      conn
+      |> post(path, %{
+        action: "read",
+        observed_revision: 0,
+        explicit: true,
+        expected_state_version: 2
+      })
+      |> json_response(200)
+
+      for action <- ["unread", "snooze", "unsnooze"] do
+        stale =
+          conn
+          |> post(path, %{action: action, expected_state_version: 2, snoozed_until: snooze})
+          |> json_response(409)
+
+        refute stale["read_state"]["is_unread"]
+        assert stale["read_state"]["state_version"] == 3
+      end
+    end
+
+    test "read-only shared viewers mutate only their own state and strangers cannot access it", %{
+      conn: conn
+    } do
+      %{user: owner} = user_fixture()
+      %{user: viewer} = viewer_fixture = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, viewer]})
+      bot = create_bot!(owner)
+      configuration = create_configuration!(owner)
+      share_bot!(owner, bot, group)
+      share_configuration!(owner, configuration, group)
+      chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
+      share_chat!(owner, chat, group)
+      viewer_conn = sign_in_conn(conn, viewer_fixture)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+      detail = viewer_conn |> get("/api/bff/chat-state/#{chat.id}") |> json_response(200)
+      refute detail["chat"]["can_edit"]
+
+      state =
+        viewer_conn
+        |> post(path, %{action: "unread", expected_state_version: 0})
+        |> json_response(200)
+
+      assert state["read_state"]["is_unread"]
+      owner_state = IntellectualClub.Chat.ReadState.load_many([chat], owner)[chat.id]
+      assert owner_state.state_version == 0
+      refute owner_state.is_unread
+      stranger = sign_in_conn(conn, user_fixture())
+
+      assert stranger
+             |> post(path, %{action: "unread", expected_state_version: 0})
+             |> json_response(404)
+
+      assert {:ok, _} = IntellectualClub.Sharing.replace_chat_share_state(chat.id, [], owner)
+
+      assert viewer_conn
+             |> post(path, %{action: "unread", expected_state_version: 1})
+             |> json_response(404)
+    end
+  end
+
   describe "GET /api/bff/chat-state/:id" do
     test "returns lean content for markdown user message", %{
       conn: conn

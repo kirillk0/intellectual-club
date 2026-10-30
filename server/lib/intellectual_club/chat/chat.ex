@@ -421,6 +421,9 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   relationships do
+    has_one :activity, IntellectualClub.Chat.ChatActivity, destination_attribute: :chat_id
+    has_many :read_states, IntellectualClub.Chat.ReadState, destination_attribute: :chat_id
+
     belongs_to(:owner, IntellectualClub.Accounts.User,
       allow_nil?: false,
       attribute_type: :integer
@@ -512,6 +515,20 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   calculations do
+    calculate :read_state, :map, IntellectualClub.Chat.Calculations.ReadState
+
+    calculate :inbox_unread,
+              :boolean,
+              expr(
+                (exists(read_states, user_id == ^actor(:id) and manual_unread == true) or
+                   ((activity.revision || 0) > 0 and
+                      not exists(
+                        read_states,
+                        user_id == ^actor(:id) and read_revision >= parent(activity.revision)
+                      ))) and
+                  not exists(read_states, user_id == ^actor(:id) and snoozed_until > now())
+              )
+
     calculate :can_edit, :boolean, expr(owner_id == ^actor(:id)) do
       public?(true)
     end

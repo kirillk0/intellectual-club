@@ -76,6 +76,7 @@ defmodule IntellectualClubWeb.Bff.BookmarksController do
         chat: [
           :id,
           :note,
+          :read_state,
           :bot_id,
           :llm_configuration_id,
           :parent_chat_id,

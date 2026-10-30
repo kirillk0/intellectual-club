@@ -61,104 +61,108 @@
 
             <section v-else class="card stack chat-list-main">
               <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+              <p v-if="readStateError && !snoozeChat" class="error-text" role="alert">{{ readStateError }}</p>
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
 
               <InitialRoutePlaceholder
                 v-if="loading && !chats.length && !hasChatSearch"
               />
-              <div v-else class="list">
-                <div v-for="c in visibleChats" :key="c.id" class="chat-list-entry">
-                  <ChatListRow
-                    :to="chatResultLink(c)"
-                    :stack="true"
-                    :title="chatLabel(c)"
-                    :config-label="c.llm_configuration_label || null"
-                    :meta-text="chatMetaText(c)"
-                    :secondary-meta="relationMeta(c)"
-                    :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
-                    :preview-role="!hasChatSearch ? c.first_message_role : null"
-                    :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
-                    :generation-state="generationStateForChat(c)"
-                    :row-role="chatResultRole(c)"
-                    :actions="canEditChat(c)"
-                    :actions-open="chatActionsMenu?.chat.id === c.id"
-                    @navigate="openChat"
-                    @open-actions="openChatActions(c, $event)"
-                  >
-                    <template #meta-extra>
-                      <ContinuationNav
-                        :items="c.continuation_nav || []"
-                        :current-chat-id="c.id"
-                        mode="list"
+              <div v-else class="chat-sections">
+                <section v-for="section in visibleSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
+                  <h3 class="chat-section__heading">{{ section.label }} <span class="muted">{{ section.total }}</span></h3>
+                  <div class="list">
+                    <div v-for="c in section.chats" :key="c.id" class="chat-list-entry">
+                      <ChatListRow
+                        :to="chatResultLink(c)"
                         :stack="true"
+                        :title="chatLabel(c)"
+                        :config-label="c.llm_configuration_label || null"
+                        :meta-text="chatMetaText(c)"
+                        :secondary-meta="relationMeta(c)"
+                        :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
+                        :preview-role="!hasChatSearch ? c.first_message_role : null"
+                        :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
+                        :generation-state="generationStateForChat(c)"
+                        :row-role="chatResultRole(c)"
+                        :read-state="c.read_state"
+                        :actions="true"
+                        :actions-open="chatActionsMenu?.chat.id === c.id"
                         @navigate="openChat"
-                      />
-                    </template>
-                    <template #badges>
-                      <span
-                        v-if="c.shared_outgoing"
-                        class="share-indicator"
-                        title="Shared with groups"
-                        aria-label="Shared with groups"
+                        @open-actions="openChatActions(c, $event)"
                       >
-                        <SvgIcon name="share-outgoing" />
-                      </span>
-                      <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
-                        {{ matchBadgeLabel(c.match_type) }}
-                      </span>
-                      <span v-if="relationBadgeLabel(c)" class="badge">{{ relationBadgeLabel(c) }}</span>
-                      <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
-                        {{ continuationCountLabel(c.child_handoff_count || 0) }}
-                      </span>
-                    </template>
-                  </ChatListRow>
-                  <div v-if="subchatCount(c) > 0" class="subchat-toggle-row">
-                    <button
-                      class="subchat-toggle"
-                      type="button"
-                      :aria-expanded="subchatsExpanded(c)"
-                      @click="toggleSubchats(c.id)"
-                    >
-                      <SvgIcon :name="subchatsExpanded(c) ? 'arrow-down' : 'chevron-right'" size="14" />
-                      <span>{{ subchatCountLabel(subchatCount(c)) }}</span>
-                    </button>
+                        <template #meta-extra>
+                          <ContinuationNav
+                            :items="c.continuation_nav || []"
+                            :current-chat-id="c.id"
+                            mode="list"
+                            :stack="true"
+                            @navigate="openChat"
+                          />
+                        </template>
+                        <template #badges>
+                          <span
+                            v-if="c.shared_outgoing"
+                            class="share-indicator"
+                            title="Shared with groups"
+                            aria-label="Shared with groups"
+                          >
+                            <SvgIcon name="share-outgoing" />
+                          </span>
+                          <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
+                            {{ matchBadgeLabel(c.match_type) }}
+                          </span>
+                          <span v-if="relationBadgeLabel(c)" class="badge">{{ relationBadgeLabel(c) }}</span>
+                          <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
+                            {{ continuationCountLabel(c.child_handoff_count || 0) }}
+                          </span>
+                        </template>
+                      </ChatListRow>
+                      <div v-if="subchatCount(c) > 0" class="subchat-toggle-row">
+                        <button
+                          class="subchat-toggle"
+                          type="button"
+                          :aria-expanded="subchatsExpanded(c)"
+                          @click="toggleSubchats(c.id)"
+                        >
+                          <SvgIcon :name="subchatsExpanded(c) ? 'arrow-down' : 'chevron-right'" size="14" />
+                          <span>{{ subchatCountLabel(subchatCount(c)) }}</span>
+                        </button>
+                      </div>
+                      <div v-if="subchatsExpanded(c)" class="subchat-list">
+                        <ChatListRow
+                          v-for="subchat in directSubchats(c)"
+                          :key="subchat.id"
+                          :to="chatResultLink(subchat)"
+                          :stack="true"
+                          :title="chatLabel(subchat)"
+                          :config-label="subchat.llm_configuration_label || null"
+                          :meta-text="chatMetaText(subchat)"
+                          :secondary-meta="relationMeta(subchat)"
+                          :preview-text="!hasChatSearch && subchat.first_message_preview ? formatPreview(subchat.first_message_preview) : null"
+                          :preview-role="!hasChatSearch ? subchat.first_message_role : null"
+                          :generation-state="generationStateForChat(subchat)"
+                          :read-state="subchat.read_state"
+                          :actions="true"
+                          :actions-open="chatActionsMenu?.chat.id === subchat.id"
+                          @navigate="openChat"
+                          @open-actions="openChatActions(subchat, $event)"
+                        >
+                          <template #badges>
+                            <span class="badge">{{ translate('Subchat') }}</span>
+                            <span v-if="relationBadgeLabel(subchat)" class="badge">{{ relationBadgeLabel(subchat) }}</span>
+                          </template>
+                        </ChatListRow>
+                      </div>
+                    </div>
                   </div>
-                  <div v-if="subchatsExpanded(c)" class="subchat-list">
-                    <ChatListRow
-                      v-for="subchat in directSubchats(c)"
-                      :key="subchat.id"
-                      :to="chatResultLink(subchat)"
-                      :stack="true"
-                      :title="chatLabel(subchat)"
-                      :config-label="subchat.llm_configuration_label || null"
-                      :meta-text="chatMetaText(subchat)"
-                      :secondary-meta="relationMeta(subchat)"
-                      :preview-text="!hasChatSearch && subchat.first_message_preview ? formatPreview(subchat.first_message_preview) : null"
-                      :preview-role="!hasChatSearch ? subchat.first_message_role : null"
-                      :generation-state="generationStateForChat(subchat)"
-                      :actions="canEditChat(subchat)"
-                      :actions-open="chatActionsMenu?.chat.id === subchat.id"
-                      @navigate="openChat"
-                      @open-actions="openChatActions(subchat, $event)"
-                    >
-                      <template #badges>
-                        <span class="badge">{{ translate('Subchat') }}</span>
-                        <span v-if="relationBadgeLabel(subchat)" class="badge">{{ relationBadgeLabel(subchat) }}</span>
-                      </template>
-                    </ChatListRow>
-                  </div>
-                </div>
-              </div>
 
-              <div v-if="!hasChatSearch && totalPages > 1" class="pagination">
-                <button type="button" :disabled="loading || pageNumber <= 1" @click="goToPreviousPage">
-                  Previous
-                </button>
-                <span class="muted">Page {{ pageNumber }} of {{ totalPages }}</span>
-                <button type="button" :disabled="loading || !hasNextPage" @click="goToNextPage">
-                  Next
-                </button>
+                  <div v-if="section.totalPages > 1" class="pagination">
+                    <button type="button" :disabled="loading || chatSearchLoading || section.page <= 1" @click="changeSectionPage(section.key, -1)">{{ translate('Previous') }}</button>
+                    <span class="muted">{{ translate('Page {page} of {total}', { page: section.page, total: section.totalPages }) }}</span>
+                    <button type="button" :disabled="loading || chatSearchLoading || !section.hasNext" @click="changeSectionPage(section.key, 1)">{{ translate('Next') }}</button>
+                  </div>
+                </section>
               </div>
 
               <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
@@ -221,10 +225,26 @@
 
     <ChatListActionsMenu
       :anchor="chatActionsMenu?.anchor ?? null"
+      :can-edit="chatActionsMenu?.chat.can_edit === true"
+      :unread="Boolean(chatActionsMenu?.chat.read_state?.has_unread || chatActionsMenu?.chat.read_state?.manual_unread)"
+      :snoozed="Boolean(chatActionsMenu?.chat.read_state?.is_snoozed)"
+      :busy="readStateSaving"
+      @mark-read="changeReadStateFromMenu('read')"
+      @mark-unread="changeReadStateFromMenu('unread')"
+      @snooze="openSnoozeModal"
+      @unsnooze="changeReadStateFromMenu('unsnooze')"
       :deleting="deletingChatId != null && deletingChatId === chatActionsMenu?.chat.id"
       @close="closeChatActions"
       @edit-note="openChatNoteModal"
       @delete="deleteChatFromMenu"
+    />
+
+    <ChatSnoozeModal
+      :open="snoozeChat != null"
+      :saving="readStateSaving"
+      :error="readStateError"
+      @update:open="(open) => { if (!open) snoozeChat = null; }"
+      @confirm="confirmSnooze"
     />
 
     <ChatNoteModal
@@ -247,6 +267,8 @@ import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListActionsMenu, { type ChatListActionsAnchor } from '@/components/ChatListActionsMenu.vue';
 import ChatListRow, { type ChatListRowActionsRequest } from '@/components/ChatListRow.vue';
 import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
+import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
+import { chatReadStateInput, updateChatReadState, isChatReadStateConflict, type ChatReadStateAction } from '@/features/chat/chatReadState';
 import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
@@ -256,6 +278,7 @@ import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { sortBotsByPreference, useBotSortPreference } from '@/features/bots/model/useBotSortPreference';
 import { createChatRecord, deleteChatRecord, updateChatRecord } from '@/features/chat/chatAshApi';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';
+import { useChatServerEvents } from '@/features/chat/chatServerEvents';
 import { useChatChanges } from '@/features/chat/chatEvents';
 import {
   chatListRelationLabelKey,
@@ -315,6 +338,7 @@ type ChatListStats = {
 };
 
 type ChatListIdleStatePayload = {
+  next_read_state_expiry?: string | null;
   revision?: string | null;
   active_generation_message_id?: number | null;
 };
@@ -325,6 +349,7 @@ type ChatListGenerationStatePayload = {
 };
 
 type ChatListPayload = {
+  next_read_state_expiry?: string | null;
   chats: ChatSummary[];
   page?: {
     number?: number;
@@ -336,7 +361,19 @@ type ChatListPayload = {
   idle_revision?: string | null;
 };
 
-type GenerationState = 'generating' | 'reconnecting' | 'done';
+type GenerationState = 'generating' | 'reconnecting' | 'error' | 'canceled';
+type ChatSection = 'unread' | 'working' | 'other';
+const SECTION_KEYS: ChatSection[] = ['unread', 'working', 'other'];
+const SECTION_LABELS = { unread: 'Unread', working: 'Working chats', other: 'Other chats' };
+type SectionPage = { number: number; per_page: number; total: number; has_next: boolean };
+const emptySectionPages = (): Record<ChatSection, SectionPage> => Object.fromEntries(
+  SECTION_KEYS.map((key) => [key, { number: 1, per_page: 20, total: 0, has_next: false }])
+) as Record<ChatSection, SectionPage>;
+function sectionForChat(chat: ChatSummary): ChatSection {
+  if (chat.read_state?.is_unread) return 'unread';
+  return chat.active_generation_message_id ? 'working' : 'other';
+}
+
 
 type ChatActionsMenuState = {
   chat: ChatSummary;
@@ -381,25 +418,30 @@ function sameQueryValue(current: unknown, next: string | undefined) {
   return getQueryString(current) === (next ?? '');
 }
 
+let unmounted = false;
 const loading = ref(true);
 const creating = ref(false);
 const error = ref<string | null>(null);
 const chats = ref<ChatSummary[]>([]);
-const pageNumber = ref(readChatListPageQuery(route.query.page));
+const sectionPages = ref(emptySectionPages());
+const searchSectionPages = ref(emptySectionPages());
+sectionPages.value.other.number = readChatListPageQuery(route.query.page);
+sectionPages.value.unread.number = readChatListPageQuery(route.query.unreadPage);
+sectionPages.value.working.number = readChatListPageQuery(route.query.workingPage);
+const pageNumber = computed({ get: () => sectionPages.value.other.number, set: (value) => { sectionPages.value.other.number = value; } });
 const perPage = ref(20);
 const totalChats = ref(0);
-const hasNextPage = ref(false);
 const chatSearchTerm = ref(getQueryString(route.query.q));
 const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
-const chatListIdleRevision = ref<string | null>(null);
+const chatListIdleRevisions = ref<Record<ChatSection, string | null>>({ unread: null, working: null, other: null });
+const nextReadStateExpiry = ref<string | null>(null);
 const chatListGenerationPollReconnecting = ref(false);
-const generationCompleteChatIds = ref(new Set<number>());
 const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
-const chatListRead = useRecoverableRead<ChatListPayload>({
-  key: () => `chats:index:${pageNumber.value}:${botFilter.value || 'all'}`,
+const chatListRead = useRecoverableRead<ChatListPayload[]>({
+  key: () => `chats:index:${SECTION_KEYS.map((key) => sectionPages.value[key].number).join(':')}:${botFilter.value || 'all'}`,
 });
 const botSearchTerm = ref('');
 const botsQuery = useQuery<Bot[]>({
@@ -425,6 +467,9 @@ const chatActionsMenu = ref<ChatActionsMenuState | null>(null);
 const noteChat = ref<ChatSummary | null>(null);
 const noteModalValue = ref('');
 const savingNote = ref(false);
+const snoozeChat = ref<ChatSummary | null>(null);
+const readStateSaving = ref(false);
+const readStateError = ref('');
 const deletingChatId = ref<number | null>(null);
 const botSortMode = useBotSortPreference();
 const botSortModeValue = computed({
@@ -447,6 +492,12 @@ function syncChatListRouteQuery() {
   const bot = String(botFilter.value || '').trim();
   const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
   const next = { ...route.query };
+  for (const key of ['unread', 'working'] as const) {
+    const queryKey = `${key}Page`;
+    const number = sectionPages.value[key].number;
+    if (number > 1) next[queryKey] = String(number);
+    else delete next[queryKey];
+  }
 
   if (q) next.q = q;
   else delete (next as Record<string, unknown>).q;
@@ -460,7 +511,9 @@ function syncChatListRouteQuery() {
   if (
     sameQueryValue(route.query.q, q || undefined) &&
     sameQueryValue(route.query.bot, bot || undefined) &&
-    sameQueryValue(route.query.page, page)
+    sameQueryValue(route.query.page, page) &&
+    sameQueryValue(route.query.unreadPage, next.unreadPage as string | undefined) &&
+    sameQueryValue(route.query.workingPage, next.workingPage as string | undefined)
   ) {
     return;
   }
@@ -486,12 +539,16 @@ function syncChatListRouteQuery() {
 }
 
 watch(
-  () => [route.query.q, route.query.bot, route.query.page],
-  ([q, bot, page]) => {
+  () => [route.query.q, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage],
+  ([q, bot, page, unreadPage, workingPage]) => {
     const nextQ = getQueryString(q);
     const nextBot = readBotFilterQuery(bot);
     const nextPage = readChatListPageQuery(page);
-    const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage;
+    const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage ||
+      sectionPages.value.unread.number !== readChatListPageQuery(unreadPage) ||
+      sectionPages.value.working.number !== readChatListPageQuery(workingPage);
+    sectionPages.value.unread.number = readChatListPageQuery(unreadPage);
+    sectionPages.value.working.number = readChatListPageQuery(workingPage);
 
     if (chatSearchTerm.value !== nextQ) chatSearchTerm.value = nextQ;
     if (botFilter.value !== nextBot) botFilter.value = nextBot;
@@ -504,7 +561,7 @@ watch(
 );
 
 watch(
-  () => [chatSearchTerm.value, botFilter.value, pageNumber.value],
+  () => [chatSearchTerm.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
   () => {
     syncChatListRouteQuery();
   }
@@ -525,8 +582,8 @@ function toggleBotSortMode() {
 function setBotFilter(value: string) {
   if (botFilter.value === value) return;
   botFilter.value = value;
-  pageNumber.value = 1;
-  void loadChats();
+  resetSectionPageNumbers();
+  if (!hasChatSearch.value) void loadChats();
   if (isMobile.value) filterOpen.value = false;
 }
 
@@ -757,8 +814,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   if (summary.subagent) {
     chats.value = upsertSubchatInRows(chats.value, summary);
     chatSearchResults.value = upsertSubchatInRows(chatSearchResults.value, summary);
-    chatListIdleRevision.value = null;
-    syncVisibleGenerationState(visibleGenerationChats.value);
+    chatListIdleRevisions.value = { unread: null, working: null, other: null };
     return;
   }
 
@@ -767,8 +823,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
     chats.value = chats.value.filter((chat) => chat.id !== summary.id);
     chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== summary.id);
     if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
-    chatListIdleRevision.value = null;
-    syncVisibleGenerationState(visibleGenerationChats.value);
+    chatListIdleRevisions.value = { unread: null, working: null, other: null };
     return;
   }
 
@@ -804,8 +859,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   }
 
   chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
-  chatListIdleRevision.value = null;
-  syncVisibleGenerationState(visibleGenerationChats.value);
+  chatListIdleRevisions.value = { unread: null, working: null, other: null };
 }
 
 function removeChatFromLists(chatId: number) {
@@ -817,10 +871,7 @@ function removeChatFromLists(chatId: number) {
   chatSearchResults.value = searchRows.rows.filter((chat) => chat.id !== chatId);
   if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
 
-  const nextComplete = new Set(generationCompleteChatIds.value);
-  if (nextComplete.delete(chatId)) generationCompleteChatIds.value = nextComplete;
-  chatListIdleRevision.value = null;
-  syncVisibleGenerationState(visibleGenerationChats.value);
+  chatListIdleRevisions.value = { unread: null, working: null, other: null };
 }
 
 const chatSummaryRefreshTimers = new Map<number, number>();
@@ -840,7 +891,9 @@ function refreshChatSummary(chatId: number, changeReason?: unknown) {
 
     try {
       const summary = await fetchChatSummary(chatId, previewLength.value);
+      if (unmounted) return;
       applyChatSummary(summary, changeReason);
+      await refreshSections();
     } catch (error) {
       console.warn('Failed to refresh chat summary.', error);
     }
@@ -849,10 +902,23 @@ function refreshChatSummary(chatId: number, changeReason?: unknown) {
   chatSummaryRefreshTimers.set(chatId, timer);
 }
 
+let serverRefreshTimer: number | null = null;
+function queueServerRefresh() {
+  if (serverRefreshTimer !== null) window.clearTimeout(serverRefreshTimer);
+  serverRefreshTimer = window.setTimeout(() => {
+    serverRefreshTimer = null;
+    if (unmounted || !layer.active.value || document.visibilityState !== 'visible') return;
+    if (loading.value || chatSearchLoading.value) { queueServerRefresh(); return; }
+    void refreshSections();
+  }, 150);
+}
+useChatServerEvents(queueServerRefresh);
+
 useChatChanges((change) => {
   if (change.operation === 'delete') {
     clearChatSummaryRefresh(change.id);
     removeChatFromLists(change.id);
+    void refreshSections();
     return;
   }
 
@@ -870,10 +936,62 @@ const allBotsCount = computed(() => {
   if (chatListStats.value.total_chats > 0) return chatListStats.value.total_chats;
   return totalChats.value;
 });
-const totalPages = computed(() => {
-  const perPageValue = perPage.value > 0 ? perPage.value : 20;
-  return Math.max(1, Math.ceil(totalChats.value / perPageValue));
-});
+const visibleSections = computed(() => SECTION_KEYS.map((key) => {
+  const page = (hasChatSearch.value ? searchSectionPages.value : sectionPages.value)[key];
+  return {
+    key, label: translate(SECTION_LABELS[key]),
+    chats: visibleChats.value.filter((chat) => sectionForChat(chat) === key),
+    page: page.number, total: page.total, hasNext: page.has_next,
+    totalPages: Math.max(1, Math.ceil(page.total / Math.max(1, page.per_page))),
+  };
+}).filter((section) => section.chats.length > 0));
+
+function resetSectionPageNumbers() {
+  for (const key of SECTION_KEYS) {
+    sectionPages.value[key].number = 1;
+    searchSectionPages.value[key].number = 1;
+  }
+}
+
+async function changeSectionPage(key: ChatSection, delta: number) {
+  const pages = hasChatSearch.value ? searchSectionPages.value : sectionPages.value;
+  pages[key].number = Math.max(1, pages[key].number + delta);
+  if (hasChatSearch.value) await runChatSearch(chatSearchTerm.value.trim());
+  else await loadChats({ scrollToTop: delta > 0 });
+}
+
+// A batch can span a concurrent server mutation. Prefer the newest state and render each ID once.
+function uniqueChatRows<T extends ChatSummary>(items: T[]): T[] {
+  const byId = new Map<number, T>();
+  for (const chat of items) {
+    const previous = byId.get(chat.id);
+    const stateVersion = chat.read_state?.state_version ?? 0;
+    const previousVersion = previous?.read_state?.state_version ?? 0;
+    if (!previous || stateVersion > previousVersion || (stateVersion === previousVersion &&
+      (chat.read_state?.activity_revision ?? 0) >= (previous.read_state?.activity_revision ?? 0))) byId.set(chat.id, chat);
+  }
+  return [...byId.values()];
+}
+
+function applySectionPages(payloads: ChatListPayload[], pages: Record<ChatSection, SectionPage>) {
+  let clamped = false;
+  payloads.forEach((payload, index) => {
+    const key = SECTION_KEYS[index];
+    const previous = pages[key];
+    pages[key] = {
+      number: payload.page?.number ?? previous.number,
+      per_page: payload.page?.per_page ?? previous.per_page,
+      total: payload.page?.total ?? (payload.chats || []).length,
+      has_next: Boolean(payload.page?.has_next),
+    };
+    const lastPage = Math.max(1, Math.ceil(pages[key].total / Math.max(1, pages[key].per_page)));
+    if (pages[key].number > lastPage) {
+      pages[key].number = lastPage;
+      clamped = true;
+    }
+  });
+  return clamped;
+}
 
 const chatSearchEmptyState = computed(() => {
   if (!hasChatSearch.value) return '';
@@ -908,7 +1026,9 @@ function generationStateForChat(chat: ChatSummary): GenerationState | null {
   if (chat.active_generation_message_id) {
     return chatListGenerationPollReconnecting.value ? 'reconnecting' : 'generating';
   }
-  return generationCompleteChatIds.value.has(chat.id) ? 'done' : null;
+  if (chat.last_message_status === 'error') return 'error';
+  if (chat.last_message_status === 'canceled') return 'canceled';
+  return null;
 }
 
 function countLabel(count: unknown, singular: string, plural: string) {
@@ -1003,7 +1123,6 @@ function canEditChat(chat: ChatSummary) {
 }
 
 function openChatActions(chat: ChatSummary, request: ChatListRowActionsRequest) {
-  if (!canEditChat(chat)) return;
   if (request.source === 'button' && chatActionsMenu.value?.chat.id === chat.id) {
     closeChatActions();
     return;
@@ -1036,10 +1155,73 @@ function patchChatRowsById<T extends ChatSummary>(items: T[], chatId: number, pa
   return changed ? next : items;
 }
 
+function openSnoozeModal() {
+  const chat = chatActionsMenu.value?.chat;
+  closeChatActions();
+  if (!chat || readStateSaving.value) return;
+  readStateError.value = '';
+  snoozeChat.value = chat;
+}
+
+async function refreshSections() {
+  if (unmounted) return;
+  if (hasChatSearch.value) await runChatSearch(chatSearchTerm.value.trim(), { silent: true });
+  else await loadChats({ silent: true });
+}
+
+async function changeReadStateFromMenu(action: ChatReadStateAction) {
+  const chat = chatActionsMenu.value?.chat;
+  closeChatActions();
+  if (chat) await mutateReadState(chat, action);
+}
+
+async function confirmSnooze(iso: string) {
+  if (snoozeChat.value) await mutateReadState(snoozeChat.value, 'snooze', iso);
+}
+
+async function mutateReadState(chat: ChatSummary, action: ChatReadStateAction, snoozedUntil?: string) {
+  if (readStateSaving.value) return;
+  readStateSaving.value = true;
+  readStateError.value = '';
+  // Invalidate pending reads so a pre-mutation response cannot undo the result.
+  chatListLoadSeq += 1;
+  chatSearchSeq += 1;
+  abortActiveChatSearch();
+  chatSearchLoading.value = false;
+  try {
+    const state = chat.read_state ?? (await fetchChatSummary(chat.id)).read_state;
+    if (!state) throw new Error('Missing chat read state');
+    const read_state = await updateChatReadState(chat.id, chatReadStateInput(state, action,
+      snoozedUntil ? { snoozed_until: snoozedUntil } : {}));
+    chats.value = patchChatRowsById(chats.value, chat.id, { read_state });
+    chatSearchResults.value = patchChatRowsById(chatSearchResults.value, chat.id, { read_state });
+    snoozeChat.value = null;
+    await refreshSections();
+  } catch (error) {
+    readStateError.value = translate(isChatReadStateConflict(error)
+      ? 'Chat state changed. Please try again.' : 'Failed to update chat state.');
+    if (isChatReadStateConflict(error)) {
+      await refreshSections();
+      if (snoozeChat.value) {
+        const fresh = flattenChatRows([...chats.value, ...chatSearchResults.value]).find((row) => row.id === chat.id);
+        // An explicit next confirmation must use fresh state, including off-page rows.
+        try {
+          snoozeChat.value = fresh ?? await fetchChatSummary(chat.id);
+        } catch {
+          // Fetch again only on the next explicit confirmation, never retry the rejected mutation.
+          snoozeChat.value = { ...chat, read_state: undefined };
+        }
+      }
+    }
+  } finally {
+    readStateSaving.value = false;
+  }
+}
+
 function openChatNoteModal() {
   const chat = chatActionsMenu.value?.chat;
   closeChatActions();
-  if (!chat) return;
+  if (!chat || !canEditChat(chat)) return;
   noteModalValue.value = chat.note || '';
   noteChat.value = chat;
 }
@@ -1069,7 +1251,7 @@ async function saveChatNote() {
 
 async function deleteChatFromMenu() {
   const chat = chatActionsMenu.value?.chat;
-  if (!chat || deletingChatId.value === chat.id) return;
+  if (!chat || !canEditChat(chat) || deletingChatId.value === chat.id) return;
   closeChatActions();
   if (!window.confirm(translate('Delete this chat? All messages will be removed.'))) return;
 
@@ -1148,35 +1330,11 @@ function normalizeChatListStats(value: unknown): ChatListStats {
 
 let chatListLoadSeq = 0;
 let chatListVisibleLoadSeq = 0;
-let previousVisibleGeneratingChatIds = new Set<number>();
-
-function syncVisibleGenerationState(nextChats: ChatSummary[]) {
-  const nextGeneratingIds = new Set<number>();
-  const nextCompleteIds = new Set(generationCompleteChatIds.value);
-  let completeIdsChanged = false;
-
-  for (const chat of nextChats) {
-    if (chat.active_generation_message_id) {
-      nextGeneratingIds.add(chat.id);
-      if (nextCompleteIds.delete(chat.id)) completeIdsChanged = true;
-      continue;
-    }
-
-    if (previousVisibleGeneratingChatIds.has(chat.id) && !nextCompleteIds.has(chat.id)) {
-      nextCompleteIds.add(chat.id);
-      completeIdsChanged = true;
-    }
-  }
-
-  previousVisibleGeneratingChatIds = nextGeneratingIds;
-  if (completeIdsChanged) generationCompleteChatIds.value = nextCompleteIds;
-}
-
 async function loadChats(
   opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean; scrollToTop?: boolean } = {}
 ) {
   const silent = Boolean(opts.silent);
-  const seq = silent ? chatListLoadSeq : ++chatListLoadSeq;
+  const seq = ++chatListLoadSeq;
   const visibleSeq = silent ? chatListVisibleLoadSeq : ++chatListVisibleLoadSeq;
   if (!silent) {
     loading.value = true;
@@ -1184,39 +1342,31 @@ async function loadChats(
   }
 
   try {
-    const requestedPage = Math.max(1, pageNumber.value);
-    const params = new URLSearchParams();
-    params.set('preview_len', String(Math.min(previewLength.value, 500)));
-    params.set('page', String(requestedPage));
-    params.set('per_page', String(perPage.value));
-    const bot = String(botFilter.value || '').trim();
-    if (bot) params.set('bot', bot);
-    const path = `/api/bff/chat-list?${params.toString()}`;
-    const payload = silent
-      ? await api.get<ChatListPayload>(path, {
-          showErrorBanner: opts.showErrorBanner ?? false,
-          signal: opts.signal,
-        })
-      : await chatListRead.run(
-          ({ signal }) =>
-            api.get<ChatListPayload>(path, {
-              retry: false,
-              showErrorBanner: false,
-              signal,
-            }),
-          { restart: true }
-        );
+    const paths = SECTION_KEYS.map((section) => {
+      const params = new URLSearchParams();
+      params.set('section', section);
+      params.set('preview_len', String(Math.min(previewLength.value, 500)));
+      params.set('page', String(sectionPages.value[section].number));
+      params.set('per_page', String(perPage.value));
+      if (botFilter.value) params.set('bot', botFilter.value);
+      return `/api/bff/chat-list?${params.toString()}`;
+    });
+    const request = (signal?: AbortSignal) => Promise.all(paths.map((path) => api.get<ChatListPayload>(path, {
+      retry: false, showErrorBanner: opts.showErrorBanner ?? false, signal,
+    })));
+    const payloads = silent ? await request(opts.signal)
+      : await chatListRead.run(({ signal }) => request(signal), { restart: true });
+    if (seq !== chatListLoadSeq || unmounted) return;
 
-    if (seq !== chatListLoadSeq) return;
-
-    chats.value = payload.chats || [];
-    syncVisibleGenerationState(visibleGenerationChats.value);
-    pageNumber.value = Number.isInteger(payload.page?.number) ? Number(payload.page?.number) : requestedPage;
-    perPage.value = Number.isInteger(payload.page?.per_page) ? Number(payload.page?.per_page) : perPage.value;
-    totalChats.value = Number.isInteger(payload.page?.total) ? Number(payload.page?.total) : chats.value.length;
-    hasNextPage.value = Boolean(payload.page?.has_next);
-    chatListStats.value = normalizeChatListStats(payload.stats);
-    chatListIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
+    if (applySectionPages(payloads, sectionPages.value)) {
+      await loadChats(opts);
+      return;
+    }
+    chats.value = uniqueChatRows(payloads.flatMap((payload) => payload.chats || []));
+    nextReadStateExpiry.value = payloads[0].next_read_state_expiry ?? null;
+    totalChats.value = SECTION_KEYS.reduce((total, key) => total + sectionPages.value[key].total, 0);
+    chatListStats.value = normalizeChatListStats(payloads[0].stats);
+    chatListIdleRevisions.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, payloads[index].idle_revision ?? null])) as Record<ChatSection, string | null>;
     startChatListIdlePolling();
 
     if (opts.scrollToTop) {
@@ -1227,7 +1377,7 @@ async function loadChats(
     }
   } catch (e) {
     if (isAbortError(e)) return;
-    if (seq !== chatListLoadSeq) return;
+    if (seq !== chatListLoadSeq || unmounted) return;
     if (!silent) {
       error.value = e instanceof Error ? e.message : 'Failed to load chats.';
       return;
@@ -1239,18 +1389,6 @@ async function loadChats(
       loading.value = false;
     }
   }
-}
-
-function goToPreviousPage() {
-  if (loading.value || pageNumber.value <= 1) return;
-  pageNumber.value -= 1;
-  void loadChats();
-}
-
-function goToNextPage() {
-  if (loading.value || !hasNextPage.value) return;
-  pageNumber.value += 1;
-  void loadChats({ scrollToTop: true });
 }
 
 let chatSearchTimer: number | null = null;
@@ -1306,21 +1444,27 @@ async function runChatSearch(
   }
 
   try {
-    const params = new URLSearchParams();
-    params.set('q', term);
-    params.set('per_page', String(perPage.value));
-    const bot = String(botFilter.value || '').trim();
-    if (bot) params.set('bot', bot);
-    const payload = await api.get<{ chats: ChatSearchResult[] }>(`/api/bff/chat-list/search?${params.toString()}`, {
-      showErrorBanner: opts.showErrorBanner ?? true,
-      signal: controller.signal,
-    });
-    if (seq !== chatSearchSeq) return;
-    chatSearchResults.value = payload.chats || [];
-    syncVisibleGenerationState(visibleGenerationChats.value);
+    const payloads = await Promise.all(SECTION_KEYS.map((section) => {
+      const params = new URLSearchParams();
+      params.set('q', term);
+      params.set('section', section);
+      params.set('page', String(searchSectionPages.value[section].number));
+      params.set('per_page', String(perPage.value));
+      if (botFilter.value) params.set('bot', botFilter.value);
+      return api.get<ChatListPayload & { chats: ChatSearchResult[] }>(`/api/bff/chat-list/search?${params.toString()}`, {
+        showErrorBanner: opts.showErrorBanner ?? true, signal: controller.signal,
+      });
+    }));
+    if (seq !== chatSearchSeq || unmounted) return;
+    if (applySectionPages(payloads, searchSectionPages.value)) {
+      await runChatSearch(term, opts);
+      return;
+    }
+    chatSearchResults.value = uniqueChatRows(payloads.flatMap((payload) => payload.chats || []));
+    if ('next_read_state_expiry' in payloads[0]) nextReadStateExpiry.value = payloads[0].next_read_state_expiry ?? null;
   } catch (e) {
     if (isAbortError(e)) return;
-    if (seq !== chatSearchSeq) return;
+    if (seq !== chatSearchSeq || unmounted) return;
     if (!silent) {
       console.error(e);
       chatSearchError.value = 'Failed to search chats.';
@@ -1336,7 +1480,7 @@ async function runChatSearch(
     if (chatSearchAbortController === controller) {
       chatSearchAbortController = null;
     }
-    if (!silent && seq === chatSearchSeq) chatSearchLoading.value = false;
+    if (seq === chatSearchSeq) chatSearchLoading.value = false;
   }
 }
 
@@ -1497,22 +1641,23 @@ async function refreshVisibleChatGenerationStates(signal: AbortSignal) {
       .filter((id) => Number.isInteger(id) && id > 0)
   );
 
-  chats.value = applyGenerationStatesToRows(chats.value, activeByChatId, activeMessageIds);
-  chatSearchResults.value = applyGenerationStatesToRows(
-    chatSearchResults.value,
-    activeByChatId,
-    activeMessageIds
-  );
-  syncVisibleGenerationState(visibleGenerationChats.value);
+  const nextChats = applyGenerationStatesToRows(chats.value, activeByChatId, activeMessageIds);
+  const nextSearch = applyGenerationStatesToRows(chatSearchResults.value, activeByChatId, activeMessageIds);
+  if (nextChats !== chats.value || nextSearch !== chatSearchResults.value) {
+    await refreshSections();
+  }
+
 }
 
-function chatListIdleProbeParams() {
+function chatListIdleProbeParams(section: ChatSection) {
   const params = new URLSearchParams();
-  params.set('page', String(Math.max(1, pageNumber.value)));
+  params.set('section', section);
+  params.set('page', String(Math.max(1, sectionPages.value[section].number)));
   params.set('per_page', String(perPage.value));
   const bot = String(botFilter.value || '').trim();
   if (bot) params.set('bot', bot);
-  if (chatListIdleRevision.value) params.set('revision', chatListIdleRevision.value);
+  const revision = chatListIdleRevisions.value[section];
+  if (revision) params.set('revision', revision);
   return params;
 }
 
@@ -1521,28 +1666,22 @@ function canRunChatListIdleProbe() {
     layer.active.value &&
     document.visibilityState === 'visible' &&
     !loading.value &&
-    !chatSearchLoading.value &&
-    !chatListPollingActive &&
-    !hasVisibleGeneratingChat.value
+    !chatSearchLoading.value
   );
 }
 
-async function runChatListIdleProbe(signal: AbortSignal) {
-  if (!canRunChatListIdleProbe()) return;
+async function runChatListIdleProbe(signal: AbortSignal, forceRefresh = false) {
+  if (!forceRefresh && !canRunChatListIdleProbe()) return;
+  if (forceRefresh && (!layer.active.value || document.visibilityState !== 'visible' || loading.value || chatSearchLoading.value)) return;
 
-  const payload = await api.get<ChatListIdleStatePayload | undefined>(
-    `/api/bff/chat-list/idle-state?${chatListIdleProbeParams().toString()}`,
-    {
-      signal,
-      showErrorBanner: false,
-    }
-  );
-
-  if (!payload) return;
-
-  if (typeof payload.revision === 'string') {
-    chatListIdleRevision.value = payload.revision;
-  }
+  const payloads = await Promise.all(SECTION_KEYS.map((section) => api.get<ChatListIdleStatePayload | undefined>(
+    `/api/bff/chat-list/idle-state?${chatListIdleProbeParams(section).toString()}`,
+    { signal, showErrorBanner: false }
+  )));
+  if (!payloads.some(Boolean) && !forceRefresh) return;
+  const expiryPayload = payloads.find((payload) => payload && 'next_read_state_expiry' in payload);
+  if (expiryPayload) nextReadStateExpiry.value = expiryPayload.next_read_state_expiry ?? null;
+  // Only an applied section batch acknowledges revisions, so failed loads retry.
 
   if (hasChatSearch.value) {
     const term = chatSearchTerm.value.trim();
@@ -1558,6 +1697,7 @@ function startChatListIdlePolling(opts: { immediate?: boolean } = {}) {
 
   chatListIdlePollingActive = true;
   const token = ++chatListIdlePollToken;
+  let forceRefresh = Boolean(opts.immediate);
 
   const scheduleNext = (delayMs: number) => {
     if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
@@ -1573,7 +1713,8 @@ function startChatListIdlePolling(opts: { immediate?: boolean } = {}) {
     chatListIdlePollAbortController = controller;
 
     try {
-      await runChatListIdleProbe(controller.signal);
+      await runChatListIdleProbe(controller.signal, forceRefresh);
+      forceRefresh = false;
       if (!chatListIdlePollingActive || chatListIdlePollToken !== token) return;
       scheduleNext(CHAT_LIST_IDLE_POLL_DELAY_MS);
     } catch (error) {
@@ -1613,7 +1754,7 @@ function restartChatListIdlePolling(opts: { immediate?: boolean; throttle?: bool
 }
 
 function startChatListPolling(opts: { immediate?: boolean } = {}) {
-  if (chatListPollingActive || !layer.active.value || !hasVisibleGeneratingChat.value) return;
+  if (chatListPollingActive || !layer.active.value || document.visibilityState !== 'visible' || !hasVisibleGeneratingChat.value) return;
 
   chatListPollingActive = true;
   const token = ++chatListPollToken;
@@ -1668,7 +1809,39 @@ function restartChatListPolling(opts: { immediate?: boolean } = {}) {
   startChatListPolling(opts);
 }
 
+let snoozeDeadlineTimer: number | null = null;
+let lastSnoozeRefreshAt = 0;
+
+function stopSnoozeDeadlineTimer() {
+  if (snoozeDeadlineTimer != null) window.clearTimeout(snoozeDeadlineTimer);
+  snoozeDeadlineTimer = null;
+}
+
+function scheduleSnoozeDeadline() {
+  stopSnoozeDeadlineTimer();
+  if (unmounted || !layer.active.value || document.visibilityState !== 'visible') return;
+  const deadlines = visibleGenerationChats.value
+    .filter((chat) => chat.read_state?.is_snoozed && chat.read_state.snoozed_until)
+    .map((chat) => Date.parse(chat.read_state!.snoozed_until!))
+    .filter(Number.isFinite);
+  if (nextReadStateExpiry.value && Number.isFinite(Date.parse(nextReadStateExpiry.value))) deadlines.push(Date.parse(nextReadStateExpiry.value));
+  if (!deadlines.length) return;
+  const remaining = Math.min(...deadlines) - Date.now();
+  // Back off when offline or if the server still reports the just-expired state.
+  const delay = remaining > 0 ? remaining + 50 : Math.max(50, 30_000 - (Date.now() - lastSnoozeRefreshAt));
+  snoozeDeadlineTimer = window.setTimeout(async () => {
+    snoozeDeadlineTimer = null;
+    lastSnoozeRefreshAt = Date.now();
+    if (hasChatSearch.value) await loadChats({ silent: true });
+    await refreshSections();
+    scheduleSnoozeDeadline();
+  }, Math.min(delay, 2_147_483_647));
+}
+
+watch([visibleGenerationChats, nextReadStateExpiry], scheduleSnoozeDeadline);
+
 function handleChatListVisibilityChange() {
+  scheduleSnoozeDeadline();
   if (document.visibilityState !== 'visible' || !layer.active.value) {
     stopChatListPolling();
     stopChatListIdlePolling();
@@ -1683,6 +1856,7 @@ function handleChatListVisibilityChange() {
 }
 
 function handleChatListPageShow() {
+  scheduleSnoozeDeadline();
   if (!layer.active.value) return;
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
@@ -1692,6 +1866,7 @@ function handleChatListPageShow() {
 }
 
 function handleChatListFocus() {
+  scheduleSnoozeDeadline();
   if (document.visibilityState !== 'visible' || !layer.active.value) return;
   if (hasVisibleGeneratingChat.value) {
     restartChatListPolling({ immediate: true });
@@ -1710,7 +1885,8 @@ async function refreshBots(opts: { showError?: boolean } = {}) {
 watch(
   () => chatSearchTerm.value,
   (value, previousValue) => {
-    chatListIdleRevision.value = null;
+    chatListIdleRevisions.value = { unread: null, working: null, other: null };
+    resetSectionPageNumbers();
     const term = value.trim();
     if (term.length < CHAT_SEARCH_MIN_LENGTH) {
       const hadChatSearch = previousValue.trim().length >= CHAT_SEARCH_MIN_LENGTH;
@@ -1731,7 +1907,7 @@ watch(
 watch(
   () => botFilter.value,
   () => {
-    chatListIdleRevision.value = null;
+    chatListIdleRevisions.value = { unread: null, working: null, other: null };
     if (!hasChatSearch.value) return;
     const term = chatSearchTerm.value.trim();
     if (!term) return;
@@ -1756,6 +1932,7 @@ watch(
 watch(
   () => layer.active.value,
   (active, wasActive) => {
+    scheduleSnoozeDeadline();
     if (!active) {
       closeChatActions();
       stopChatListPolling();
@@ -1826,6 +2003,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (serverRefreshTimer !== null) window.clearTimeout(serverRefreshTimer);
+  unmounted = true;
+  stopSnoozeDeadlineTimer();
+  chatListLoadSeq += 1;
+  chatSearchSeq += 1;
   window.removeEventListener('resize', updateIsMobile);
   document.removeEventListener('visibilitychange', handleChatListVisibilityChange);
   window.removeEventListener('pageshow', handleChatListPageShow);
@@ -1840,6 +2022,12 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.chat-sections { display: flex; flex-direction: column; gap: 20px; }
+.chat-section { min-width: 0; }
+.chat-section__heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 1rem; }
+.chat-section__heading .muted { font-size: 0.85rem; font-weight: 400; }
+.chat-section + .chat-section { border-top: 1px solid var(--color-border); padding-top: 16px; }
+
 .chat-list-main {
   gap: 10px;
 }

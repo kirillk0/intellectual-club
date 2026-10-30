@@ -165,7 +165,19 @@ export type ForkContext = {
 // Exports have no live source links, so they keep a read-only copy of the prefix.
 export type ChatExportForkContext = ForkContext & { messages: ForkContextMessage[] };
 
+export type ChatReadState = {
+  activity_revision: number;
+  read_revision: number;
+  manual_unread: boolean;
+  snoozed_until: string | null;
+  state_version: number;
+  has_unread: boolean;
+  is_unread: boolean;
+  is_snoozed: boolean;
+};
+
 export type Chat = {
+  read_state?: ChatReadState;
   id: number;
   history_read_only?: boolean;
   note: string;
@@ -183,6 +195,8 @@ export type Chat = {
 };
 
 export type ChatSummary = {
+  read_state?: ChatReadState;
+  last_message_status?: string | null;
   id: number;
   note?: string | null;
   bot_id: number | null;

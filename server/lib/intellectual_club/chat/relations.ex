@@ -495,6 +495,6 @@ defmodule IntellectualClub.Chat.Relations do
       |> Ash.Query.select([:id, :chat_message_step_id, :sequence])
       |> Ash.Query.load(chat_message_step: step_query)
 
-    [:bot, :last_message, parent_tool_call_item: item_query]
+    [:bot, :last_message, :read_state, parent_tool_call_item: item_query]
   end
 end

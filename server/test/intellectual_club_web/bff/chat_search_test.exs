@@ -154,6 +154,95 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
   end
 
   describe "GET /api/bff/chat-list/search" do
+    @tag :whitebox
+    test "section search filters and paginates IDs before enriching matching messages", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      oldest = create_chat!(actor)
+
+      {:ok, oldest_message} =
+        Threads.add_message_to_end(oldest, :user, "section needle oldest payload", actor: actor)
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 oldest.id,
+                 %{"action" => "unread", "expected_state_version" => 0},
+                 actor
+               )
+
+      others =
+        for index <- 1..25 do
+          chat = create_chat!(actor)
+
+          {:ok, _} =
+            Threads.add_message_to_end(chat, :user, "section needle off-page-payload-#{index}",
+              actor: actor
+            )
+
+          chat
+        end
+
+      unread =
+        conn
+        |> get("/api/bff/chat-list/search", %{q: "section needle", section: "unread", per_page: 1})
+        |> json_response(200)
+
+      assert unread["page"]["total"] == 1
+
+      assert [%{"id" => id, "message_id" => message_id, "match_type" => "active_message"}] =
+               unread["chats"]
+
+      assert id == oldest.id
+      assert message_id == oldest_message.id
+
+      {first, capture} =
+        IntellectualClub.SqlCapture.measure(fn ->
+          conn
+          |> get("/api/bff/chat-list/search", %{
+            q: "section needle",
+            section: "other",
+            per_page: 1
+          })
+          |> json_response(200)
+        end)
+
+      assert first["page"]["total"] == 25
+      assert first["page"]["has_next"]
+      assert Enum.map(first["chats"], & &1["id"]) == [List.last(others).id]
+      refute IntellectualClub.SqlCapture.returned?(capture, "off-page-payload-1")
+      message_queries = IntellectualClub.SqlCapture.selects_from(capture.queries, "chat_messages")
+      assert message_queries != []
+      assert Enum.all?(message_queries, &(&1.row_count <= 1))
+
+      last =
+        conn
+        |> get("/api/bff/chat-list/search", %{
+          q: "section needle",
+          section: "other",
+          per_page: 1,
+          page: 25
+        })
+        |> json_response(200)
+
+      assert Enum.map(last["chats"], & &1["id"]) == [hd(others).id]
+      refute last["page"]["has_next"]
+
+      beyond =
+        conn
+        |> get("/api/bff/chat-list/search", %{
+          q: "section needle",
+          section: "other",
+          per_page: 1,
+          page: 26
+        })
+        |> json_response(200)
+
+      assert beyond["chats"] == []
+      assert beyond["page"]["total"] == 25
+    end
+
     test "returns meta/active/inactive match types", %{conn: conn} do
       %{user: actor, password: password} = user_fixture()
       conn = sign_in_conn(conn, actor.username, password)
@@ -229,6 +318,24 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       assert Enum.at(results, 2)["id"] == chat_inactive.id
       assert Enum.at(results, 2)["message_id"] == inactive_msg.id
       assert Enum.at(results, 2)["message_count"] == 2
+
+      section_results =
+        conn
+        |> recycle()
+        |> get(~p"/api/bff/chat-list/search", %{"q" => "arsen", "section" => "other"})
+        |> json_response(200)
+
+      assert section_results["page"]["total"] == 3
+
+      assert Map.new(
+               section_results["chats"],
+               &{&1["id"], Map.take(&1, ["match_type", "message_id", "message_count", "snippet"])}
+             ) ==
+               Map.new(
+                 results,
+                 &{&1["id"],
+                  Map.take(&1, ["match_type", "message_id", "message_count", "snippet"])}
+               )
     end
 
     test "prefers active user hits over newer assistant hits", %{
