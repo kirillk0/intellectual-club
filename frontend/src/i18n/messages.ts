@@ -1,12 +1,7 @@
 export const ruMessages: Record<string, string> = {
-  'Available on your other devices': 'Доступно на других ваших устройствах',
-  "Unsaved changes": "Есть несохранённые изменения",
-  "Saving draft…": "Сохранение черновика…",
-  "✓ Draft text saved": "✓ Текст черновика сохранён",
   "Saved on this device · Offline": "Сохранено на этом устройстве · Нет связи",
   "Draft could not be synced": "Не удалось синхронизировать черновик",
   "Draft is not saved on this device": "Черновик не сохранён на этом устройстве",
-  "Loading draft…": "Загрузка черновика…",
   "Draft changed on another device": "Черновик изменён на другом устройстве",
   "Attachments are only available on this device until sent.": "До отправки вложения доступны только на этом устройстве.",
   "Compare draft versions": "Сравнить версии черновика",

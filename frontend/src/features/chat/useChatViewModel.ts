@@ -1345,7 +1345,7 @@ export function useChatViewModel() {
     confirmAndDeleteMessage: messageActions.confirmAndDeleteMessage,
     draft: composerRuntime.draft,
     draftStatusLabel: composerRuntime.draftStatusLabel,
-    draftSyncState: composerRuntime.draftSyncState,
+    draftProblem: composerRuntime.draftProblem,
     draftConflict: composerRuntime.draftConflict,
     retryDraft: composerRuntime.retryDraft,
     resolveDraft: composerRuntime.resolveDraft,

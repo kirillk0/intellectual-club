@@ -97,6 +97,38 @@ it('retries a failed write without a notification or losing the local text', asy
   await vi.advanceTimersByTimeAsync(2_000); expect(server.text).toBe('recover'); expect(sync.state.value).toBe('saved');
 });
 
+it('reports only problems of unsynchronized edits and keeps a failure visible across retries', async () => {
+  const { value, sync } = create(); await flushPromises();
+  mocks.get.mockRejectedValueOnce(new Error('network')); await sync.refresh();
+  expect(sync.state.value).toBe('error'); expect(sync.problem.value).toBeNull();
+  await vi.advanceTimersByTimeAsync(2_000); expect(sync.state.value).toBe('idle');
+  const retry = deferred<{ draft: TextDraftSnapshot }>();
+  mocks.put.mockRejectedValueOnce(new Error('network')).mockReturnValueOnce(retry.promise);
+  value.value = 'typed'; expect(sync.state.value).toBe('pending'); expect(sync.problem.value).toBeNull();
+  await vi.advanceTimersByTimeAsync(1_000); expect(sync.problem.value).toBe('error');
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(sync.state.value).toBe('saving'); expect(sync.problem.value).toBe('error');
+  server = snapshot('typed', 1); retry.resolve({ draft: server }); await flushPromises();
+  expect(sync.state.value).toBe('saved'); expect(sync.problem.value).toBeNull();
+});
+
+it('asks the browser to confirm leaving while edits are not acknowledged by the server', async () => {
+  const leave = () => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event); return event.defaultPrevented;
+  };
+  const { value, chat, sync, scope } = create(); await flushPromises();
+  expect(leave()).toBe(false);
+  value.value = 'unsent'; expect(sync.unsaved.value).toBe(true); expect(leave()).toBe(true);
+  await vi.advanceTimersByTimeAsync(1_000); expect(leave()).toBe(false);
+  mocks.put.mockRejectedValueOnce(new Error('network'));
+  value.value = 'left behind'; chat.value = 13; await flushPromises();
+  expect(sync.problem.value).toBeNull(); expect(sync.unsaved.value).toBe(true); expect(leave()).toBe(true);
+  await vi.advanceTimersByTimeAsync(2_000); expect(server.text).toBe('left behind'); expect(leave()).toBe(false);
+  mocks.put.mockRejectedValue(new Error('network')); value.value = 'disposed';
+  scope.stop(); await flushPromises(); expect(leave()).toBe(false);
+});
+
 it('reports local storage failure honestly while offline', async () => {
   const { value, sync } = create(); await flushPromises();
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });

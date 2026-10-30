@@ -40,14 +40,18 @@ the server. Legacy local drafts are imported only after checking chat ownership.
 Server saves use a 1-second trailing debounce with a 5-second maximum wait during
 continuous typing. Navigation and hiding the page attempt to flush pending edits;
 closing a browser cannot guarantee completion, so local recovery remains necessary.
+While any edits of the current account are not acknowledged by the server, closing
+or reloading the page asks for the browser's standard leave confirmation.
 Network errors retain local text and retry with backoff. Foreground/reconnect and
 personal SSE invalidations reload the server snapshot.
 
 A clean editor adopts the remote version. Unsynchronized local changes based on
 an outdated revision trigger a conflict instead of a silent overwrite. The editor
 shows both texts and lets the user keep the local text or use the server version.
-No automatic text merge is attempted. The status distinguishes pending changes,
-server acknowledgement, local-only recovery, errors and conflicts.
+No automatic text merge is attempted. Routine progress (pending, saving, saved) is
+not displayed. The composer reports only conflicts and unsynchronized edits that
+could not reach the server: offline, a failed request (kept visible across retries
+until a write succeeds) and missing local recovery.
 
 ## Chat list and events
 

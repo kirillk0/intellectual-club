@@ -5,11 +5,13 @@ export type TextDraftSnapshot = { text: string; revision: number; updated_at: st
 type Target = { key: string; endpoint: string; accountId: number; legacyKey?: string };
 type Session = {
   target: Target; text: string; base: TextDraftSnapshot; initialized: boolean; dirty: boolean;
-  conflict: TextDraftSnapshot | null; error: boolean; localSaved: boolean; saving: boolean;
+  conflict: TextDraftSnapshot | null; error: boolean; failed: boolean; localSaved: boolean; saving: boolean;
   consumedRevision: number | null; paused: number; pending: Promise<void> | null; timer: ReturnType<typeof setTimeout> | null;
   maxTimer: ReturnType<typeof setTimeout> | null; retry: number; active: boolean;
 };
 export type DraftSubmission = { session: Session | null; text: string; revision?: number };
+/** A synchronization problem worth surfacing to the user; routine progress is not one. */
+export type DraftProblem = 'conflict' | 'offline' | 'error' | 'unprotected';
 const requestOptions = { showErrorBanner: false, invalidateServerState: false, retry: false as const, timeoutMs: 5_000 };
 const empty = (): TextDraftSnapshot => ({ text: '', revision: 0, updated_at: null });
 
@@ -96,6 +98,8 @@ export function useSyncedTextDraft(options: {
       s.base = remote;
     }
     s.initialized = true; s.error = false; s.retry = 1_000;
+    // Edits that failed to save stay reported until a write succeeds, so retries do not blink.
+    if (!s.dirty) s.failed = false;
     persist(s); display(s);
   };
   const fetchRemote = async (s: Session) => {
@@ -111,7 +115,7 @@ export function useSyncedTextDraft(options: {
     if (!online.value) { s.error = true; changed(); return; }
     const work = (async () => {
       try { await fetchRemote(s); }
-      catch { s.error = true; schedule(s, true); s.retry = Math.min(s.retry * 2, 30_000); }
+      catch { s.error = s.failed = true; schedule(s, true); s.retry = Math.min(s.retry * 2, 30_000); }
       finally { changed(); }
     })();
     s.pending = work;
@@ -137,14 +141,14 @@ export function useSyncedTextDraft(options: {
         if (!accountMatches(s)) return;
         s.base = payload.draft;
         s.dirty = s.text !== payload.draft.text;
-        s.error = false; s.retry = 1_000;
+        s.error = s.failed = false; s.retry = 1_000;
         persist(s);
         options.onSaved?.(s.target, payload.draft);
       } catch (error) {
         const remote = isHttpError(error) && error.status === 409
           ? (error.bodyJson as { draft?: TextDraftSnapshot } | null)?.draft : null;
         if (remote) adopt(s, remote);
-        else { s.error = true; s.retry = Math.min(s.retry * 2, 30_000); }
+        else { s.error = s.failed = true; s.retry = Math.min(s.retry * 2, 30_000); }
       } finally { s.saving = false; changed(); }
     })();
     s.pending = work;
@@ -167,7 +171,7 @@ export function useSyncedTextDraft(options: {
       existing.active = true; current.value = existing; display(existing); void refresh(existing); return;
     }
     const s: Session = { target, text: '', base: empty(), initialized: false, dirty: false,
-      conflict: null, error: false, localSaved: true, saving: false, consumedRevision: null, paused: 0,
+      conflict: null, error: false, failed: false, localSaved: true, saving: false, consumedRevision: null, paused: 0,
       pending: null, timer: null, maxTimer: null, retry: 1_000, active: true };
     try {
       const raw = localStorage.getItem(recoveryKey(target)) || localStorage.getItem(target.key);
@@ -207,6 +211,21 @@ export function useSyncedTextDraft(options: {
     if (s.dirty) return s.localSaved ? 'pending' : 'unprotected';
     if (!s.initialized) return 'loading';
     return s.text !== '' ? 'saved' : 'idle';
+  });
+  const problem = computed<DraftProblem | null>(() => {
+    void tick.value;
+    const s = current.value;
+    if (!s) return null;
+    if (s.conflict) return 'conflict';
+    if (!s.dirty) return null;
+    if (!online.value) return s.localSaved ? 'offline' : 'unprotected';
+    if (s.failed) return s.localSaved ? 'error' : 'unprotected';
+    return null;
+  });
+  /** Whether any session of the current account still has edits the server has not acknowledged. */
+  const unsaved = computed(() => {
+    void tick.value;
+    return [...sessions].some((s) => s.dirty && accountMatches(s));
   });
   const conflict = computed(() => { void tick.value; return current.value?.conflict ?? null; });
   const localSaved = computed(() => { void tick.value; return current.value?.localSaved ?? false; });
@@ -257,11 +276,18 @@ export function useSyncedTextDraft(options: {
     if (document.visibilityState === 'hidden') void flush();
     else wake();
   };
+  const beforeUnload = (event: BeforeUnloadEvent) => {
+    if (!unsaved.value) return;
+    // Local recovery survives, but other devices would not see the edits: ask the browser to confirm.
+    event.preventDefault();
+    event.returnValue = '';
+  };
   window.addEventListener('online', wake);
   window.addEventListener('offline', wake);
   window.addEventListener('focus', wake);
   window.addEventListener('pageshow', wake);
   document.addEventListener('visibilitychange', visibility);
+  window.addEventListener('beforeunload', beforeUnload);
   const dispose = () => {
     if (disposed) return;
     stopWatch(); stopValueWatch();
@@ -270,7 +296,8 @@ export function useSyncedTextDraft(options: {
     window.removeEventListener('online', wake); window.removeEventListener('offline', wake);
     window.removeEventListener('focus', wake); window.removeEventListener('pageshow', wake);
     document.removeEventListener('visibilitychange', visibility);
+    window.removeEventListener('beforeunload', beforeUnload);
   };
   if (getCurrentScope()) onScopeDispose(dispose);
-  return { state, conflict, localSaved, refresh, flush: () => flush(), resolve, beginSubmission, finishSubmission, dispose };
+  return { state, problem, unsaved, conflict, localSaved, refresh, flush: () => flush(), resolve, beginSubmission, finishSubmission, dispose };
 }

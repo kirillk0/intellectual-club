@@ -196,6 +196,28 @@ describe('chat composer runtime', () => {
     await runtime.dispose();
   });
 
+  it('keeps the draft status silent during routine saves and reports a failed save', async () => {
+    vi.useFakeTimers();
+    try {
+      apiMocks.get.mockResolvedValue({ draft: { text: '', revision: 0, updated_at: null } });
+      apiMocks.put.mockRejectedValueOnce(new Error('network'))
+        .mockResolvedValue({ draft: { text: 'typed', revision: 1, updated_at: null } });
+      const { runtime } = createRuntime(null, false, [], undefined, true);
+      await flushPromises();
+      runtime.draft.value = 'typed';
+      expect(runtime.draftStatusLabel.value).toBe('');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(runtime.draftProblem.value).toBe('error');
+      expect(runtime.draftStatusLabel.value).toBe('Draft could not be synced');
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(runtime.draftSyncState.value).toBe('saved');
+      expect(runtime.draftStatusLabel.value).toBe('');
+      await runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('starts attachment uploads with the configuration the message is composed for', async () => {
     const { runtime } = createRuntime(null);
     apiMocks.post.mockResolvedValue({

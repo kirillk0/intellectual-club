@@ -1,0 +1,12 @@
+# Merge into the deployed app service, or pass as a Compose override.
+services:
+  app:
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "unixgram:///run/systemd/journal.intellectual-club/dev-log"
+        syslog-format: "rfc3164"
+        tag: "intellectual-club-app"
+        # Docker's bounded local cache serves docker logs for the current container.
+        cache-max-size: "10m"
+        cache-max-file: "3"

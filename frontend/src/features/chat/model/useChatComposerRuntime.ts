@@ -32,7 +32,7 @@ import {
   mergeRuntimeUsage,
   preserveStreamingMessageContent,
 } from '@/features/chat/model/generationPolling';
-import { useSyncedTextDraft, type DraftSubmission } from '@/features/app/useSyncedTextDraft';
+import { useSyncedTextDraft, type DraftProblem, type DraftSubmission } from '@/features/app/useSyncedTextDraft';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import { translate } from '@/i18n';
@@ -121,14 +121,14 @@ export function useChatComposerRuntime(params: Params) {
       publishChatChange({ operation: 'touch', id: Number(target.endpoint.split('/').at(-1)), meta: { reason: 'draft-changed' } });
     },
   });
+  // Routine save progress is deliberately silent; only problems with unsynchronized text are shown.
   const draftStatusLabel = computed(() => {
-    const labels: Record<string, string> = {
-      pending: 'Unsaved changes', saving: 'Saving draft…', saved: '✓ Draft text saved',
+    const labels: Record<DraftProblem, string> = {
       offline: 'Saved on this device · Offline', error: 'Draft could not be synced',
-      unprotected: 'Draft is not saved on this device', loading: 'Loading draft…',
-      conflict: 'Draft changed on another device',
+      unprotected: 'Draft is not saved on this device', conflict: 'Draft changed on another device',
     };
-    return labels[draftSync.state.value] ? translate(labels[draftSync.state.value]) : '';
+    const problem = draftSync.problem.value;
+    return problem ? translate(labels[problem]) : '';
   });
 
   const hasDraftText = computed(() => draft.value !== '');
@@ -1344,6 +1344,7 @@ export function useChatComposerRuntime(params: Params) {
     cancelingGenerationId: params.cancelingGenerationId,
     draft,
     draftStatusLabel,
+    draftProblem: draftSync.problem,
     draftSyncState: draftSync.state,
     draftConflict: draftSync.conflict,
     refreshDraft: draftSync.refresh,

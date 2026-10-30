@@ -451,8 +451,8 @@
                   </div>
                 </div>
                 <div class="chat-draft-status" aria-live="polite" role="status">
-                  <span :title="vm.draftSyncState === 'saved' ? translate('Available on your other devices') : undefined">{{ vm.draftStatusLabel }}</span>
-                  <button v-if="['error', 'offline', 'unprotected'].includes(vm.draftSyncState)" type="button" @click="vm.retryDraft()">{{ translate('Retry') }}</button>
+                  <span v-if="vm.draftStatusLabel">{{ vm.draftStatusLabel }}</span>
+                  <button v-if="vm.draftProblem && vm.draftProblem !== 'conflict'" type="button" @click="vm.retryDraft()">{{ translate('Retry') }}</button>
                   <span v-if="vm.pendingFiles.length" class="chat-draft-attachments">{{ translate('Attachments are only available on this device until sent.') }}</span>
                 </div>
                 <details v-if="vm.draftConflict" class="chat-draft-conflict">
@@ -1771,14 +1771,13 @@ onBeforeUnmount(() => {
 }
 
 .chat-draft-status {
-  min-height: 1.5em;
-  padding: 4px 2px 0;
   color: var(--color-text-muted);
   font-size: 0.78rem;
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
+.chat-draft-status:not(:empty) { padding: 4px 2px 0; }
 .chat-draft-status button { font: inherit; }
 .chat-draft-attachments { flex-basis: 100%; }
 .chat-draft-conflict { font-size: 0.85rem; padding: 8px 0; }
