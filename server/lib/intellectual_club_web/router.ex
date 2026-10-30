@@ -112,6 +112,8 @@ defmodule IntellectualClubWeb.Router do
   scope "/api/bff", IntellectualClubWeb.Bff do
     pipe_through :api_mixed_session
     get "/chat-events", ChatEventsController, :index
+    get "/chat-drafts/:id", ChatDraftsController, :show
+    put "/chat-drafts/:id", ChatDraftsController, :update
   end
 
   scope "/api/bff", IntellectualClubWeb.Bff do

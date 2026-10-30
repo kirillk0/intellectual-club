@@ -14,6 +14,43 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
   alias IntellectualClub.Llm.LlmProvider
 
   describe "POST /api/bff/chat-generation/:id/send" do
+    test "acceptance consumes the submitted draft without deleting a newer device revision", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      path = "/api/bff/chat-drafts/#{chat.id}"
+      assert conn |> put(path, %{text: "submitted", expected_revision: 0}) |> json_response(200)
+
+      payload =
+        conn
+        |> post("/api/bff/chat-generation/#{chat.id}/send", %{
+          content: "submitted",
+          draft_revision: 1
+        })
+        |> json_response(200)
+
+      assert %{"draft" => %{"text" => "", "revision" => 2}} =
+               conn |> get(path) |> json_response(200)
+
+      wait_for_generation_to_finish(conn, payload["generation"]["message_id"])
+      assert conn |> put(path, %{text: "newer", expected_revision: 2}) |> json_response(200)
+
+      payload =
+        conn
+        |> post("/api/bff/chat-generation/#{chat.id}/send", %{
+          content: "submitted",
+          draft_revision: 1
+        })
+        |> json_response(200)
+
+      assert %{"draft" => %{"text" => "newer", "revision" => 3}} =
+               conn |> get(path) |> json_response(200)
+
+      wait_for_generation_to_finish(conn, payload["generation"]["message_id"])
+    end
+
     test "treats whitespace-only content as user message",
          %{
            conn: conn

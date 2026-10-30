@@ -195,6 +195,8 @@ export type Chat = {
 };
 
 export type ChatSummary = {
+  has_draft?: boolean;
+  draft_updated_at?: string | null;
   read_state?: ChatReadState;
   last_message_status?: string | null;
   id: number;

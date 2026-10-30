@@ -10,6 +10,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatDraft
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
@@ -31,6 +32,7 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   @terminal_block_reasons ["generation_error", "generation_canceled"]
   @transaction_resources [
     Chat,
+    ChatDraft,
     ChatMessage,
     ChatMessageStep,
     ChatMessageItem,

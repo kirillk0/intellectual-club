@@ -1,9 +1,11 @@
 import { computed, nextTick, ref } from 'vue';
+import { flushPromises } from '@vue/test-utils';
 
 const apiMocks = vi.hoisted(() => ({
   get: vi.fn(),
   isHttpError: vi.fn(),
   post: vi.fn(),
+  put: vi.fn(),
 }));
 
 vi.mock('@/api/client', () => ({
@@ -68,7 +70,8 @@ const createRuntime = (
   activeMessageId: number | null,
   autoScrollEnabled = false,
   initialQueue: ChatQueuedMessage[] = [],
-  onGenerationSettled?: () => Promise<void> | void
+  onGenerationSettled?: () => Promise<void> | void,
+  syncDraft = false
 ) => {
   const branch = ref<ChatBranchMessage[]>(
     activeMessageId
@@ -84,6 +87,7 @@ const createRuntime = (
   const onQueuedMessagesUpdated = vi.fn();
 
   const runtime = useChatComposerRuntime({
+    ...(syncDraft ? { draftUserId: computed(() => 1), draftOwned: computed(() => true) } : {}),
     chatId: computed(() => chatId.value),
     branch,
     readOnly: computed(() => false),
@@ -134,6 +138,7 @@ describe('chat composer runtime', () => {
     apiMocks.get.mockReset();
     apiMocks.isHttpError.mockReset().mockReturnValue(false);
     apiMocks.post.mockReset();
+    apiMocks.put.mockReset();
   });
 
   afterEach(() => {
@@ -141,6 +146,54 @@ describe('chat composer runtime', () => {
     Reflect.deleteProperty(document, 'scrollingElement');
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('sends the persisted draft revision and clears only the accepted server snapshot', async () => {
+    let serverDraft = { text: '', revision: 0, updated_at: null };
+    apiMocks.get.mockImplementation(async () => ({ draft: { ...serverDraft } }));
+    apiMocks.put.mockImplementation(async (_url, body) => {
+      serverDraft = { ...serverDraft, text: body.text, revision: serverDraft.revision + 1 };
+      return { draft: { ...serverDraft } };
+    });
+    const { runtime } = createRuntime(null, false, [], undefined, true);
+    await flushPromises();
+    runtime.draft.value = 'send this';
+    apiMocks.post.mockImplementation(async (_url, body) => {
+      expect(body.draft_revision).toBe(1);
+      serverDraft = { ...serverDraft, text: '', revision: 2 };
+      return { branch: [], generation: null };
+    });
+    await runtime.sendMessage();
+    await flushPromises();
+    expect(apiMocks.put).toHaveBeenCalledWith('/api/bff/chat-drafts/12',
+      { text: 'send this', expected_revision: 0 }, expect.any(Object));
+    expect(runtime.draft.value).toBe('');
+    expect(runtime.draftSyncState.value).toBe('idle');
+    expect(JSON.parse(localStorage.getItem('ic.draft.user.1.chat.12')!).base.revision).toBe(2);
+    await runtime.dispose();
+  });
+
+  it('keeps text typed during sending and saves it against the consumed revision', async () => {
+    let serverDraft = { text: '', revision: 0, updated_at: null };
+    apiMocks.get.mockImplementation(async () => ({ draft: { ...serverDraft } }));
+    apiMocks.put.mockImplementation(async (_url, body) => {
+      expect(body.expected_revision).toBe(serverDraft.revision);
+      serverDraft = { ...serverDraft, text: body.text, revision: serverDraft.revision + 1 };
+      return { draft: { ...serverDraft } };
+    });
+    const { runtime } = createRuntime(null, false, [], undefined, true);
+    await flushPromises(); runtime.draft.value = 'submitted';
+    let acknowledge!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((resolve) => { acknowledge = resolve; }));
+    const sending = runtime.sendMessage(); await flushPromises();
+    runtime.draft.value = 'next thought';
+    serverDraft = { ...serverDraft, text: '', revision: 2 };
+    acknowledge({ branch: [], generation: null });
+    await sending; await flushPromises();
+    expect(runtime.draft.value).toBe('next thought');
+    expect(serverDraft.text).toBe('next thought');
+    expect(runtime.draftSyncState.value).toBe('saved');
+    await runtime.dispose();
   });
 
   it('starts attachment uploads with the configuration the message is composed for', async () => {

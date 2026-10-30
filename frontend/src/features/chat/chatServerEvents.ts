@@ -1,6 +1,7 @@
 import { onBeforeUnmount } from 'vue';
+import { publishChatChange } from '@/features/chat/chatEvents';
 
-export type ChatServerEvent = { chatId: number | null };
+export type ChatServerEvent = { chatId: number | null; kind?: 'draft' };
 type Handler = (event: ChatServerEvent) => void;
 
 const listeners = new Set<Handler>();
@@ -83,7 +84,10 @@ function connect() {
       if (payload === null || typeof payload !== 'object' || !('chat_id' in payload)) return;
       const id = payload.chat_id;
       if (typeof id === 'number' && Number.isSafeInteger(id) && id > 0) {
-        publish({ chatId: id });
+        if (event.type === 'chat_draft_changed') {
+          publishChatChange({ operation: 'touch', id, meta: { reason: 'draft-changed', revision: 'revision' in payload ? payload.revision : undefined } });
+        }
+        publish({ chatId: id, ...(event.type === 'chat_draft_changed' ? { kind: 'draft' as const } : {}) });
       }
     } catch {
       // A malformed invalidation must not interrupt existing polling recovery.
@@ -92,10 +96,12 @@ function connect() {
   current.addEventListener('open', handleOpen);
   current.addEventListener('error', handleError);
   current.addEventListener('chat_state_changed', handleMessage as EventListener);
+  current.addEventListener('chat_draft_changed', handleMessage as EventListener);
   detachSource = () => {
     current.removeEventListener('open', handleOpen);
     current.removeEventListener('error', handleError);
     current.removeEventListener('chat_state_changed', handleMessage as EventListener);
+    current.removeEventListener('chat_draft_changed', handleMessage as EventListener);
   };
 }
 

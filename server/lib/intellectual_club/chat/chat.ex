@@ -423,6 +423,7 @@ defmodule IntellectualClub.Chat.Chat do
   relationships do
     has_one :activity, IntellectualClub.Chat.ChatActivity, destination_attribute: :chat_id
     has_many :read_states, IntellectualClub.Chat.ReadState, destination_attribute: :chat_id
+    has_many :drafts, IntellectualClub.Chat.ChatDraft, destination_attribute: :chat_id
 
     belongs_to(:owner, IntellectualClub.Accounts.User,
       allow_nil?: false,
@@ -501,6 +502,11 @@ defmodule IntellectualClub.Chat.Chat do
   end
 
   aggregates do
+    # Aggregate authorization applies ChatDraft's personal read policy.
+    max :personal_draft_updated_at, :drafts, :updated_at do
+      filter(expr(text != ""))
+    end
+
     count :message_count, :messages do
       public?(true)
     end

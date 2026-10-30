@@ -5,6 +5,7 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
 
   alias IntellectualClub.Chat.Branching
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatDraft
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -40,12 +41,21 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
              prepared_uploads,
              content,
              if(linked_fork?, do: nil, else: parent_id),
-             explicit_parent? and not linked_fork?
+             explicit_parent? and not linked_fork?,
+             params["draft_revision"]
            ),
+         :ok <- publish_accepted_draft(chat_id, actor, params["draft_revision"]),
          {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
     end
   end
+
+  defp publish_accepted_draft(chat_id, actor, revision) when is_integer(revision) do
+    ChatDraft.publish_current(chat_id, actor)
+    :ok
+  end
+
+  defp publish_accepted_draft(_chat_id, _actor, _revision), do: :ok
 
   defp validate_send_payload(content, prepared_uploads) when is_map(prepared_uploads) do
     has_uploads? =
@@ -152,7 +162,8 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
          prepared_uploads,
          content,
          parent_id,
-         explicit_parent?
+         explicit_parent?,
+         draft_revision
        ) do
     ChatAttachments.with_prepared_file_ids(
       chat_id,
@@ -172,13 +183,17 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
           if explicit_parent?, do: [actor: actor, parent_id: parent_id], else: [actor: actor]
 
         QueueCoordinator.prepare_direct_generation(chat_id, opts, fn ->
-          create_user_message(
-            chat_id,
-            text_contents ++ media_contents,
-            parent_id,
-            explicit_parent?,
-            actor
-          )
+          with {:ok, message} <-
+                 create_user_message(
+                   chat_id,
+                   text_contents ++ media_contents,
+                   parent_id,
+                   explicit_parent?,
+                   actor
+                 ) do
+            ChatDraft.consume(chat_id, content, draft_revision, actor)
+            {:ok, message}
+          end
         end)
       end
     )

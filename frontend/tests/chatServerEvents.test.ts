@@ -60,6 +60,17 @@ describe('chat server invalidations', () => {
     expect(latest().closed).toBe(true);
   });
 
+  it('invalidates draft consumers and list subscribers without exposing the draft text', async () => {
+    const { subscribeChatServerEvents } = await import('@/features/chat/chatServerEvents');
+    const { subscribeChatChanges } = await import('@/features/chat/chatEvents');
+    const serverListener = vi.fn();
+    const draftListener = vi.fn();
+    unsubscribers.push(subscribeChatServerEvents(serverListener), subscribeChatChanges(draftListener));
+    latest().dispatchEvent(new MessageEvent('chat_draft_changed', { data: '{"chat_id":42,"revision":7}' }));
+    expect(serverListener).toHaveBeenCalledExactlyOnceWith({ chatId: 42, kind: 'draft' });
+    expect(draftListener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ operation: 'touch', id: 42, meta: { reason: 'draft-changed', revision: 7 } }));
+  });
+
   it('reconciles a new subscriber when a connection is already open', async () => {
     const { subscribeChatServerEvents } = await import('@/features/chat/chatServerEvents');
     unsubscribers.push(subscribeChatServerEvents(vi.fn()));

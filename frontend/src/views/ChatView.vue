@@ -450,6 +450,20 @@
                     />
                   </div>
                 </div>
+                <div class="chat-draft-status" aria-live="polite" role="status">
+                  <span :title="vm.draftSyncState === 'saved' ? translate('Available on your other devices') : undefined">{{ vm.draftStatusLabel }}</span>
+                  <button v-if="['error', 'offline', 'unprotected'].includes(vm.draftSyncState)" type="button" @click="vm.retryDraft()">{{ translate('Retry') }}</button>
+                  <span v-if="vm.pendingFiles.length" class="chat-draft-attachments">{{ translate('Attachments are only available on this device until sent.') }}</span>
+                </div>
+                <details v-if="vm.draftConflict" class="chat-draft-conflict">
+                  <summary>{{ translate('Compare draft versions') }}</summary>
+                  <div class="chat-draft-versions">
+                    <div><strong>{{ translate('Your text') }}</strong><pre>{{ vm.draft }}</pre></div>
+                    <div><strong>{{ translate('Server text') }}</strong><pre>{{ vm.draftConflict.text || translate('(Empty draft)') }}</pre></div>
+                  </div>
+                  <button type="button" @click="vm.resolveDraft('local')">{{ translate('Keep my text') }}</button>
+                  <button type="button" @click="vm.resolveDraft('server')">{{ translate('Use server text') }}</button>
+                </details>
                 <div v-if="dragActive && vm.canAttachFiles" class="drop-hint">{{ vm.fileDropHint }}</div>
               </form>
             </div>
@@ -1755,6 +1769,23 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background-color 0.15s ease, opacity 0.15s ease;
 }
+
+.chat-draft-status {
+  min-height: 1.5em;
+  padding: 4px 2px 0;
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.chat-draft-status button { font: inherit; }
+.chat-draft-attachments { flex-basis: 100%; }
+.chat-draft-conflict { font-size: 0.85rem; padding: 8px 0; }
+.chat-draft-conflict summary { cursor: pointer; }
+.chat-draft-conflict button { margin: 4px 8px 0 0; }
+.chat-draft-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.chat-draft-versions pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
 
 .chat-composer__send:hover {
   background: var(--color-primary-hover);

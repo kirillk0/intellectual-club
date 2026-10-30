@@ -15,10 +15,9 @@ defmodule IntellectualClub.Chat.Listing do
   def read_page(actor, bot_filter, pagination, loads) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(subagent == false)
-    |> without_handoff_children(actor)
+    |> apply_hierarchy_filter(actor, Map.get(pagination, :section))
     |> apply_bot_filter(bot_filter)
-    |> apply_sort()
+    |> apply_section_sort(Map.get(pagination, :section))
     |> apply_section(Map.get(pagination, :section))
     |> Ash.Query.load([:read_state | loads], strict?: true)
     |> Ash.Query.page(
@@ -28,6 +27,20 @@ defmodule IntellectualClub.Chat.Listing do
     )
     |> Ash.read!(actor: actor)
   end
+
+  def apply_hierarchy_filter(query, _actor, "drafts"), do: query
+
+  def apply_hierarchy_filter(query, actor, _section) do
+    query |> Ash.Query.filter(subagent == false) |> without_handoff_children(actor)
+  end
+
+  def apply_section_sort(query, "drafts"),
+    do: Ash.Query.sort(query, personal_draft_updated_at: :desc, id: :desc)
+
+  def apply_section_sort(query, _section), do: apply_sort(query)
+
+  def apply_section(query, "drafts"),
+    do: Ash.Query.filter(query, exists(drafts, user_id == ^Ash.Expr.actor(:id) and text != ""))
 
   def apply_section(query, "unread"), do: Ash.Query.filter(query, inbox_unread == true)
 

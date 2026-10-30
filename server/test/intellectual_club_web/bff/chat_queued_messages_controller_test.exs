@@ -2,6 +2,63 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
   alias IntellectualClub.Chat.QueuedMessages
 
+  test "accepted queued text consumes only its submitted draft version", %{conn: conn} do
+    %{user: actor} = fixture = user_fixture()
+    conn = sign_in_conn(conn, fixture)
+    chat = create_chat!(actor)
+    create_generating_message!(actor, chat, user_text: "Question")
+    path = "/api/bff/chat-drafts/#{chat.id}"
+    assert conn |> put(path, %{text: "next", expected_revision: 0}) |> json_response(200)
+
+    assert conn
+           |> post("/api/bff/chat-generation/#{chat.id}/queue", %{
+             content: "next",
+             draft_revision: 1
+           })
+           |> json_response(201)
+
+    assert %{"draft" => %{"text" => "", "revision" => 2}} =
+             conn |> get(path) |> json_response(200)
+
+    assert conn |> put(path, %{text: "newer", expected_revision: 2}) |> json_response(200)
+
+    assert conn
+           |> post("/api/bff/chat-generation/#{chat.id}/queue", %{
+             content: "next",
+             draft_revision: 1
+           })
+           |> json_response(201)
+
+    assert %{"draft" => %{"text" => "newer", "revision" => 3}} =
+             conn |> get(path) |> json_response(200)
+  end
+
+  test "accepted steering consumes its draft and failed requests preserve it", %{conn: conn} do
+    %{user: actor} = fixture = user_fixture()
+    conn = sign_in_conn(conn, fixture)
+    chat = create_chat!(actor)
+    message = create_generating_message!(actor, chat, user_text: "Question")
+    path = "/api/bff/chat-drafts/#{chat.id}"
+    assert conn |> put(path, %{text: "steer", expected_revision: 0}) |> json_response(200)
+
+    assert conn
+           |> post("/api/bff/chat-generation/#{chat.id}/queue", %{content: "", draft_revision: 1})
+           |> json_response(422)
+
+    assert %{"draft" => %{"text" => "steer", "revision" => 1}} =
+             conn |> get(path) |> json_response(200)
+
+    assert conn
+           |> post("/api/bff/chat-messages/#{message.id}/steer", %{
+             content: "steer",
+             draft_revision: 1
+           })
+           |> json_response(201)
+
+    assert %{"draft" => %{"text" => "", "revision" => 2}} =
+             conn |> get(path) |> json_response(200)
+  end
+
   test "queue CRUD is durable, ordered, and exposed through chat state", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

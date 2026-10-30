@@ -13,6 +13,158 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Threads
 
+  describe "personal draft section" do
+    test "filters before pagination and orders by saved draft rather than chat activity", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      first = create_chat!(actor, note: "draft-match first")
+      second = create_chat!(actor, note: "draft-match second")
+      create_chat!(actor, note: "draft-match without draft")
+      bot = create_bot!(actor, name: "Draft bot")
+      with_bot = create_chat!(actor, note: "draft-match bot", bot_id: bot.id)
+
+      for chat <- [second, first, with_bot] do
+        response =
+          conn
+          |> put("/api/bff/chat-drafts/#{chat.id}", %{
+            text: "private unfinished text",
+            expected_revision: 0
+          })
+          |> json_response(200)
+
+        assert response["draft"]["revision"] == 1
+      end
+
+      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
+        params = %{section: "drafts", q: "draft-match", per_page: 1, bot: "none"}
+        page = conn |> get(path, params) |> json_response(200)
+        assert page["page"]["total"] == 2
+        assert page["page"]["has_next"]
+
+        assert [%{"id" => id, "has_draft" => true, "draft_updated_at" => saved_at}] =
+                 page["chats"]
+
+        assert id == first.id
+        assert is_binary(saved_at)
+        refute Jason.encode!(page) =~ "private unfinished text"
+        next = conn |> get(path, Map.put(params, :page, 2)) |> json_response(200)
+        assert [%{"id" => second_id}] = next["chats"]
+        assert second_id == second.id
+        refute next["page"]["has_next"]
+      end
+
+      ordinary = conn |> get("/api/bff/chat-list", %{section: "other"}) |> json_response(200)
+      assert Enum.any?(ordinary["chats"], &(&1["id"] == first.id and &1["has_draft"]))
+      assert ordinary["stats"]["total_chats"] == 4
+    end
+
+    test "clearing a draft removes it and invalidates idle snapshots without touching chat activity",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor, note: "Draft activity")
+
+      before =
+        conn
+        |> get("/api/bff/chat-list/#{chat.id}/summary")
+        |> json_response(200)
+        |> Map.fetch!("chat")
+
+      conn
+      |> put("/api/bff/chat-drafts/#{chat.id}", %{text: "unfinished", expected_revision: 0})
+      |> json_response(200)
+
+      list = conn |> get("/api/bff/chat-list", %{section: "drafts"}) |> json_response(200)
+      assert list["page"]["total"] == 1
+
+      after_save =
+        conn
+        |> get("/api/bff/chat-list/#{chat.id}/summary")
+        |> json_response(200)
+        |> Map.fetch!("chat")
+
+      assert after_save["has_draft"]
+      assert after_save["last_activity_at"] == before["last_activity_at"]
+      assert after_save["read_state"] == before["read_state"]
+
+      conn
+      |> get("/api/bff/chat-list/idle-state", %{
+        section: "drafts",
+        revision: list["idle_revision"]
+      })
+      |> response(204)
+
+      conn
+      |> put("/api/bff/chat-drafts/#{chat.id}", %{text: "", expected_revision: 1})
+      |> json_response(200)
+
+      conn
+      |> get("/api/bff/chat-list/idle-state", %{
+        section: "drafts",
+        revision: list["idle_revision"]
+      })
+      |> json_response(200)
+
+      empty = conn |> get("/api/bff/chat-list", %{section: "drafts"}) |> json_response(200)
+      assert empty["chats"] == []
+      assert empty["page"]["total"] == 0
+
+      summary =
+        conn
+        |> get("/api/bff/chat-list/#{chat.id}/summary")
+        |> json_response(200)
+        |> Map.fetch!("chat")
+
+      refute summary["has_draft"]
+      assert is_nil(summary["draft_updated_at"])
+    end
+
+    test "draft sections are private and include nested chats with unfinished text", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      %{user: other} = other_fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn, note: "nested-draft-match")
+      other_chat = create_chat!(other, note: "Private draft")
+
+      assert {:ok, %{conflict: false}} =
+               IntellectualClub.Chat.ChatDraft.save(
+                 child.id,
+                 %{"text" => "private child draft", "expected_revision" => 0},
+                 actor
+               )
+
+      assert {:ok, %{conflict: false}} =
+               IntellectualClub.Chat.ChatDraft.save(
+                 other_chat.id,
+                 %{"text" => "another user's text", "expected_revision" => 0},
+                 other
+               )
+
+      list = conn |> get("/api/bff/chat-list", %{section: "drafts"}) |> json_response(200)
+      assert [%{"id" => id}] = list["chats"]
+      assert id == child.id
+
+      search =
+        conn
+        |> get("/api/bff/chat-list/search", %{section: "drafts", q: "nested-draft-match"})
+        |> json_response(200)
+
+      assert [%{"id" => search_id}] = search["chats"]
+      assert search_id == child.id
+      assert search["page"]["total"] == 1
+      other_conn = sign_in_conn(build_conn(), other_fixture)
+
+      other_list =
+        other_conn |> get("/api/bff/chat-list", %{section: "drafts"}) |> json_response(200)
+
+      assert [%{"id" => other_id}] = other_list["chats"]
+      assert other_id == other_chat.id
+    end
+  end
+
   describe "global read-state sections" do
     @tag :whitebox
     test "personal state loading uses a fixed number of queries as the list grows" do

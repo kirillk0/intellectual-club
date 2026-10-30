@@ -109,8 +109,8 @@ defmodule IntellectualClub.Chat.Search do
 
       page =
         Chat
-        |> Ash.Query.filter(owner_id == ^actor.id and subagent == false)
-        |> Listing.without_handoff_children(actor)
+        |> Ash.Query.filter(owner_id == ^actor.id)
+        |> Listing.apply_hierarchy_filter(actor, pagination.section)
         |> Listing.apply_bot_filter(bot_filter)
         |> Listing.apply_section(pagination.section)
         |> Ash.Query.filter(
@@ -120,7 +120,7 @@ defmodule IntellectualClub.Chat.Search do
               owner_id == ^actor.id and role in [:user, :assistant] and ^text_predicate
             )
         )
-        |> Ash.Query.sort(updated_at: :desc, id: :desc)
+        |> apply_page_sort(pagination.section)
         |> Ash.Query.select([:id])
         |> Ash.Query.page(
           limit: pagination.per_page,
@@ -145,6 +145,12 @@ defmodule IntellectualClub.Chat.Search do
       %{entries: entries, total: page.count}
     end
   end
+
+  defp apply_page_sort(query, "drafts"),
+    do: Listing.apply_section_sort(query, "drafts")
+
+  defp apply_page_sort(query, _section),
+    do: Ash.Query.sort(query, updated_at: :desc, id: :desc)
 
   @spec search_chats(String.t() | nil, any(), keyword()) :: list(chat_search_entry())
   def search_chats(term, actor, opts \\ []) when is_list(opts) do
@@ -365,13 +371,18 @@ defmodule IntellectualClub.Chat.Search do
 
   defp datetime_iso(_other), do: nil
 
+  # Explicit IDs were already filtered by the paginated section query.
+  defp apply_search_hierarchy(query, _actor, ids) when is_list(ids), do: query
+
+  defp apply_search_hierarchy(query, actor, _ids),
+    do: Listing.apply_hierarchy_filter(query, actor, nil)
+
   defp search_meta_chats(term, bot_filter, limit, actor, scoped_ids) do
     term = contains_query_term(term)
 
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(subagent == false)
-    |> Listing.without_handoff_children(actor)
+    |> apply_search_hierarchy(actor, scoped_ids)
     |> maybe_filter_chat_ids(scoped_ids, :id)
     |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
     |> apply_bot_filter(bot_filter)
@@ -407,20 +418,22 @@ defmodule IntellectualClub.Chat.Search do
        when is_tuple(search) do
     meta_list = MapSet.to_list(meta_ids)
     handoff_relation_kind = Handoff.relation_kind()
+    scoped? = is_list(scoped_ids)
 
     ChatMessage
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.for_read(:search, %{q: elem(search, 1)}, actor: actor)
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(
-      exists(
-        chat,
-        subagent == false and
-          not exists(
-            child_chats,
-            owner_id == ^actor.id and parent_relation_kind == ^handoff_relation_kind
-          )
-      )
+      ^scoped? or
+        exists(
+          chat,
+          subagent == false and
+            not exists(
+              child_chats,
+              owner_id == ^actor.id and parent_relation_kind == ^handoff_relation_kind
+            )
+        )
     )
     |> Ash.Query.filter(role in [:user, :assistant])
     |> maybe_filter_chat_ids(scoped_ids, :chat_id)
@@ -493,8 +506,6 @@ defmodule IntellectualClub.Chat.Search do
        when is_list(chat_ids) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(subagent == false)
-    |> Listing.without_handoff_children(actor)
     |> Ash.Query.filter(id in ^chat_ids)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)

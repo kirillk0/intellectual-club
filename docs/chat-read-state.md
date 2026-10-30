@@ -38,14 +38,15 @@ Background tabs and inactive layers do not read results. Manual unread/snooze
 suppresses automatic reads during the current visit, including new results and
 expiry. A later activation starts a new visit and can consume the reminder.
 
-The list contains independent, paginated Unread, Working, and Other sections.
+The list contains independent, paginated Drafts, Unread, Working, and Other sections.
+Drafts is an overlapping personal section; see [chat drafts](chat-drafts.md).
 Unread takes precedence over working; snoozed chats can still appear as working.
 Filters and search apply across the dataset before section pagination.
 
 ## Synchronization
 
 `GET /api/bff/chat-events` is a session-authenticated SSE stream in the mixed
-session pipeline, not JSON-only negotiation. Events contain only chat IDs on a
+session pipeline, not JSON-only negotiation. Events contain chat IDs (and draft revisions for draft events) on a
 user-scoped PubSub topic. Personal mutations and assistant status changes publish
 invalidations. A connection expires after 60 seconds to recheck session access.
 

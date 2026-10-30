@@ -7,6 +7,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   """
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatDraft
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessageContent
@@ -15,11 +16,12 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   require Ash.Query
 
   @active_statuses [:pending, :blocked]
-  @transaction_resources [Chat, ChatMessage, QueuedMessage, QueuedMessageContent]
+  @transaction_resources [Chat, ChatMessage, QueuedMessage, QueuedMessageContent, ChatDraft]
 
   @type enqueue_attrs :: %{
           optional(:content) => String.t(),
-          optional(:file_ids) => [integer()]
+          optional(:file_ids) => [integer()],
+          optional(:draft_revision) => non_neg_integer() | nil
         }
 
   @doc "Enqueues a durable follow-up anchored to the current chat leaf."
@@ -31,18 +33,23 @@ defmodule IntellectualClub.Chat.QueuedMessages do
          :ok <- validate_nonempty(content, file_ids) do
       transact(fn ->
         with {:ok, %Chat{} = chat} <- lock_owned_chat(chat_id, actor) do
-          create_queued_message!(
-            %{
-              chat_id: chat.id,
-              kind: :follow_up,
-              anchor_message_id: chat.last_message_id
-            },
-            content,
-            file_ids,
-            actor
-          )
+          queued =
+            create_queued_message!(
+              %{
+                chat_id: chat.id,
+                kind: :follow_up,
+                anchor_message_id: chat.last_message_id
+              },
+              content,
+              file_ids,
+              actor
+            )
+
+          ChatDraft.consume(chat.id, content, Map.get(attrs, :draft_revision), actor)
+          queued
         end
       end)
+      |> publish_draft_after_accept(chat_id, actor, attrs)
     end
   end
 
@@ -67,11 +74,24 @@ defmodule IntellectualClub.Chat.QueuedMessages do
              {:ok, %ChatMessage{} = message} <- lock_owned_generation(message_id, actor),
              :ok <- ensure_message_chat(message, chat),
              :ok <- validate_steering_target_state(message) do
-          enqueue_steer_for_generation_state!(message, content, actor)
+          queued = enqueue_steer_for_generation_state!(message, content, actor)
+          ChatDraft.consume(chat.id, content, Map.get(attrs, :draft_revision), actor)
+          queued
         end
       end)
+      |> publish_draft_after_accept(preliminary.chat_id, actor, attrs)
     end
   end
+
+  defp publish_draft_after_accept({:ok, _queued} = result, chat_id, actor, %{
+         draft_revision: revision
+       })
+       when is_integer(revision) do
+    ChatDraft.publish_current(chat_id, actor)
+    result
+  end
+
+  defp publish_draft_after_accept(result, _chat_id, _actor, _attrs), do: result
 
   @doc """
   Quarantines unchanged pending steering for an owned, generating assistant message.

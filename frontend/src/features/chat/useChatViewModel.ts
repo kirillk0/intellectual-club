@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { useSessionAuth } from '@/features/auth/session';
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import { isChatReadStateConflict } from '@/features/chat/chatReadState';
 import { continueChatRecord } from '@/features/chat/chatAshApi';
@@ -415,7 +416,10 @@ export function useChatViewModel() {
       : [...queuedMessages.value, message];
   };
 
+  const { currentUser } = useSessionAuth();
   const composerRuntime = useChatComposerRuntime({
+    draftUserId: computed(() => currentUser.value?.id ?? null),
+    draftOwned: computed(() => chat.value?.id === chatId.value && chat.value?.can_edit === true && chat.value?.shared_incoming !== true),
     chatId,
     branch,
     readOnly: sharedReadonly,
@@ -425,7 +429,7 @@ export function useChatViewModel() {
     activeGenerationId,
     cancelingGenerationId,
     queuedMessages,
-    draftReady: computed(() => loaded.value && Boolean(chat.value)),
+    draftReady: computed(() => loaded.value && chat.value?.id === chatId.value),
     autoScrollEnabled: computed(() => layer.active.value),
     scrollToLastMessage: scrollToLastMessageIfLayerActive,
     getOpenWorkingPollRequest: (messageId) => getOpenWorkingPollRequest(messageId),
@@ -826,8 +830,10 @@ export function useChatViewModel() {
   };
 
   let serverRefreshTimer: number | null = null;
-  useChatServerEvents(({ chatId: changedChatId }) => {
+  useChatServerEvents(({ chatId: changedChatId, kind }) => {
     if (changedChatId !== null && changedChatId !== chatId.value) return;
+    void composerRuntime.refreshDraft();
+    if (kind === 'draft') return;
     if (serverRefreshTimer !== null) window.clearTimeout(serverRefreshTimer);
     serverRefreshTimer = window.setTimeout(() => {
       serverRefreshTimer = null;
@@ -1338,6 +1344,11 @@ export function useChatViewModel() {
     retryLastStep: messageActions.retryLastStep,
     confirmAndDeleteMessage: messageActions.confirmAndDeleteMessage,
     draft: composerRuntime.draft,
+    draftStatusLabel: composerRuntime.draftStatusLabel,
+    draftSyncState: composerRuntime.draftSyncState,
+    draftConflict: composerRuntime.draftConflict,
+    retryDraft: composerRuntime.retryDraft,
+    resolveDraft: composerRuntime.resolveDraft,
     pendingFiles: composerRuntime.pendingFiles,
     addPendingFiles: composerRuntime.addPendingFiles,
     onPendingFilesSelected: composerRuntime.onPendingFilesSelected,

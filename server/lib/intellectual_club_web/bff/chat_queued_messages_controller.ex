@@ -35,7 +35,11 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
              fn file_ids ->
                QueuedMessages.enqueue_follow_up(
                  chat_id,
-                 %{content: Map.get(params, "content", ""), file_ids: file_ids},
+                 %{
+                   content: Map.get(params, "content", ""),
+                   file_ids: file_ids,
+                   draft_revision: params["draft_revision"]
+                 },
                  actor
                )
              end

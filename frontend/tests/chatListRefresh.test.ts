@@ -113,14 +113,14 @@ describe('chat list refresh after returning from the background', () => {
       path.startsWith('/api/bff/chat-list?') ? listPayload('Fresh list') : undefined
     );
     await pull();
-    expect(listRequests()).toHaveLength(9);
+    expect(listRequests()).toHaveLength(12);
     expect(wrapper.get('.chat-row').text()).toContain('Fresh list');
     await vi.advanceTimersByTimeAsync(400);
     expect(wrapper.get('.pull-to-refresh').classes()).toContain('pull-to-refresh--idle');
     expect(queryClient.isFetching()).toBe(1);
 
     await pull();
-    expect(listRequests()).toHaveLength(12);
+    expect(listRequests()).toHaveLength(16);
     bots.resolve({ data: [] });
     await flushPromises();
   });
@@ -133,10 +133,10 @@ describe('chat list refresh after returning from the background', () => {
     await nextTick();
     active.value = true;
     await flushPromises();
-    const pendingSignal = listRequests()[3][1].signal as AbortSignal;
+    const pendingSignal = listRequests()[4][1].signal as AbortSignal;
 
     await pull();
-    expect(listRequests()).toHaveLength(9);
+    expect(listRequests()).toHaveLength(12);
     expect(pendingSignal.aborted).toBe(true);
     stale.resolve(listPayload('Obsolete response'));
     await flushPromises();
@@ -154,7 +154,7 @@ describe('chat list refresh after returning from the background', () => {
     apiMocks.get.mockResolvedValue(listPayload('Fresh search'));
 
     await pull();
-    expect(searchRequests()).toHaveLength(6);
+    expect(searchRequests()).toHaveLength(8);
     expect(pendingSignal.aborted).toBe(true);
     expect(wrapper.get('.chat-row').text()).toContain('Fresh search');
     stale.resolve(listPayload('Obsolete search'));
@@ -177,13 +177,13 @@ describe('chat list refresh after returning from the background', () => {
     window.dispatchEvent(new Event('focus'));
 
     expect(signal.aborted).toBe(false);
-    expect(idleRequests()).toHaveLength(3);
+    expect(idleRequests()).toHaveLength(4);
     probe.resolve({ revision: 'Fresh list' });
     await flushPromises();
     expect(wrapper.get('.chat-row').text()).toContain('Fresh list');
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(idleRequests()).toHaveLength(6);
+    expect(idleRequests()).toHaveLength(8);
   });
 
   it('refreshes when only the working section changes on another device', async () => {
@@ -195,8 +195,8 @@ describe('chat list refresh after returning from the background', () => {
     });
     await vi.advanceTimersByTimeAsync(30_000);
     await flushPromises();
-    expect(idleRequests()).toHaveLength(3);
-    expect(listRequests()).toHaveLength(6);
+    expect(idleRequests()).toHaveLength(4);
+    expect(listRequests()).toHaveLength(8);
     expect(wrapper.get('.chat-row').text()).toContain('Working changed remotely');
   });
 
@@ -204,20 +204,21 @@ describe('chat list refresh after returning from the background', () => {
     await mountList();
     window.dispatchEvent(new Event('focus'));
     await flushPromises();
-    expect(idleRequests()).toHaveLength(3);
+    expect(idleRequests()).toHaveLength(4);
     visibility = 'hidden';
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(100);
     visibility = 'visible';
     document.dispatchEvent(new Event('visibilitychange'));
     await flushPromises();
-    expect(idleRequests()).toHaveLength(6);
+    expect(idleRequests()).toHaveLength(8);
   });
 
   function sectionChat(id: number, section: string, extra: Partial<ChatSummary> = {}): ChatSummary & { read_state: NonNullable<ChatSummary['read_state']> } {
     return {
       id, note: `${section} ${id}`, bot_id: null, bot_name: '', created_at: '2026-09-06T00:00:00Z', last_activity_at: '2026-09-06T00:00:00Z',
       active_generation_message_id: section === 'working' ? id * 10 : null,
+      has_draft: section === 'drafts', draft_updated_at: section === 'drafts' ? '2026-09-07T00:00:00Z' : null,
       read_state: { activity_revision: 8, read_revision: section === 'unread' ? 7 : 8, manual_unread: false, snoozed_until: null, state_version: 2, has_unread: section === 'unread', is_unread: section === 'unread', is_snoozed: false },
       ...extra,
     };
@@ -227,7 +228,7 @@ describe('chat list refresh after returning from the background', () => {
     const params = new URL(path, 'http://localhost').searchParams;
     const section = params.get('section') || 'other';
     const page = Number(params.get('page') || 1);
-    const baseId = { unread: 100, working: 200, other: 300 }[section]!;
+    const baseId = { drafts: 400, unread: 100, working: 200, other: 300 }[section]!;
     return {
       chats: [sectionChat(baseId + page, section)],
       page: { number: page, per_page: 20, total: 45, has_next: page < 3 },
@@ -266,15 +267,15 @@ describe('chat list refresh after returning from the background', () => {
       return payload;
     });
     await mountList('/chats?bot=5');
-    expect(listRequests()).toHaveLength(3);
-    expect(listRequests().map(([path]) => new URL(path, 'http://localhost').searchParams.get('section'))).toEqual(['unread', 'working', 'other']);
+    expect(listRequests()).toHaveLength(4);
+    expect(listRequests().map(([path]) => new URL(path, 'http://localhost').searchParams.get('section'))).toEqual(['drafts', 'unread', 'working', 'other']);
     for (const [path] of listRequests()) expect(new URL(path, 'http://localhost').searchParams.get('bot')).toBe('5');
     const unread = wrapper.get('[data-section="unread"]');
-    expect(wrapper.findAll('.chat-row')).toHaveLength(3);
+    expect(wrapper.findAll('.chat-row')).toHaveLength(4);
     await unread.findAll('button').find((button) => button.text() === 'Next')!.trigger('click');
     await flushPromises();
-    const pages = listRequests().slice(-3).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'));
-    expect(pages).toEqual(['2', '1', '1']);
+    const pages = listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'));
+    expect(pages).toEqual(['1', '2', '1', '1']);
     expect(unread.text()).toContain('Page 2 of 3');
     expect(wrapper.get('[data-section="other"]').text()).toContain('Page 1 of 3');
   });
@@ -283,14 +284,50 @@ describe('chat list refresh after returning from the background', () => {
     apiMocks.get.mockImplementation(async (path: string) => sectionPayload(path));
     await mountList('/chats?q=needle');
     const searchRequests = () => apiMocks.get.mock.calls.filter(([path]) => path.startsWith('/api/bff/chat-list/search?'));
-    expect(searchRequests()).toHaveLength(3);
-    expect(wrapper.findAll('.chat-row')).toHaveLength(3);
+    expect(searchRequests()).toHaveLength(4);
+    expect(wrapper.findAll('.chat-row')).toHaveLength(4);
     await wrapper.get('[data-section="working"]').findAll('button').find((button) => button.text() === 'Next')!.trigger('click');
     await flushPromises();
-    expect(searchRequests().slice(-3).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '2', '1']);
+    expect(searchRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '1', '2', '1']);
     for (const [path] of searchRequests()) expect(new URL(path, 'http://localhost').searchParams.get('q')).toBe('needle');
     expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 101');
+  });
+
+  it.each(['/chats', '/chats?q=needle'])('keeps drafts first without mixing independent inbox pages in %s', async (route) => {
+    const shared = sectionChat(12, 'unread', { has_draft: true, draft_updated_at: '2026-09-07T00:00:00Z' });
+    const draftOnly = sectionChat(13, 'other', { has_draft: true, draft_updated_at: '2026-09-08T00:00:00Z' });
+    const ordinary = sectionChat(14, 'other');
+    apiMocks.get.mockImplementation(async (path: string) => {
+      const section = new URL(path, 'http://localhost').searchParams.get('section');
+      const rows = section === 'drafts' ? [draftOnly, shared] : section === 'unread' ? [shared] : section === 'other' ? [ordinary] : [];
+      return { chats: rows, page: { number: 1, per_page: 20, total: rows.length, has_next: false } };
+    });
+    await mountList(route);
+    expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['drafts', 'unread', 'other']);
+    const drafts = wrapper.get('[data-section="drafts"]');
+    expect(drafts.findAll('.chat-row').map((row) => row.text())).toEqual([expect.stringContaining('other 13'), expect.stringContaining('unread 12')]);
+    expect(wrapper.get('[data-section="unread"]').findAll('.chat-row')).toHaveLength(1);
+    expect(wrapper.get('[data-section="other"]').text()).toContain('other 14');
+    expect(wrapper.get('[data-section="other"]').text()).not.toContain('other 13');
+  });
+
+  it('persists the independent drafts page and removes the section after clearing the last draft', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => sectionPayload(path));
+    await mountList('/chats?draftsPage=2&page=2');
+    expect(wrapper.get('[data-section="drafts"]').text()).toContain('drafts 402');
+    await wrapper.get('[data-section="drafts"]').findAll('button').find((button) => button.text() === 'Previous')!.trigger('click');
+    await flushPromises();
+    expect(listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '1', '1', '2']);
+    expect(window.location.search).not.toContain('draftsPage=');
+    apiMocks.get.mockImplementation(async (path: string) => {
+      const payload = sectionPayload(path);
+      if (new URL(path, 'http://localhost').searchParams.get('section') === 'drafts') return { ...payload, chats: [], page: { number: 1, per_page: 20, total: 0, has_next: false } };
+      return payload;
+    });
+    await pull();
+    expect(wrapper.find('[data-section="drafts"]').exists()).toBe(false);
+    expect(wrapper.get('[data-section="other"]').text()).toContain('other 302');
   });
 
   it('deduplicates rows moved during a section batch using the newer read state', async () => {
@@ -315,14 +352,14 @@ describe('chat list refresh after returning from the background', () => {
     apiMocks.get.mockResolvedValue({ chats: [sectionChat(1, 'unread')] });
     await vi.advanceTimersByTimeAsync(1_100);
     await flushPromises();
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
     expect(wrapper.find('[data-section="other"]').exists()).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
   });
 
   it('refreshes an expired snooze after foregrounding even when the idle probe returns no changes', async () => {
@@ -333,7 +370,7 @@ describe('chat list refresh after returning from the background', () => {
     visibility = 'hidden';
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(listRequests()).toHaveLength(3);
+    expect(listRequests()).toHaveLength(4);
     apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?') ? { chats: [sectionChat(1, 'unread')] } : undefined);
     visibility = 'visible';
     document.dispatchEvent(new Event('visibilitychange'));
@@ -341,7 +378,7 @@ describe('chat list refresh after returning from the background', () => {
     window.dispatchEvent(new Event('pageshow'));
     await flushPromises();
     await vi.advanceTimersByTimeAsync(100);
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
   });
 
@@ -358,7 +395,7 @@ describe('chat list refresh after returning from the background', () => {
     await mountList();
     await vi.advanceTimersByTimeAsync(1_500);
     await flushPromises();
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
     expect(wrapper.find('[data-section="working"]').exists()).toBe(false);
   });
@@ -371,10 +408,10 @@ describe('chat list refresh after returning from the background', () => {
     apiMocks.get.mockResolvedValue({ chats: [sectionChat(99, 'unread')], next_read_state_expiry: null });
     await vi.advanceTimersByTimeAsync(1_100);
     await flushPromises();
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 99');
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(listRequests()).toHaveLength(6);
+    expect(listRequests()).toHaveLength(8);
   });
 
   it('clamps an emptied section page without resetting the other section pages', async () => {
@@ -389,8 +426,8 @@ describe('chat list refresh after returning from the background', () => {
       return payload;
     });
     await mountList('/chats?unreadPage=2&workingPage=2&page=2');
-    expect(listRequests()).toHaveLength(6);
-    expect(listRequests().slice(-3).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '2', '2']);
+    expect(listRequests()).toHaveLength(8);
+    expect(listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '1', '2', '2']);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 101');
     expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
     expect(wrapper.get('[data-section="other"]').text()).toContain('other 302');

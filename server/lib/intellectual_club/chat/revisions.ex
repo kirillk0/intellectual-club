@@ -18,6 +18,7 @@ defmodule IntellectualClub.Chat.Revisions do
       :chat_list,
       Map.get(pagination, :section),
       Map.get(page, :read_state_marker),
+      Map.get(page, :draft_marker),
       Map.get(pagination, :page),
       Map.get(pagination, :per_page),
       normalize_bot_filter(bot_filter),

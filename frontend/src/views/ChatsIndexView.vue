@@ -362,9 +362,9 @@ type ChatListPayload = {
 };
 
 type GenerationState = 'generating' | 'reconnecting' | 'error' | 'canceled';
-type ChatSection = 'unread' | 'working' | 'other';
-const SECTION_KEYS: ChatSection[] = ['unread', 'working', 'other'];
-const SECTION_LABELS = { unread: 'Unread', working: 'Working chats', other: 'Other chats' };
+type ChatSection = 'drafts' | 'unread' | 'working' | 'other';
+const SECTION_KEYS: ChatSection[] = ['drafts', 'unread', 'working', 'other'];
+const SECTION_LABELS = { drafts: 'Drafts', unread: 'Unread', working: 'Working chats', other: 'Other chats' };
 type SectionPage = { number: number; per_page: number; total: number; has_next: boolean };
 const emptySectionPages = (): Record<ChatSection, SectionPage> => Object.fromEntries(
   SECTION_KEYS.map((key) => [key, { number: 1, per_page: 20, total: 0, has_next: false }])
@@ -424,9 +424,12 @@ const creating = ref(false);
 const error = ref<string | null>(null);
 const chats = ref<ChatSummary[]>([]);
 const sectionPages = ref(emptySectionPages());
+const sectionIds = ref<Record<ChatSection, number[]>>({ drafts: [], unread: [], working: [], other: [] });
+const searchSectionIds = ref<Record<ChatSection, number[]>>({ drafts: [], unread: [], working: [], other: [] });
 const searchSectionPages = ref(emptySectionPages());
 sectionPages.value.other.number = readChatListPageQuery(route.query.page);
 sectionPages.value.unread.number = readChatListPageQuery(route.query.unreadPage);
+sectionPages.value.drafts.number = readChatListPageQuery(route.query.draftsPage);
 sectionPages.value.working.number = readChatListPageQuery(route.query.workingPage);
 const pageNumber = computed({ get: () => sectionPages.value.other.number, set: (value) => { sectionPages.value.other.number = value; } });
 const perPage = ref(20);
@@ -435,7 +438,7 @@ const chatSearchTerm = ref(getQueryString(route.query.q));
 const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
-const chatListIdleRevisions = ref<Record<ChatSection, string | null>>({ unread: null, working: null, other: null });
+const chatListIdleRevisions = ref<Record<ChatSection, string | null>>({ drafts: null, unread: null, working: null, other: null });
 const nextReadStateExpiry = ref<string | null>(null);
 const chatListGenerationPollReconnecting = ref(false);
 const expandedSubchatParentIds = ref(new Set<number>());
@@ -492,7 +495,7 @@ function syncChatListRouteQuery() {
   const bot = String(botFilter.value || '').trim();
   const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
   const next = { ...route.query };
-  for (const key of ['unread', 'working'] as const) {
+  for (const key of ['drafts', 'unread', 'working'] as const) {
     const queryKey = `${key}Page`;
     const number = sectionPages.value[key].number;
     if (number > 1) next[queryKey] = String(number);
@@ -512,6 +515,7 @@ function syncChatListRouteQuery() {
     sameQueryValue(route.query.q, q || undefined) &&
     sameQueryValue(route.query.bot, bot || undefined) &&
     sameQueryValue(route.query.page, page) &&
+    sameQueryValue(route.query.draftsPage, next.draftsPage as string | undefined) &&
     sameQueryValue(route.query.unreadPage, next.unreadPage as string | undefined) &&
     sameQueryValue(route.query.workingPage, next.workingPage as string | undefined)
   ) {
@@ -539,14 +543,16 @@ function syncChatListRouteQuery() {
 }
 
 watch(
-  () => [route.query.q, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage],
-  ([q, bot, page, unreadPage, workingPage]) => {
+  () => [route.query.q, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage, route.query.draftsPage],
+  ([q, bot, page, unreadPage, workingPage, draftsPage]) => {
     const nextQ = getQueryString(q);
     const nextBot = readBotFilterQuery(bot);
     const nextPage = readChatListPageQuery(page);
     const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage ||
+      sectionPages.value.drafts.number !== readChatListPageQuery(draftsPage) ||
       sectionPages.value.unread.number !== readChatListPageQuery(unreadPage) ||
       sectionPages.value.working.number !== readChatListPageQuery(workingPage);
+    sectionPages.value.drafts.number = readChatListPageQuery(draftsPage);
     sectionPages.value.unread.number = readChatListPageQuery(unreadPage);
     sectionPages.value.working.number = readChatListPageQuery(workingPage);
 
@@ -814,7 +820,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   if (summary.subagent) {
     chats.value = upsertSubchatInRows(chats.value, summary);
     chatSearchResults.value = upsertSubchatInRows(chatSearchResults.value, summary);
-    chatListIdleRevisions.value = { unread: null, working: null, other: null };
+    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
     return;
   }
 
@@ -823,7 +829,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
     chats.value = chats.value.filter((chat) => chat.id !== summary.id);
     chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== summary.id);
     if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
-    chatListIdleRevisions.value = { unread: null, working: null, other: null };
+    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
     return;
   }
 
@@ -859,7 +865,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   }
 
   chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
-  chatListIdleRevisions.value = { unread: null, working: null, other: null };
+  chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
 }
 
 function removeChatFromLists(chatId: number) {
@@ -871,7 +877,7 @@ function removeChatFromLists(chatId: number) {
   chatSearchResults.value = searchRows.rows.filter((chat) => chat.id !== chatId);
   if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
 
-  chatListIdleRevisions.value = { unread: null, working: null, other: null };
+  chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
 }
 
 const chatSummaryRefreshTimers = new Map<number, number>();
@@ -915,6 +921,10 @@ function queueServerRefresh() {
 useChatServerEvents(queueServerRefresh);
 
 useChatChanges((change) => {
+  if (change.meta?.reason === 'draft-changed') {
+    queueServerRefresh();
+    return;
+  }
   if (change.operation === 'delete') {
     clearChatSummaryRefresh(change.id);
     removeChatFromLists(change.id);
@@ -936,11 +946,25 @@ const allBotsCount = computed(() => {
   if (chatListStats.value.total_chats > 0) return chatListStats.value.total_chats;
   return totalChats.value;
 });
+function sectionChats(key: ChatSection) {
+  const ids = (hasChatSearch.value ? searchSectionIds.value : sectionIds.value);
+  if (key === 'drafts') {
+    const byId = new Map(visibleChats.value.map((chat) => [chat.id, chat]));
+    return ids.drafts.flatMap((id) => {
+      const chat = byId.get(id);
+      return chat?.has_draft ? [chat] : [];
+    });
+  }
+  // Drafts overlap the inbox, but must not pull rows from another inbox page.
+  const inboxIds = new Set([...ids.unread, ...ids.working, ...ids.other]);
+  return visibleChats.value.filter((chat) => inboxIds.has(chat.id) && sectionForChat(chat) === key);
+}
+
 const visibleSections = computed(() => SECTION_KEYS.map((key) => {
   const page = (hasChatSearch.value ? searchSectionPages.value : sectionPages.value)[key];
   return {
     key, label: translate(SECTION_LABELS[key]),
-    chats: visibleChats.value.filter((chat) => sectionForChat(chat) === key),
+    chats: sectionChats(key),
     page: page.number, total: page.total, hasNext: page.has_next,
     totalPages: Math.max(1, Math.ceil(page.total / Math.max(1, page.per_page))),
   };
@@ -1362,9 +1386,10 @@ async function loadChats(
       await loadChats(opts);
       return;
     }
+    sectionIds.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, (payloads[index].chats || []).map((chat) => chat.id)])) as Record<ChatSection, number[]>;
     chats.value = uniqueChatRows(payloads.flatMap((payload) => payload.chats || []));
     nextReadStateExpiry.value = payloads[0].next_read_state_expiry ?? null;
-    totalChats.value = SECTION_KEYS.reduce((total, key) => total + sectionPages.value[key].total, 0);
+    totalChats.value = SECTION_KEYS.filter((key) => key !== 'drafts').reduce((total, key) => total + sectionPages.value[key].total, 0);
     chatListStats.value = normalizeChatListStats(payloads[0].stats);
     chatListIdleRevisions.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, payloads[index].idle_revision ?? null])) as Record<ChatSection, string | null>;
     startChatListIdlePolling();
@@ -1460,6 +1485,7 @@ async function runChatSearch(
       await runChatSearch(term, opts);
       return;
     }
+    searchSectionIds.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, (payloads[index].chats || []).map((chat) => chat.id)])) as Record<ChatSection, number[]>;
     chatSearchResults.value = uniqueChatRows(payloads.flatMap((payload) => payload.chats || []));
     if ('next_read_state_expiry' in payloads[0]) nextReadStateExpiry.value = payloads[0].next_read_state_expiry ?? null;
   } catch (e) {
@@ -1885,7 +1911,7 @@ async function refreshBots(opts: { showError?: boolean } = {}) {
 watch(
   () => chatSearchTerm.value,
   (value, previousValue) => {
-    chatListIdleRevisions.value = { unread: null, working: null, other: null };
+    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
     resetSectionPageNumbers();
     const term = value.trim();
     if (term.length < CHAT_SEARCH_MIN_LENGTH) {
@@ -1907,7 +1933,7 @@ watch(
 watch(
   () => botFilter.value,
   () => {
-    chatListIdleRevisions.value = { unread: null, working: null, other: null };
+    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
     if (!hasChatSearch.value) return;
     const term = chatSearchTerm.value.trim();
     if (!term) return;

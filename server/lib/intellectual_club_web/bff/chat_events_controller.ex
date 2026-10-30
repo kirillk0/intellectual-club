@@ -41,6 +41,10 @@ defmodule IntellectualClubWeb.Bff.ChatEventsController do
       conn
     else
       receive do
+        {:chat_draft_changed, chat_id, revision} when is_integer(chat_id) and chat_id > 0 ->
+          data = Jason.encode!(%{chat_id: chat_id, revision: revision})
+          continue(conn, "event: chat_draft_changed\ndata: #{data}\n\n", deadline, heartbeat)
+
         {:chat_state_changed, chat_id} when is_integer(chat_id) and chat_id > 0 ->
           data = Jason.encode!(%{chat_id: chat_id})
           continue(conn, "event: chat_state_changed\ndata: #{data}\n\n", deadline, heartbeat)

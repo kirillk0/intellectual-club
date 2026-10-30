@@ -230,7 +230,7 @@ describe('chat list actions menu', () => {
     menuItem('Mark as unread')!.click();
     await flushPromises();
     expect(apiMocks.post).toHaveBeenCalledTimes(1);
-    expect(apiMocks.get.mock.calls.length - before).toBe(3);
+    expect(apiMocks.get.mock.calls.length - before).toBe(4);
     expect(wrapper.text()).toContain('Chat state changed. Please try again.');
   });
 

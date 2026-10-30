@@ -126,7 +126,11 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       content = params |> Map.get("content", "") |> to_string()
 
       with {:ok, _message} <- fetch_owned_message(message_id, actor) do
-        case QueuedMessages.enqueue_steer(message_id, %{content: content}, actor) do
+        case QueuedMessages.enqueue_steer(
+               message_id,
+               %{content: content, draft_revision: params["draft_revision"]},
+               actor
+             ) do
           {:ok, queued_message} ->
             notify_queued_message_changed(queued_message)
 

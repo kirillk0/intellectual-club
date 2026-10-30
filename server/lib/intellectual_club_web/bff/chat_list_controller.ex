@@ -6,6 +6,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   use IntellectualClubWeb, :controller
 
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatDraft
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.ListingStats
   alias IntellectualClub.Chat.Relations
@@ -42,8 +43,14 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         ])
 
       marker = ReadState.list_marker(actor)
-      page = Map.put(page, :read_state_marker, marker.rows)
+
+      page =
+        page
+        |> Map.put(:read_state_marker, marker.rows)
+        |> Map.put(:draft_marker, ChatDraft.list_marker(actor))
+
       chats = Map.get(page, :results, [])
+      drafts = ChatDraft.load_many(chats, actor)
       active_branch_summaries = Listing.active_branch_summaries(chats, actor)
 
       first_message_previews =
@@ -70,6 +77,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
+          |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
           |> put_continuation_nav(chat, actor)
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
@@ -110,7 +118,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
       with {:ok, bot_filter} <- ChatParams.bot_filter(params) do
         {entries, total} =
-          if pagination.section in ["unread", "working", "other"] do
+          if pagination.section in ["drafts", "unread", "working", "other"] do
             result = ChatSearch.search_chat_page(term, actor, bot_filter, pagination)
             {result.entries, result.total}
           else
@@ -124,6 +132,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           end
 
         chats = Enum.map(entries, & &1.chat)
+        drafts = ChatDraft.load_many(chats, actor)
 
         {subchats_by_parent, _subchat_lifecycle_states} =
           direct_subchat_summaries(chats, actor, ChatParams.preview_len(params))
@@ -140,6 +149,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
               child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
               subchats: Map.get(subchats_by_parent, chat.id, [])
             )
+            |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
             |> put_continuation_nav(chat, actor)
             |> Map.put(:message_count, entry.message_count)
             |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
@@ -151,13 +161,13 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         response = %{chats: payload}
 
         response =
-          if pagination.section in ["unread", "working", "other"],
+          if pagination.section in ["drafts", "unread", "working", "other"],
             do:
               Map.put(response, :next_read_state_expiry, ReadState.list_marker(actor).next_expiry),
             else: response
 
         response =
-          if pagination.section in ["unread", "working", "other"],
+          if pagination.section in ["drafts", "unread", "working", "other"],
             do:
               Map.put(response, :page, %{
                 number: pagination.page,
@@ -220,6 +230,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       {first_message_preview, first_message_role} =
         Map.get(first_message_previews, chat.id, {nil, nil})
 
+      drafts = ChatDraft.load_many([chat], actor)
+
       payload =
         chat
         |> Serializer.chat_summary(
@@ -232,6 +244,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
         )
+        |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
         |> put_continuation_nav(chat, actor)
         |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
         |> Map.put(:first_message_preview, first_message_preview)
@@ -260,7 +273,12 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         ])
 
       marker = ReadState.list_marker(actor)
-      page = Map.put(page, :read_state_marker, marker.rows)
+
+      page =
+        page
+        |> Map.put(:read_state_marker, marker.rows)
+        |> Map.put(:draft_marker, ChatDraft.list_marker(actor))
+
       chats = Map.get(page, :results, [])
       subchat_lifecycle_states = direct_subchat_lifecycle_states(chats, actor)
 
