@@ -45,6 +45,8 @@ defmodule IntellectualClubWeb do
     quote do
       use Phoenix.Controller, formats: [:html, :json]
 
+      action_fallback(IntellectualClubWeb.HaltedConnFallback)
+
       use Gettext, backend: IntellectualClubWeb.Gettext
 
       import Plug.Conn

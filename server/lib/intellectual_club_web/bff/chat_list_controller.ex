@@ -13,6 +13,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.ReadState
   alias IntellectualClub.Chat.Search, as: ChatSearch
+  alias IntellectualClub.Chat.SearchDeadline
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClubWeb.Bff.ChatAccess
@@ -104,6 +105,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           )
       })
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
       {:error, error_message} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -111,80 +115,172 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     end
   end
 
+  @search_sections ["drafts", "unread", "working", "other"]
+
+  @doc """
+  Searches the chat list.
+
+  With `sections=drafts,unread,...` the matches are split into list sections
+  in one request (`page_<section>` selects each section's page). Without it,
+  returns up to `per_page` best matches as a flat list.
+  """
   def search(conn, params) do
-    with {:ok, actor} <- Helpers.require_actor(conn) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- ChatParams.bot_filter(params),
+         {:ok, sections} <- search_sections(params) do
       term = params |> Map.get("q", "") |> to_string()
-      pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
 
-      with {:ok, bot_filter} <- ChatParams.bot_filter(params) do
-        {entries, total} =
-          if pagination.section in ["drafts", "unread", "working", "other"] do
-            result = ChatSearch.search_chat_page(term, actor, bot_filter, pagination)
-            {result.entries, result.total}
-          else
-            entries =
-              ChatSearch.search_chats(term, actor,
-                bot_filter: bot_filter,
-                limit: pagination.per_page
-              )
+      cond do
+        Map.has_key?(params, "section") and not Map.has_key?(params, "sections") ->
+          search_legacy_section(conn, actor, term, bot_filter, params)
 
-            {entries, length(entries)}
-          end
+        sections == [] ->
+          search_flat(conn, actor, term, bot_filter, params)
 
-        chats = Enum.map(entries, & &1.chat)
-        drafts = ChatDraft.load_many(chats, actor)
-
-        {subchats_by_parent, _subchat_lifecycle_states} =
-          direct_subchat_summaries(chats, actor, ChatParams.preview_len(params))
-
-        child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
-
-        payload =
-          Enum.map(entries, fn entry ->
-            chat = entry.chat
-            activity_at = Listing.activity_at(chat)
-
-            Serializer.chat_summary(chat,
-              activity_at: activity_at,
-              child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
-              subchats: Map.get(subchats_by_parent, chat.id, [])
-            )
-            |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-            |> put_continuation_nav(chat, actor)
-            |> Map.put(:message_count, entry.message_count)
-            |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
-            |> Map.put(:snippet, entry.snippet)
-            |> Map.put(:message_id, entry.message_id)
-            |> Map.put(:message_role, entry.message_role)
-          end)
-
-        response = %{chats: payload}
-
-        response =
-          if pagination.section in ["drafts", "unread", "working", "other"],
-            do:
-              Map.put(response, :next_read_state_expiry, ReadState.list_marker(actor).next_expiry),
-            else: response
-
-        response =
-          if pagination.section in ["drafts", "unread", "working", "other"],
-            do:
-              Map.put(response, :page, %{
-                number: pagination.page,
-                per_page: pagination.per_page,
-                total: total,
-                has_next: pagination.page * pagination.per_page < total
-              }),
-            else: response
-
-        json(conn, response)
-      else
-        {:error, error_message} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{error: error_message})
+        true ->
+          search_grouped(conn, actor, term, bot_filter, sections, params)
       end
+    else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
+      {:error, error_message} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: error_message})
     end
+  end
+
+  defp search_sections(%{"sections" => raw}) do
+    sections =
+      raw
+      |> to_string()
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.uniq()
+
+    if sections != [] and Enum.all?(sections, &(&1 in @search_sections)),
+      do: {:ok, sections},
+      else: {:error, "Invalid sections"}
+  end
+
+  defp search_sections(%{"section" => section}) when section in @search_sections, do: {:ok, []}
+  defp search_sections(%{"section" => _section}), do: {:error, "Invalid section"}
+  defp search_sections(_params), do: {:ok, []}
+
+  defp search_flat(conn, actor, term, bot_filter, params) do
+    limit = ChatParams.pagination(params).per_page
+
+    render_search(conn, fn ->
+      with {:ok, entries} <-
+             ChatSearch.search_chat_list(term, actor, bot_filter: bot_filter, limit: limit) do
+        SearchDeadline.query(fn -> %{chats: search_entries_payload(entries, actor, params)} end)
+      end
+    end)
+  end
+
+  defp search_legacy_section(conn, actor, term, bot_filter, params) do
+    pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
+
+    render_search(conn, fn ->
+      with {:ok, result} <- ChatSearch.search_chat_page(term, actor, bot_filter, pagination) do
+        SearchDeadline.query(fn ->
+          %{
+            chats: search_entries_payload(result.entries, actor, params),
+            page: %{
+              number: pagination.page,
+              per_page: pagination.per_page,
+              total: result.total,
+              has_next: pagination.page * pagination.per_page < result.total
+            },
+            next_read_state_expiry: ReadState.list_marker(actor).next_expiry
+          }
+        end)
+      end
+    end)
+  end
+
+  defp search_grouped(conn, actor, term, bot_filter, sections, params) do
+    per_page = ChatParams.pagination(params).per_page
+
+    pages =
+      Map.new(sections, &{&1, ChatParams.pagination(%{"page" => params["page_" <> &1]}).page})
+
+    cursors = Map.new(sections, &{&1, params["after_" <> &1]})
+
+    render_search(conn, fn ->
+      with {:ok, result} <-
+             ChatSearch.search_chat_sections(term, actor, bot_filter,
+               sections: sections,
+               pages: pages,
+               cursors: cursors,
+               per_page: per_page
+             ) do
+        SearchDeadline.query(fn ->
+          %{
+            chats: search_entries_payload(result.entries, actor, params),
+            sections:
+              Map.new(result.sections, fn {section, page} ->
+                {section, %{ids: page.ids, page: Map.drop(page, [:ids])}}
+              end),
+            next_read_state_expiry: ReadState.list_marker(actor).next_expiry,
+            text_search: result.text_search?
+          }
+        end)
+      end
+    end)
+  end
+
+  defp render_search(conn, fun) do
+    case SearchDeadline.run(fun) do
+      {:ok, payload} ->
+        json(conn, payload)
+
+      {:error, :timeout} ->
+        search_timeout(conn)
+
+      {:error, :invalid_cursor} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Invalid search cursor", code: "invalid_cursor"})
+    end
+  end
+
+  defp search_timeout(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{
+      error: gettext("Search took too long. Try a more specific query."),
+      code: "search_timeout"
+    })
+  end
+
+  defp search_entries_payload(entries, actor, params) do
+    chats = Enum.map(entries, & &1.chat)
+    drafts = ChatDraft.load_many(chats, actor)
+
+    {subchats_by_parent, _subchat_lifecycle_states} =
+      direct_subchat_summaries(chats, actor, ChatParams.preview_len(params))
+
+    child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
+
+    Enum.map(entries, fn entry ->
+      chat = entry.chat
+      activity_at = Listing.activity_at(chat)
+
+      Serializer.chat_summary(chat,
+        activity_at: activity_at,
+        child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
+        subchats: Map.get(subchats_by_parent, chat.id, [])
+      )
+      |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
+      |> put_continuation_nav(chat, actor)
+      |> Map.put(:message_count, entry.message_count)
+      |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
+      |> Map.put(:snippet, entry.snippet)
+      |> Map.put(:message_id, entry.message_id)
+      |> Map.put(:message_role, entry.message_role)
+    end)
   end
 
   def summary(conn, %{"id" => id} = params) do
@@ -302,6 +398,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         })
       end
     else
+      {:error, %Plug.Conn{} = conn} ->
+        conn
+
       {:error, error_message} ->
         conn
         |> put_status(:unprocessable_entity)
@@ -335,6 +434,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         chat_generations: chat_generations,
         active_message_ids: active_message_ids
       })
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
     end
   end
 

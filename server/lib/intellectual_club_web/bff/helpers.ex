@@ -11,24 +11,51 @@ defmodule IntellectualClubWeb.Bff.Helpers do
 
   use Gettext, backend: IntellectualClubWeb.Gettext
 
+  require Logger
+
   def actor(conn) do
     Ash.PlugHelpers.get_actor(conn) || conn.assigns[:current_user]
   end
 
+  @doc """
+  Reloads the session actor.
+
+  Returns `{:error, :unavailable}` when the user could not be read for reasons
+  other than authorization, e.g. an exhausted database pool, so callers can
+  answer with a retryable error instead of signing the user out.
+  """
   def current_user(conn) do
-    with %{id: user_id} = actor when is_integer(user_id) <- actor(conn),
-         {:ok, %User{} = user} <-
-           User
-           |> Ash.Query.for_read(:get_current, %{id: user_id})
-           |> Ash.read_one(actor: actor) do
-      {:ok, user}
-    else
-      _other -> {:error, :unauthorized}
+    case actor(conn) do
+      %{id: user_id} = actor when is_integer(user_id) ->
+        User
+        |> Ash.Query.for_read(:get_current, %{id: user_id})
+        |> Ash.read_one(actor: actor)
+        |> case do
+          {:ok, %User{} = user} -> {:ok, user}
+          {:ok, nil} -> {:error, :unauthorized}
+          {:error, %Ash.Error.Forbidden{}} -> {:error, :unauthorized}
+          {:error, error} -> unavailable_user(user_id, error)
+        end
+
+      _other ->
+        {:error, :unauthorized}
     end
+  end
+
+  defp unavailable_user(user_id, error) do
+    Logger.warning(
+      "Failed to reload session user #{user_id}: " <>
+        inspect(error, limit: 5, printable_limit: 300)
+    )
+
+    {:error, :unavailable}
   end
 
   def require_actor(conn) do
     case current_user(conn) do
+      {:error, :unavailable} ->
+        {:error, conn |> render_unavailable() |> halt()}
+
       {:error, _reason} ->
         conn =
           conn
@@ -42,6 +69,17 @@ defmodule IntellectualClubWeb.Bff.Helpers do
       {:ok, user} ->
         {:ok, user}
     end
+  end
+
+  @doc """
+  Sends a retryable `503` for requests whose session could not be verified.
+  """
+  def render_unavailable(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> put_resp_header("retry-after", "1")
+    |> put_view(ErrorJSON)
+    |> json(%{error: gettext("Service temporarily unavailable. Please try again.")})
   end
 
   def require_admin(conn) do

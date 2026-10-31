@@ -12,7 +12,7 @@ defmodule IntellectualClubWeb.Router do
     plug :put_root_layout, html: {IntellectualClubWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
-    plug :load_from_session
+    plug IntellectualClubWeb.Plugs.LoadFromSession, on_unavailable: :continue
     plug IntellectualClubWeb.Locale
   end
 
@@ -31,7 +31,7 @@ defmodule IntellectualClubWeb.Router do
     plug :accepts, ["json"]
     plug :fetch_session
     plug :protect_from_forgery
-    plug :load_from_session
+    plug IntellectualClubWeb.Plugs.LoadFromSession
     plug :set_actor, :user
     plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale
@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.Router do
   pipeline :api_mixed_session do
     plug :fetch_session
     plug :protect_from_forgery
-    plug :load_from_session
+    plug IntellectualClubWeb.Plugs.LoadFromSession
     plug :set_actor, :user
     plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale
@@ -50,7 +50,7 @@ defmodule IntellectualClubWeb.Router do
     plug :accepts, ["jsonapi", "json"]
     plug :fetch_session
     plug :protect_from_forgery
-    plug :load_from_session
+    plug IntellectualClubWeb.Plugs.LoadFromSession
     plug :set_actor, :user
     plug IntellectualClubWeb.Plugs.TrackUserActivity
     plug IntellectualClubWeb.Locale

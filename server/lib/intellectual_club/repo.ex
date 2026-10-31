@@ -56,6 +56,100 @@ defmodule IntellectualClub.Repo do
     :ok
   end
 
+  @doc """
+  Runs `fun` in a transaction whose statements PostgreSQL cancels after
+  `timeout_ms`, with JIT compilation disabled for them.
+
+  Interactive reads use this so a pathological query fails fast instead of
+  holding a pool connection until the client-side timeout. Returns
+  `{:ok, result}` or `{:error, :statement_timeout}`; other errors are raised.
+  The settings are transaction-local and restored for an enclosing transaction.
+  """
+  @statement_timeout_key {__MODULE__, :statement_timeout}
+
+  def with_statement_timeout(timeout_ms, fun)
+      when is_integer(timeout_ms) and timeout_ms > 0 and is_function(fun, 0) do
+    # A fixed handler is safe even when a deadline kills its caller. Per-call
+    # telemetry attachments would leak on brutal task shutdown.
+    :telemetry.attach(
+      {__MODULE__, :statement_timeout},
+      [:intellectual_club, :repo, :query],
+      &__MODULE__.track_statement_timeout/4,
+      nil
+    )
+
+    previous = Process.put(@statement_timeout_key, :watching)
+
+    try do
+      transaction(fn ->
+        %{rows: [[previous_timeout, previous_jit]]} =
+          query!("SELECT current_setting('statement_timeout'), current_setting('jit')", [])
+
+        put_local_settings(Integer.to_string(timeout_ms), "off")
+        result = fun.()
+        if recorded_statement_timeout?(), do: rollback(:statement_timeout)
+        put_local_settings(previous_timeout, previous_jit)
+        result
+      end)
+      |> case do
+        {:error, error} ->
+          if recorded_statement_timeout?() or statement_timeout_error?(error),
+            do: {:error, :statement_timeout},
+            else: raise(Ash.Error.to_error_class(error))
+
+        result ->
+          result
+      end
+    rescue
+      error ->
+        if recorded_statement_timeout?() or statement_timeout_error?(error),
+          do: {:error, :statement_timeout},
+          else: reraise(error, __STACKTRACE__)
+    after
+      case {previous, recorded_statement_timeout?()} do
+        {nil, _} -> Process.delete(@statement_timeout_key)
+        {:watching, true} -> Process.put(@statement_timeout_key, :canceled)
+        _ -> Process.put(@statement_timeout_key, previous)
+      end
+    end
+  end
+
+  @doc false
+  def track_statement_timeout(_event, _measurements, metadata, _config) do
+    # Some optional enrichment loaders intentionally handle Ash errors. Remember
+    # the original cancellation before a later query only reports 25P02.
+    case metadata[:result] do
+      {:error, error} ->
+        if Process.get(@statement_timeout_key) && statement_timeout_error?(error),
+          do: Process.put(@statement_timeout_key, :canceled)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp recorded_statement_timeout?, do: Process.get(@statement_timeout_key) == :canceled
+
+  defp put_local_settings(statement_timeout, jit) do
+    query!(
+      "SELECT set_config('statement_timeout', $1, true), set_config('jit', $2, true)",
+      [statement_timeout, jit]
+    )
+  end
+
+  # Ash wraps data layer exceptions, sometimes only as their formatted message.
+  defp statement_timeout_error?(%Postgrex.Error{postgres: %{code: :query_canceled}}), do: true
+
+  defp statement_timeout_error?(%{errors: errors}) when is_list(errors),
+    do: Enum.any?(errors, &statement_timeout_error?/1)
+
+  defp statement_timeout_error?(%{error: error}), do: statement_timeout_error?(error)
+
+  defp statement_timeout_error?(message) when is_binary(message),
+    do: String.contains?(message, "(query_canceled)")
+
+  defp statement_timeout_error?(_error), do: false
+
   defp after_commit_key, do: {__MODULE__, :after_commit, get_dynamic_repo()}
 
   defp run_after_commit({repo, fun}) do

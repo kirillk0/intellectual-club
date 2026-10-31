@@ -576,6 +576,26 @@ defmodule IntellectualClub.Chat.Chat do
   actions do
     defaults([:read])
 
+    read :search_list do
+      description("Owner-only chat-list search with an optional early-exit plan.")
+      argument :q, :string, allow_nil?: false
+
+      argument :strategy, :atom do
+        constraints(one_of: [:indexed, :correlated])
+        default(:indexed)
+      end
+
+      pagination do
+        offset?(true)
+        keyset?(true)
+        required?(false)
+        max_page_size(100)
+        countable(true)
+      end
+
+      prepare IntellectualClub.Chat.Preparations.SearchChatList
+    end
+
     action :read_messages, IntellectualClub.Chat.Types.MessagePage do
       description(
         "Read a bounded page of the active conversation as flat messages, root to leaf. Includes authorized linked-fork context; does not expand reasoning or tool traces."

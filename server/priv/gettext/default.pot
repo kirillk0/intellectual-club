@@ -8,6 +8,9 @@ msgstr ""
 msgid "Forbidden"
 msgstr ""
 
+msgid "Service temporarily unavailable. Please try again."
+msgstr ""
+
 msgid "Not found"
 msgstr ""
 
@@ -51,4 +54,7 @@ msgid "Section"
 msgstr ""
 
 msgid "Data"
+msgstr ""
+
+msgid "Search took too long. Try a more specific query."
 msgstr ""

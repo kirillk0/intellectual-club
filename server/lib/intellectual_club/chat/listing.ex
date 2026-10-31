@@ -5,10 +5,14 @@ defmodule IntellectualClub.Chat.Listing do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
+  alias IntellectualClub.Chat.ChatMessageContent
+  alias IntellectualClub.Chat.ChatMessageItem
+  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
 
+  require Ash.Expr
   require Ash.Query
 
   @spec read_page(map(), term(), map(), list()) :: map()
@@ -225,7 +229,8 @@ defmodule IntellectualClub.Chat.Listing do
       else
         ChatMessage
         |> Ash.Query.filter(id in ^message_ids)
-        |> Ash.Query.load(message_preview_tree(), strict?: true)
+        |> Ash.Query.select([:id, :role])
+        |> Ash.Query.load(message_preview_tree(preview_len), strict?: true)
         |> Ash.read!(actor: actor)
         |> Map.new(fn message -> {message.id, message} end)
       end
@@ -245,21 +250,99 @@ defmodule IntellectualClub.Chat.Listing do
     |> Threads.active_branch_summaries_by_chat(actor)
   end
 
-  defp message_preview_tree do
-    [
-      steps: [
-        :sequence,
-        items: [
-          :sequence,
-          :type,
-          contents: [
-            :sequence,
-            :kind,
-            :content_text,
-            :content_json
-          ]
-        ]
-      ]
-    ]
+  defp message_preview_tree(preview_len) do
+    user_types = Previews.regular_item_types(:user)
+    assistant_types = Previews.regular_item_types(:assistant)
+
+    item_filter =
+      Ash.Expr.expr(
+        type in [:handoff_history, :handoff_message] or
+          (type in ^user_types and chat_message_step.chat_message.role == :user) or
+          (type in ^assistant_types and chat_message_step.chat_message.role == :assistant)
+      )
+
+    items =
+      ChatMessageItem
+      |> Ash.Query.filter(^item_filter)
+      |> Ash.Query.select([:sequence, :type, :chat_message_step_id])
+      |> Ash.Query.load(contents: preview_contents(preview_len, user_types ++ assistant_types))
+
+    steps =
+      ChatMessageStep
+      |> Ash.Query.filter(exists(items, ^item_filter))
+      |> Ash.Query.select([:sequence, :chat_message_id])
+      |> Ash.Query.load(items: items)
+
+    [steps: steps]
+  end
+
+  defp preview_contents(preview_len, regular_types) do
+    ChatMessageContent
+    |> Ash.Query.filter(
+      (kind == :text and
+         (item_type != :handoff_history or
+            fragment("?->>'entry_kind'", content_json) == "message")) or
+        (kind == :media and item_type in ^regular_types)
+    )
+    |> Ash.Query.select([:sequence, :kind, :chat_message_item_id])
+    |> Ash.Query.calculate(
+      :preview_text,
+      :string,
+      preview_text_expression(preview_len),
+      %{},
+      trim?: false,
+      allow_empty?: true
+    )
+    |> Ash.Query.calculate(
+      :preview_metadata,
+      :map,
+      Ash.Expr.expr(
+        if item_type == :handoff_history do
+          fragment(
+            """
+            jsonb_build_object('entry_kind', 'message', 'role',
+              CASE WHEN ?->>'role' IN ('user', 'assistant') THEN ?->>'role' END)
+            """,
+            content_json,
+            content_json
+          )
+        else
+          nil
+        end
+      )
+    )
+  end
+
+  defp preview_text_expression(preview_len) do
+    budget = max(preview_len, 0) + 1
+
+    # Bound ASCII blocks without losing leading, internal or trailing whitespace.
+    # The extra dot is outside the preview budget and keeps a truncated whitespace
+    # suffix from being trimmed as if it were the real end of the text.
+    # PostgreSQL slices code points, not graphemes: keep Unicode blocks intact.
+    Ash.Expr.expr(
+      if kind == :text do
+        fragment(
+          ~S"""
+          (SELECT CASE
+            WHEN octet_length(value) <> char_length(value) THEN value
+            WHEN body = '' THEN left(value, budget)
+            ELSE left(value, least(char_length(value) - char_length(ltrim(value, spaces)), budget))
+              || left(body, budget)
+              || CASE WHEN char_length(body) > budget THEN '.'
+                ELSE left(substring(value FROM char_length(rtrim(value, spaces)) + 1), budget)
+              END
+            END
+            FROM (SELECT ?::text AS value, ?::integer AS budget,
+              E' \t\n\r\f\013' AS spaces) AS preview_input
+            CROSS JOIN LATERAL (SELECT btrim(value, spaces) AS body) AS preview_trimmed)
+          """,
+          content_text,
+          ^budget
+        )
+      else
+        ""
+      end
+    )
   end
 end

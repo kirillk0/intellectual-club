@@ -5,13 +5,13 @@ defmodule IntellectualClub.Chat.Search do
   All queries go through Ash and therefore respect authorization policies.
   """
 
-  alias Ash.CiString
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.MessageText
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Chat.SearchDeadline
 
   require Ash.Query
 
@@ -92,59 +92,195 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
-  @doc "Paginates matching chat IDs in SQL before loading snippets and branch metadata."
+  @doc """
+  Returns cursor pages without counting all matches. Common terms use a short
+  correlated probe; rare terms fall back to the ordinary trigram plan. Both
+  plans apply the same actor, hierarchy, section, bot and cursor filters.
+  """
+  def search_chat_sections(term, actor, bot_filter, opts) when is_list(opts) do
+    SearchDeadline.run(fn ->
+      term = normalize_term(term)
+      sections = Keyword.fetch!(opts, :sections)
+      pages = Keyword.get(opts, :pages, %{})
+      cursors = Keyword.get(opts, :cursors, %{})
+      per_page = Keyword.fetch!(opts, :per_page)
+
+      section_pages =
+        Map.new(sections, fn section ->
+          number = Map.get(pages, section, 1)
+          scope = cursor_scope(term, actor, bot_filter, section, per_page)
+          position = decode_cursor(Map.get(cursors, section), scope, number)
+
+          rows =
+            if term == "",
+              do: [],
+              else: read_section(term, actor, bot_filter, section, position, per_page + 1)
+
+          visible = Enum.take(rows, per_page)
+          has_next = length(rows) > per_page
+          cursor = if has_next, do: encode_cursor(List.last(visible), section, scope), else: nil
+
+          {section,
+           %{
+             ids: Enum.map(visible, & &1.id),
+             number: number,
+             per_page: per_page,
+             total: nil,
+             has_next: has_next,
+             next_cursor: cursor
+           }}
+        end)
+
+      page_ids = sections |> Enum.flat_map(&section_pages[&1].ids) |> Enum.uniq()
+      entries = SearchDeadline.query(fn -> page_entries(term, actor, bot_filter, page_ids) end)
+
+      %{
+        entries: entries,
+        sections: section_pages,
+        text_search?: MessageText.indexable_term?(term)
+      }
+    end)
+  end
+
+  @doc "Compatibility for clients still using section/page and an exact total."
   def search_chat_page(term, actor, bot_filter, pagination) do
-    term = normalize_term(term)
+    SearchDeadline.run(fn ->
+      term = normalize_term(term)
 
-    if term == "" do
-      %{entries: [], total: 0}
-    else
-      text_predicate =
-        ChatMessage
-        |> MessageText.filter({:contains, term})
-        |> Map.fetch!(:filter)
-        |> Map.fetch!(:expression)
-
-      meta_term = contains_query_term(term)
-
-      page =
-        Chat
-        |> Ash.Query.filter(owner_id == ^actor.id)
-        |> Listing.apply_hierarchy_filter(actor, pagination.section)
-        |> Listing.apply_bot_filter(bot_filter)
-        |> Listing.apply_section(pagination.section)
-        |> Ash.Query.filter(
-          contains(note, ^meta_term) or exists(bot, contains(name, ^meta_term)) or
-            exists(
-              messages,
-              owner_id == ^actor.id and role in [:user, :assistant] and ^text_predicate
+      if term == "" do
+        %{entries: [], total: 0}
+      else
+        page =
+          SearchDeadline.query(fn ->
+            section_query(term, actor, bot_filter, pagination.section, nil, :indexed)
+            |> Ash.Query.page(
+              limit: pagination.per_page,
+              offset: (pagination.page - 1) * pagination.per_page,
+              count: true
             )
-        )
-        |> apply_page_sort(pagination.section)
-        |> Ash.Query.select([:id])
-        |> Ash.Query.page(
-          limit: pagination.per_page,
-          offset: (pagination.page - 1) * pagination.per_page,
-          count: true
-        )
-        |> Ash.read!(actor: actor)
+            |> Ash.read!(actor: actor)
+          end)
 
-      ids = Enum.map(page.results, & &1.id)
+        entries =
+          SearchDeadline.query(fn ->
+            page_entries(term, actor, bot_filter, Enum.map(page.results, & &1.id))
+          end)
 
-      entries =
-        if ids == [] do
-          []
-        else
-          by_id =
-            search_chats(term, actor, bot_filter: bot_filter, chat_ids: ids)
-            |> Map.new(&{&1.chat.id, &1})
+        %{entries: entries, total: page.count}
+      end
+    end)
+  end
 
-          Enum.flat_map(ids, fn id -> List.wrap(Map.get(by_id, id)) end)
+  def search_chat_list(term, actor, opts \\ []) do
+    SearchDeadline.run(fn -> SearchDeadline.query(fn -> search_chats(term, actor, opts) end) end)
+  end
+
+  defp read_section(term, actor, bot_filter, section, position, limit) do
+    indexed = fn ->
+      section_query(term, actor, bot_filter, section, position, :indexed)
+      |> Ash.Query.limit(limit)
+      |> Ash.read!(actor: actor, page: false)
+    end
+
+    if MessageText.indexable_term?(term) do
+      # Select section membership before evaluating text. SQL conjunct order is
+      # not an evaluation barrier, even for a section with only one or two chats.
+      window = max(32, limit * 2)
+
+      candidates =
+        SearchDeadline.query(fn ->
+          section_candidates(actor, bot_filter, section, position)
+          |> Ash.Query.limit(window + 1)
+          |> Ash.read!(actor: actor, page: false)
+        end)
+
+      ids = candidates |> Enum.take(window) |> Enum.map(& &1.id)
+
+      if ids == [] do
+        []
+      else
+        probe =
+          SearchDeadline.probe(fn ->
+            section_query(term, actor, bot_filter, section, position, :correlated)
+            |> Ash.Query.filter(id in ^ids)
+            |> Ash.Query.limit(limit)
+            |> Ash.read!(actor: actor, page: false)
+          end)
+
+        case probe do
+          {:ok, rows} when length(rows) >= limit or length(candidates) <= window -> rows
+          _ -> SearchDeadline.query(indexed)
         end
-
-      %{entries: entries, total: page.count}
+      end
+    else
+      SearchDeadline.query(indexed)
     end
   end
+
+  defp section_query(term, actor, bot_filter, section, position, strategy) do
+    section_candidates(actor, bot_filter, section, position)
+    |> Ash.Query.for_read(:search_list, %{q: term, strategy: strategy}, actor: actor)
+  end
+
+  defp section_candidates(actor, bot_filter, section, position) do
+    Chat
+    |> Ash.Query.filter(owner_id == ^actor.id)
+    |> Listing.apply_hierarchy_filter(actor, section)
+    |> Listing.apply_bot_filter(bot_filter)
+    |> Listing.apply_section(section)
+    |> apply_page_sort(section)
+    |> Ash.Query.select([:id, :updated_at])
+    |> load_cursor_field(section)
+    |> after_position(section, position)
+  end
+
+  defp load_cursor_field(query, "drafts"), do: Ash.Query.load(query, :personal_draft_updated_at)
+  defp load_cursor_field(query, _section), do: query
+  defp after_position(query, _section, nil), do: query
+
+  defp after_position(query, "drafts", {time, id}),
+    do:
+      Ash.Query.filter(
+        query,
+        personal_draft_updated_at < ^time or (personal_draft_updated_at == ^time and id < ^id)
+      )
+
+  defp after_position(query, _section, {time, id}),
+    do: Ash.Query.filter(query, updated_at < ^time or (updated_at == ^time and id < ^id))
+
+  defp cursor_scope(term, actor, bot_filter, section, per_page),
+    do:
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary({term, actor.id, bot_filter, section, per_page})
+      )
+
+  defp encode_cursor(chat, section, scope) do
+    time = if section == "drafts", do: chat.personal_draft_updated_at, else: chat.updated_at
+
+    Phoenix.Token.sign(
+      IntellectualClubWeb.Endpoint,
+      "chat-search-page-v1",
+      {scope, datetime_iso(time), chat.id}
+    )
+  end
+
+  defp decode_cursor(nil, _scope, 1), do: nil
+
+  defp decode_cursor(cursor, scope, _number)
+       when is_binary(cursor) and byte_size(cursor) <= 2048 do
+    with {:ok, {^scope, time, id}} when is_integer(id) and id > 0 and is_binary(time) <-
+           Phoenix.Token.verify(IntellectualClubWeb.Endpoint, "chat-search-page-v1", cursor,
+             max_age: 86_400
+           ),
+         {:ok, datetime, 0} <- DateTime.from_iso8601(time) do
+      {datetime, id}
+    else
+      _ -> throw(:invalid_search_cursor)
+    end
+  end
+
+  defp decode_cursor(_cursor, _scope, _number), do: throw(:invalid_search_cursor)
 
   defp apply_page_sort(query, "drafts"),
     do: Listing.apply_section_sort(query, "drafts")
@@ -154,12 +290,24 @@ defmodule IntellectualClub.Chat.Search do
 
   @spec search_chats(String.t() | nil, any(), keyword()) :: list(chat_search_entry())
   def search_chats(term, actor, opts \\ []) when is_list(opts) do
+    case Keyword.get(opts, :chat_ids) do
+      ids when is_list(ids) ->
+        page_entries(normalize_term(term), actor, Keyword.get(opts, :bot_filter), ids)
+
+      _ ->
+        search_flat_chats(term, actor, opts)
+    end
+  end
+
+  defp search_flat_chats(term, actor, opts) do
     term = normalize_term(term)
 
     if term == "" do
       []
     else
-      search = message_content_search(term)
+      search =
+        if MessageText.indexable_term?(term), do: message_content_search(term), else: :empty
+
       bot_filter = Keyword.get(opts, :bot_filter)
 
       scoped_ids = Keyword.get(opts, :chat_ids)
@@ -329,6 +477,75 @@ defmodule IntellectualClub.Chat.Search do
     end
   end
 
+  defp page_entries(_term, _actor, _bot_filter, []), do: []
+
+  defp page_entries(term, actor, bot_filter, ids) do
+    meta_chats = search_meta_chats(term, bot_filter, nil, actor, ids)
+    meta_ids = MapSet.new(meta_chats, & &1.id)
+    other_ids = Enum.reject(ids, &MapSet.member?(meta_ids, &1))
+    chats = load_chats_by_ids(other_ids, nil, actor)
+    active_ids = Threads.active_branch_ids_by_chat(other_ids, actor)
+    summaries = Threads.active_branch_summaries_by_chat(ids, actor)
+
+    previews =
+      Listing.active_root_message_previews(meta_chats, summaries, @snippet_preview_limit, actor)
+
+    messages =
+      Enum.flat_map(chats, fn chat ->
+        ChatMessage
+        |> Ash.Query.for_read(
+          :list_search_hit,
+          %{
+            q: term,
+            chat_id: chat.id,
+            active_ids: MapSet.to_list(Map.get(active_ids, chat.id, MapSet.new()))
+          },
+          actor: actor
+        )
+        |> Ash.Query.select([:id, :chat_id, :role, :created_at])
+        |> Ash.read!(actor: actor, page: false)
+      end)
+
+    snippets = MessageText.load_snippets(messages, {:contains, term}, actor)
+    message_by_chat = Map.new(messages, &{&1.chat_id, &1})
+
+    by_id =
+      Map.new(meta_chats ++ chats, fn chat ->
+        message = Map.get(message_by_chat, chat.id)
+
+        entry =
+          cond do
+            MapSet.member?(meta_ids, chat.id) ->
+              {preview, _role} = Map.get(previews, chat.id, {nil, nil})
+              %{match_type: :meta, snippet: preview, message_id: nil, message_role: nil}
+
+            message ->
+              active? = MapSet.member?(Map.get(active_ids, chat.id, MapSet.new()), message.id)
+
+              %{
+                match_type: if(active?, do: :active_message, else: :inactive_message),
+                snippet: snippets[message.id],
+                message_id: message.id,
+                message_role: role_to_string(message.role)
+              }
+
+            true ->
+              nil
+          end
+
+        {chat.id,
+         if(entry,
+           do:
+             Map.merge(entry, %{
+               chat: chat,
+               message_count: get_in(summaries, [chat.id, :message_count]) || 0
+             })
+         )}
+      end)
+
+    Enum.flat_map(ids, &List.wrap(by_id[&1]))
+  end
+
   defp remaining_limit(nil, _used), do: nil
   defp remaining_limit(limit, used), do: max(limit - used, 0)
 
@@ -378,13 +595,15 @@ defmodule IntellectualClub.Chat.Search do
     do: Listing.apply_hierarchy_filter(query, actor, nil)
 
   defp search_meta_chats(term, bot_filter, limit, actor, scoped_ids) do
-    term = contains_query_term(term)
+    pattern = MessageText.like_pattern(term)
 
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> apply_search_hierarchy(actor, scoped_ids)
     |> maybe_filter_chat_ids(scoped_ids, :id)
-    |> Ash.Query.filter(contains(note, ^term) or exists(bot, contains(name, ^term)))
+    |> Ash.Query.filter(
+      fragment("? ILIKE ?", note, ^pattern) or exists(bot, fragment("? ILIKE ?", name, ^pattern))
+    )
     |> apply_bot_filter(bot_filter)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(limit)
@@ -421,8 +640,8 @@ defmodule IntellectualClub.Chat.Search do
     scoped? = is_list(scoped_ids)
 
     ChatMessage
+    |> MessageText.filter(search, owner_id: actor.id)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
-    |> Ash.Query.for_read(:search, %{q: elem(search, 1)}, actor: actor)
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Ash.Query.filter(
       ^scoped? or
@@ -521,9 +740,5 @@ defmodule IntellectualClub.Chat.Search do
       llm_configuration: [:model_name, :note, :provider]
     ])
     |> Ash.read!(actor: actor)
-  end
-
-  defp contains_query_term(term) when is_binary(term) do
-    CiString.new(term)
   end
 end

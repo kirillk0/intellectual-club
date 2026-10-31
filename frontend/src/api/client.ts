@@ -149,7 +149,8 @@ function buildHttpErrorMessage(params: {
 
 export type ApiRequestOptions = RequestInit & {
   redirectOnUnauthorized?: boolean;
-  showErrorBanner?: boolean;
+  // A predicate keeps the banner for unexpected failures while the caller reports selected errors inline.
+  showErrorBanner?: boolean | ((error: unknown) => boolean);
   statusBannerKey?: string;
   invalidateServerState?: boolean;
   timeoutMs?: number | null;
@@ -539,6 +540,8 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   const resolvedStatusBannerKey = statusBannerKey || `${method}:${bannerPath}`;
   const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
   const showErrorBanner = requestedShowErrorBanner ?? isWrite;
+  const shouldShowErrorBanner = (error: unknown) =>
+    typeof showErrorBanner === 'function' ? showErrorBanner(error) : showErrorBanner;
   const resolvedTimeoutMs = resolveTimeoutMs(timeoutMs, isWrite);
   const resolvedRetry = resolveRetryOptions(retry, isWrite);
   const isFormData =
@@ -574,7 +577,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
         continue;
       }
 
-      if (showErrorBanner) {
+      if (shouldShowErrorBanner(error)) {
         showBackendStatusBanner({
           title: translate('Connection problem'),
           message: buildNetworkBannerMessage(error),
@@ -596,13 +599,17 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
         window.location.assign('/login');
       }
 
+      const bannerAllowed = shouldShowErrorBanner(error);
       const httpBanner =
-        showErrorBanner && !(response.status === 401 && redirectOnUnauthorized)
+        bannerAllowed && !(response.status === 401 && redirectOnUnauthorized)
           ? buildHttpBanner(error)
           : null;
 
       if (httpBanner) {
         showBackendStatusBanner(httpBanner, resolvedStatusBannerKey);
+      } else if (showErrorBanner && !bannerAllowed) {
+        // The server answered and the caller handles this error inline, so an older incident is stale.
+        clearBackendStatusBanner(resolvedStatusBannerKey);
       }
 
       throw error;

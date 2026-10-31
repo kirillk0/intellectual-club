@@ -10,14 +10,20 @@ defmodule IntellectualClubWeb.SpaController do
   def index(conn, _params) do
     case conn.assigns[:current_user] do
       nil ->
-        if login_path?(conn) do
-          conn
-          |> render_shell(nil)
-        else
-          conn
-          |> put_session(:return_to, current_path(conn))
-          |> redirect(to: ~p"/login?next=#{current_path(conn)}")
-          |> halt()
+        cond do
+          # The session could not be verified right now: serve the shell that
+          # bootstraps the session over the API, which retries until it can.
+          conn.assigns[:session_unavailable] ->
+            bootstrap_shell(conn)
+
+          login_path?(conn) ->
+            render_shell(conn, nil)
+
+          true ->
+            conn
+            |> put_session(:return_to, current_path(conn))
+            |> redirect(to: ~p"/login?next=#{current_path(conn)}")
+            |> halt()
         end
 
       user ->
@@ -26,7 +32,9 @@ defmodule IntellectualClubWeb.SpaController do
     end
   end
 
-  def app_shell(conn, _params) do
+  def app_shell(conn, _params), do: bootstrap_shell(conn)
+
+  defp bootstrap_shell(conn) do
     conn
     |> put_resp_header("cache-control", "no-store")
     |> assign(:spa, true)

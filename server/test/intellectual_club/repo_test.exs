@@ -139,4 +139,57 @@ defmodule IntellectualClub.RepoTest do
       end
     end
   end
+
+  describe "with_statement_timeout/2" do
+    test "returns the result and restores the enclosing transaction's settings" do
+      before = Repo.query!("SELECT current_setting('statement_timeout'), current_setting('jit')")
+
+      assert {:ok, ["5s", "off"]} =
+               Repo.with_statement_timeout(5_000, fn ->
+                 Repo.query!(
+                   "SELECT current_setting('statement_timeout'), current_setting('jit')"
+                 ).rows
+                 |> hd()
+               end)
+
+      assert Repo.query!("SELECT current_setting('statement_timeout'), current_setting('jit')").rows ==
+               before.rows
+    end
+
+    test "cancels a statement that runs past the timeout and keeps the connection usable" do
+      before = Repo.query!("SELECT current_setting('statement_timeout')").rows
+
+      assert {:error, :statement_timeout} =
+               Repo.with_statement_timeout(10, fn -> Repo.query!("SELECT pg_sleep(5)") end)
+
+      assert Repo.query!("SELECT current_setting('statement_timeout')").rows == before
+      assert %{rows: [[1]]} = Repo.query!("SELECT 1")
+    end
+
+    test "remembers cancellation even when an optional loader handles the original error" do
+      assert {:error, :statement_timeout} =
+               Repo.with_statement_timeout(10, fn ->
+                 assert {:error, _} = Repo.query("SELECT pg_sleep(1)")
+                 Repo.query!("SELECT 1")
+               end)
+
+      assert %{rows: [[1]]} = Repo.query!("SELECT 1")
+      assert {:ok, :next} = Repo.with_statement_timeout(1_000, fn -> :next end)
+    end
+
+    test "does not classify a handled non-timeout SQL error as cancellation" do
+      assert_raise Postgrex.Error, ~r/in_failed_sql_transaction/, fn ->
+        Repo.with_statement_timeout(1_000, fn ->
+          assert {:error, _} = Repo.query("SELECT 1 / 0")
+          Repo.query!("SELECT 1")
+        end)
+      end
+    end
+
+    test "re-raises errors other than statement cancellation" do
+      assert_raise Postgrex.Error, ~r/division_by_zero/, fn ->
+        Repo.with_statement_timeout(5_000, fn -> Repo.query!("SELECT 1 / 0") end)
+      end
+    end
+  end
 end

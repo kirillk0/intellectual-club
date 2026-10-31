@@ -202,6 +202,14 @@ defmodule IntellectualClub.Chat.ChatMessage do
   actions do
     defaults([:read])
 
+    read :list_search_hit do
+      description("One preferred matching message in an owned chat, without loading all hits.")
+      argument :q, :string, allow_nil?: false
+      argument :chat_id, :integer, allow_nil?: false
+      argument :active_ids, {:array, :integer}, allow_nil?: false
+      prepare {IntellectualClub.Chat.Preparations.SearchChatList, message?: true}
+    end
+
     read :search do
       description(
         "Search user-facing message text by case-insensitive literal substring. Returns every matching stored message, including inactive branches, without UI ranking or grouping."

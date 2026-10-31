@@ -37,13 +37,13 @@ defmodule IntellectualClub.Chat.Previews do
     end
   end
 
+  @doc false
+  def regular_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  def regular_item_types(:assistant), do: [:answer, :handoff_summary]
+  def regular_item_types(_role), do: []
+
   defp regular_message_preview_text(%ChatMessage{} = message) do
-    wanted_types =
-      case message.role do
-        :user -> [:input, :handoff_request, :handoff_context]
-        :assistant -> [:answer, :handoff_summary]
-        _ -> []
-      end
+    wanted_types = regular_item_types(message.role)
 
     {texts, media_count} =
       message.steps
@@ -59,7 +59,7 @@ defmodule IntellectualClub.Chat.Previews do
           contents
           |> Enum.filter(fn %ChatMessageContent{} = content -> content.kind == :text end)
           |> Enum.sort_by(& &1.sequence)
-          |> Enum.map_join("", & &1.content_text)
+          |> Enum.map_join("", &preview_text/1)
 
         item_media_count =
           Enum.count(contents, fn %ChatMessageContent{} = content -> content.kind == :media end)
@@ -117,10 +117,10 @@ defmodule IntellectualClub.Chat.Previews do
     items
     |> Enum.flat_map(fn item -> Enum.sort_by(item.contents, & &1.sequence) end)
     |> Enum.find_value(fn content ->
-      metadata = if is_map(content.content_json), do: content.content_json, else: %{}
+      metadata = preview_metadata(content)
       entry_kind = Map.get(metadata, "entry_kind", Map.get(metadata, :entry_kind))
       role = Map.get(metadata, "role", Map.get(metadata, :role))
-      text = to_string(content.content_text || "") |> String.trim()
+      text = content |> preview_text() |> String.trim()
 
       if content.kind == :text and entry_kind == "message" and text != "" do
         {text, message_role(role)}
@@ -133,10 +133,24 @@ defmodule IntellectualClub.Chat.Previews do
       items
       |> Enum.flat_map(fn item -> Enum.sort_by(item.contents, & &1.sequence) end)
       |> Enum.filter(&(&1.kind == :text))
-      |> Enum.map_join("", &to_string(&1.content_text || ""))
+      |> Enum.map_join("", &preview_text/1)
       |> String.trim()
 
     if text == "", do: {"", "user"}, else: {text, "user"}
+  end
+
+  defp preview_text(%ChatMessageContent{} = content) do
+    content.calculations
+    |> Map.get(:preview_text, content.content_text)
+    |> Kernel.||("")
+    |> to_string()
+  end
+
+  defp preview_metadata(%ChatMessageContent{} = content) do
+    case Map.get(content.calculations, :preview_metadata, content.content_json) do
+      metadata when is_map(metadata) -> metadata
+      _ -> %{}
+    end
   end
 
   defp message_role(:user), do: "user"

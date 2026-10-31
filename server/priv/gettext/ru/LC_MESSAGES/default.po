@@ -8,6 +8,9 @@ msgstr "Требуется вход."
 msgid "Forbidden"
 msgstr "Недостаточно прав."
 
+msgid "Service temporarily unavailable. Please try again."
+msgstr "Сервис временно недоступен. Попробуйте ещё раз."
+
 msgid "Not found"
 msgstr "Не найдено."
 
@@ -52,3 +55,6 @@ msgstr "Раздел"
 
 msgid "Data"
 msgstr "Данные"
+
+msgid "Search took too long. Try a more specific query."
+msgstr "Поиск занял слишком много времени. Уточните запрос."

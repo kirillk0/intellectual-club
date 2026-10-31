@@ -11,28 +11,17 @@ defmodule IntellectualClubWeb.Bff.SessionController do
   alias IntellectualClubWeb.Bff.Serializer
 
   def bootstrap(conn, _params) do
-    user =
-      case Helpers.current_user(conn) do
-        {:ok, user} -> Serializer.user(user)
-        {:error, _reason} -> nil
-      end
-
-    json(conn, %{
-      user: user,
-      csrf_token: Plug.CSRFProtection.get_csrf_token()
-    })
+    case Helpers.current_user(conn) do
+      {:ok, user} -> render_bootstrap(conn, Serializer.user(user))
+      {:error, :unavailable} -> Helpers.render_unavailable(conn)
+      {:error, _reason} -> render_bootstrap(conn, nil)
+    end
   end
 
   def show(conn, _params) do
-    case Helpers.current_user(conn) do
-      {:ok, user} ->
-        json(conn, %{user: Serializer.user(user)})
-
-      {:error, _reason} ->
-        case Helpers.require_actor(conn) do
-          {:error, conn} -> conn
-          {:ok, user} -> json(conn, %{user: Serializer.user(user)})
-        end
+    case Helpers.require_actor(conn) do
+      {:ok, user} -> json(conn, %{user: Serializer.user(user)})
+      {:error, conn} -> conn
     end
   end
 
@@ -62,6 +51,13 @@ defmodule IntellectualClubWeb.Bff.SessionController do
     conn
     |> AshAuthentication.Phoenix.Controller.clear_session(:intellectual_club)
     |> json(%{detail: "ok"})
+  end
+
+  defp render_bootstrap(conn, user) do
+    json(conn, %{
+      user: user,
+      csrf_token: Plug.CSRFProtection.get_csrf_token()
+    })
   end
 
   defp invalid_credentials(conn) do

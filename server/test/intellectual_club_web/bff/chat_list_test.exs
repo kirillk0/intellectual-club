@@ -11,6 +11,9 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.Handoff
+  alias IntellectualClub.Chat.Listing
+  alias IntellectualClub.Chat.Previews
+  alias IntellectualClub.SqlCapture
   alias IntellectualClub.Chat.Threads
 
   describe "personal draft section" do
@@ -39,7 +42,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
         params = %{section: "drafts", q: "draft-match", per_page: 1, bot: "none"}
-        page = conn |> get(path, params) |> json_response(200)
+        page = section_page(conn, path, params)
         assert page["page"]["total"] == 2
         assert page["page"]["has_next"]
 
@@ -49,7 +52,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         assert id == first.id
         assert is_binary(saved_at)
         refute Jason.encode!(page) =~ "private unfinished text"
-        next = conn |> get(path, Map.put(params, :page, 2)) |> json_response(200)
+        next = section_page(conn, path, Map.put(params, :page, 2))
         assert [%{"id" => second_id}] = next["chats"]
         assert second_id == second.id
         refute next["page"]["has_next"]
@@ -148,9 +151,10 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert id == child.id
 
       search =
-        conn
-        |> get("/api/bff/chat-list/search", %{section: "drafts", q: "nested-draft-match"})
-        |> json_response(200)
+        section_page(conn, "/api/bff/chat-list/search", %{
+          section: "drafts",
+          q: "nested-draft-match"
+        })
 
       assert [%{"id" => search_id}] = search["chats"]
       assert search_id == child.id
@@ -246,11 +250,11 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
         working =
-          conn |> get(path, %{section: "working", q: "branch-working"}) |> json_response(200)
+          section_page(conn, path, %{section: "working", q: "branch-working"})
 
         assert working["chats"] == []
         assert working["page"]["total"] == 0
-        other = conn |> get(path, %{section: "other", q: "branch-working"}) |> json_response(200)
+        other = section_page(conn, path, %{section: "other", q: "branch-working"})
         assert [%{"id" => id, "active_generation_message_id" => nil}] = other["chats"]
         assert id == chat.id
       end
@@ -327,15 +331,10 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
                )
 
       for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
-        first =
-          conn
-          |> get(path, %{section: "unread", per_page: 2, q: "section-match"})
-          |> json_response(200)
+        first = section_page(conn, path, %{section: "unread", per_page: 2, q: "section-match"})
 
         second =
-          conn
-          |> get(path, %{section: "unread", per_page: 2, page: 2, q: "section-match"})
-          |> json_response(200)
+          section_page(conn, path, %{section: "unread", per_page: 2, page: 2, q: "section-match"})
 
         assert first["page"]["total"] == 3
         assert first["page"]["has_next"]
@@ -344,14 +343,12 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         assert Enum.sort(Enum.map(first["chats"] ++ second["chats"], & &1["id"])) ==
                  Enum.sort(Enum.map(unread, & &1.id))
 
-        active =
-          conn |> get(path, %{section: "working", q: "section-match"}) |> json_response(200)
+        active = section_page(conn, path, %{section: "working", q: "section-match"})
 
         assert Enum.map(active["chats"], & &1["id"]) == [working.id]
         assert hd(active["chats"])["last_message_status"] == "generating"
 
-        inactive =
-          conn |> get(path, %{section: "other", q: "section-match"}) |> json_response(200)
+        inactive = section_page(conn, path, %{section: "other", q: "section-match"})
 
         assert Enum.sort(Enum.map(inactive["chats"], & &1["id"])) ==
                  Enum.sort([other.id, snoozed.id])
@@ -373,6 +370,333 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       changed = conn |> get("/api/bff/chat-list") |> json_response(200)
       assert Enum.map(changed["chats"], & &1["id"]) == ids
+    end
+  end
+
+  describe "active root message previews" do
+    test "keeps role-specific text in step, item and content order" do
+      %{user: actor} = user_fixture()
+
+      for {role, types, ignored_type} <- [
+            {:user, [:input, :handoff_request, :handoff_context], :answer},
+            {:assistant, [:answer, :handoff_summary], :input}
+          ] do
+        chat = create_empty_chat!(actor)
+        message = create_message!(actor, chat, role: role)
+        later_step = create_step!(actor, message, sequence: 2)
+        first_step = create_step!(actor, message, sequence: 1)
+        create_text_item!(actor, later_step, "Later", type: hd(types))
+        create_text_item!(actor, first_step, "Wrong role", type: ignored_type, sequence: 1)
+        create_text_item!(actor, first_step, "Reasoning", type: :reasoning, sequence: 2)
+
+        for {type, sequence} <- Enum.with_index(types, 3) do
+          item = create_item!(actor, first_step, type: type, sequence: sequence)
+          create_content!(actor, item, sequence: 3, content_text: "two")
+          create_content!(actor, item, sequence: 1, content_text: "one\n")
+          create_content!(actor, item, sequence: 2, kind: :opaque, content_text: "Not text")
+          create_content!(actor, item, sequence: 4, kind: :media, content_text: "Not a caption")
+        end
+
+        expected_text = Enum.map_join(types, "  ", fn _ -> "one two" end) <> "  Later"
+        summaries = %{chat.id => %{root_message_id: message.id}}
+
+        assert Listing.active_root_message_previews([chat], summaries, 100, actor) ==
+                 %{chat.id => {expected_text, Atom.to_string(role)}}
+      end
+    end
+
+    test "counts only preview media and keeps empty messages empty" do
+      %{user: actor} = user_fixture()
+
+      for {count, expected} <- [{0, nil}, {1, "Attachment"}, {2, "2 attachments"}] do
+        chat = create_empty_chat!(actor)
+        message = create_message!(actor, chat, role: :user)
+        step = create_step!(actor, message)
+        input = create_item!(actor, step, type: :input)
+        create_content!(actor, input, content_text: " \t\n ")
+        create_content!(actor, input, sequence: 2, kind: :opaque, content_text: "Not text")
+
+        for sequence <- Enum.take([3, 4], count) do
+          create_content!(actor, input, sequence: sequence, kind: :media)
+        end
+
+        ignored = create_item!(actor, step, type: :answer, sequence: 2)
+        create_content!(actor, ignored, kind: :media)
+        summaries = %{chat.id => %{root_message_id: message.id}}
+
+        assert Listing.active_root_message_previews([chat], summaries, 80, actor) ==
+                 %{chat.id => {expected, "user"}}
+      end
+    end
+
+    test "preserves whitespace and Unicode when compacting individual content blocks" do
+      %{user: actor} = user_fixture()
+      spaces = String.duplicate(" \t\r\n\f\v", 2_000)
+      accent = "e\u0301"
+      family = "👩‍👩‍👧‍👦"
+
+      cases = [
+        [[spaces <> "Exact" <> spaces]],
+        [["head", spaces, "tail"]],
+        [[spaces], ["one", "\r\ntwo"], [spaces], ["three"]],
+        [["prefix" <> spaces <> "tail"]],
+        [[spaces, "visible", spaces]],
+        [["a\t" <> spaces, "z"]],
+        [[String.duplicate("x", 200)], ["next"]],
+        [[String.duplicate(accent, 80)]],
+        [["\u00A0\u2003" <> family <> "\nПривет" <> "\u202F"]],
+        [["e", "\u0301", family, "end"]],
+        [["prefix", "\u0301" <> spaces <> "suffix"]]
+      ]
+
+      entries =
+        for items <- cases do
+          chat = create_empty_chat!(actor)
+          message = create_message!(actor, chat, role: :user)
+          step = create_step!(actor, message)
+
+          for {contents, sequence} <- Enum.with_index(items, 1) do
+            item = create_item!(actor, step, type: :input, sequence: sequence)
+
+            for {text, sequence} <- Enum.with_index(contents, 1) do
+              create_content!(actor, item, sequence: sequence, content_text: text)
+            end
+          end
+
+          {chat, Ash.load!(message, [steps: [items: [:contents]]], actor: actor)}
+        end
+
+      chats = Enum.map(entries, &elem(&1, 0))
+
+      summaries =
+        Map.new(entries, fn {chat, message} -> {chat.id, %{root_message_id: message.id}} end)
+
+      for limit <- [1, 5, 12, 80] do
+        expected =
+          Map.new(entries, fn {chat, message} ->
+            {chat.id, Previews.message_preview(message, limit)}
+          end)
+
+        assert Listing.active_root_message_previews(chats, summaries, limit, actor) == expected
+      end
+    end
+
+    test "chooses the first nonblank handoff history message and preserves its role" do
+      %{user: actor} = user_fixture()
+
+      for role <- ["assistant", "user", "system", nil] do
+        chat = create_empty_chat!(actor)
+        message = create_message!(actor, chat, role: :user)
+        later_step = create_step!(actor, message, sequence: 2)
+        first_step = create_step!(actor, message, sequence: 1)
+        later = create_item!(actor, later_step, type: :handoff_history)
+
+        create_content!(actor, later,
+          content_text: "Later history",
+          content_json: %{entry_kind: "message", role: "user"}
+        )
+
+        history = create_item!(actor, first_step, type: :handoff_history, sequence: 2)
+
+        for {kind, text, metadata, sequence} <- [
+              {:text, "Not a message", %{entry_kind: "tool_call"}, 1},
+              {:opaque, "Not text", %{entry_kind: "message", role: "user"}, 2},
+              {:text, " \t\n", %{entry_kind: "message", role: "user"}, 3},
+              {:text, "  Opening\nmessage  ", %{entry_kind: "message", role: role}, 4}
+            ] do
+          create_content!(actor, history,
+            sequence: sequence,
+            kind: kind,
+            content_text: text,
+            content_json: metadata
+          )
+        end
+
+        create_text_item!(actor, first_step, "Fallback", type: :handoff_message, sequence: 1)
+        create_text_item!(actor, first_step, "Regular input", type: :input, sequence: 3)
+        expected_role = if role in ["assistant", "user"], do: role
+        summaries = %{chat.id => %{root_message_id: message.id}}
+
+        assert Listing.active_root_message_previews([chat], summaries, 80, actor) ==
+                 %{chat.id => {"Opening message", expected_role}}
+      end
+    end
+
+    test "keeps ordered handoff fallback text and the empty structured user role" do
+      %{user: actor} = user_fixture()
+
+      for fallback? <- [true, false] do
+        chat = create_empty_chat!(actor)
+        message = create_message!(actor, chat, role: :assistant)
+        later_step = create_step!(actor, message, sequence: 2)
+        first_step = create_step!(actor, message, sequence: 1)
+        history = create_item!(actor, first_step, type: :handoff_history)
+        create_content!(actor, history, content_text: "Not history", content_json: %{})
+        create_text_item!(actor, first_step, "Not the fallback", type: :answer, sequence: 2)
+
+        if fallback? do
+          create_text_item!(actor, later_step, " tail ", type: :handoff_message)
+          fallback = create_item!(actor, first_step, type: :handoff_message, sequence: 3)
+          create_content!(actor, fallback, sequence: 2, content_text: "\nbody")
+          create_content!(actor, fallback, sequence: 1, content_text: "  First")
+          create_content!(actor, fallback, sequence: 3, kind: :opaque, content_text: "Not text")
+        end
+
+        expected_text = if fallback?, do: "First body tail"
+        summaries = %{chat.id => %{root_message_id: message.id}}
+
+        assert Listing.active_root_message_previews([chat], summaries, 80, actor) ==
+                 %{chat.id => {expected_text, "user"}}
+      end
+    end
+
+    test "does not load a private root belonging to another actor" do
+      %{user: actor} = user_fixture()
+      %{user: other} = user_fixture()
+      chat = create_empty_chat!(other)
+      message = create_message!(other, chat, role: :user)
+      step = create_step!(other, message)
+      create_text_item!(other, step, "Private input", type: :input)
+      summaries = %{chat.id => %{root_message_id: message.id}}
+
+      assert Listing.active_root_message_previews([chat], summaries, 80, actor) == %{}
+    end
+
+    @tag :whitebox
+    test "batches subchat previews without returning off-preview payloads or full ASCII text" do
+      %{user: actor} = user_fixture()
+      parent = create_empty_chat!(actor)
+      hidden = "off-preview-payload:" <> String.duplicate("z", 20_000)
+
+      text =
+        String.duplicate(" ", 20_000) <>
+          "Visible " <> String.duplicate("x", 40_000) <> "tail-marker"
+
+      entries =
+        for _ <- 1..6 do
+          chat = create_subchat!(actor, parent, :spawn)
+          message = create_message!(actor, chat, error_detail: hidden)
+          step = create_step!(actor, message, raw_response: %{payload: hidden})
+          answer = create_item!(actor, step, type: :answer)
+          create_content!(actor, answer, content_text: text, content_json: %{unused: hidden})
+
+          for {kind, sequence} <- [{:opaque, 2}, {:media, 3}] do
+            create_content!(actor, answer,
+              kind: kind,
+              sequence: sequence,
+              content_text: hidden,
+              content_json: %{payload: hidden}
+            )
+          end
+
+          for {type, sequence} <- [{:input, 2}, {:reasoning, 3}] do
+            item = create_item!(actor, step, type: type, sequence: sequence)
+            create_content!(actor, item, content_text: hidden, content_json: %{payload: hidden})
+          end
+
+          call = create_item!(actor, step, type: :tool_call, sequence: 4)
+          create_content!(actor, call, kind: :opaque, content_json: %{payload: hidden})
+
+          result =
+            create_item!(actor, step, type: :tool_result, sequence: 5, tool_call_item_id: call.id)
+
+          create_content!(actor, result, content_text: hidden, content_json: %{payload: hidden})
+
+          for sequence <- 2..5 do
+            ignored_step = create_step!(actor, message, sequence: sequence)
+            create_text_item!(actor, ignored_step, hidden, type: :reasoning)
+          end
+
+          {chat, message}
+        end
+
+      chats = Enum.map(entries, &elem(&1, 0))
+
+      summaries =
+        Map.new(entries, fn {chat, message} -> {chat.id, %{root_message_id: message.id}} end)
+
+      {single, one} =
+        SqlCapture.measure(fn ->
+          Listing.active_root_message_previews(Enum.take(chats, 1), summaries, 24, actor)
+        end)
+
+      {previews, batch} =
+        SqlCapture.measure(fn ->
+          Listing.active_root_message_previews(chats, summaries, 24, actor)
+        end)
+
+      assert map_size(single) == 1
+      assert map_size(previews) == length(chats)
+
+      assert Enum.all?(
+               Map.values(previews),
+               &(&1 == {"Visible " <> String.duplicate("x", 16) <> "...", "assistant"})
+             )
+
+      assert length(one.queries) == length(batch.queries)
+      assert length(batch.queries) <= 4
+      assert Enum.all?(batch.queries, &(not &1.unmeasured? and not &1.error?))
+      assert SqlCapture.returned?(batch, "Visible ")
+      refute SqlCapture.returned?(batch, "off-preview-payload:")
+      refute SqlCapture.returned?(batch, "tail-marker")
+      assert Enum.sum(Enum.map(batch.queries, & &1.result_bytes)) < 4_096 * length(chats)
+
+      for {source, rows_per_chat} <- [
+            {"chat_message_steps", 1},
+            {"chat_message_items", 1},
+            {"chat_message_contents", 2}
+          ] do
+        queries = Enum.filter(batch.queries, &(&1.source == source and &1.select?))
+        assert length(queries) == 1
+        assert Enum.sum(Enum.map(queries, & &1.row_count)) == rows_per_chat * length(chats)
+      end
+    end
+
+    @tag :whitebox
+    test "handoff history projects only message text and the recognized role" do
+      %{user: actor} = user_fixture()
+      hidden = "unused-history-payload:" <> String.duplicate("z", 20_000)
+
+      for role <- ["assistant", hidden] do
+        chat = create_empty_chat!(actor)
+        message = create_message!(actor, chat, role: :user)
+        step = create_step!(actor, message)
+        history = create_item!(actor, step, type: :handoff_history)
+
+        create_content!(actor, history,
+          content_text: hidden,
+          content_json: %{entry_kind: "tool_result", payload: hidden}
+        )
+
+        create_content!(actor, history,
+          sequence: 2,
+          kind: :opaque,
+          content_text: hidden,
+          content_json: %{entry_kind: "message", role: "user", payload: hidden}
+        )
+
+        create_content!(actor, history,
+          sequence: 3,
+          content_text: "Opening",
+          content_json: %{entry_kind: "message", role: role, payload: hidden}
+        )
+
+        summaries = %{chat.id => %{root_message_id: message.id}}
+
+        {previews, capture} =
+          SqlCapture.measure(fn ->
+            Listing.active_root_message_previews([chat], summaries, 80, actor)
+          end)
+
+        expected_role = if role == "assistant", do: role
+        assert previews == %{chat.id => {"Opening", expected_role}}
+        assert Enum.all?(capture.queries, &(not &1.unmeasured? and not &1.error?))
+        assert SqlCapture.returned?(capture, "Opening")
+        refute SqlCapture.returned?(capture, "unused-history-payload:")
+        assert Enum.sum(Enum.map(capture.queries, & &1.result_bytes)) < 4_096
+        assert [contents] = Enum.filter(capture.queries, &(&1.source == "chat_message_contents"))
+        assert contents.row_count == 1
+      end
     end
   end
 
@@ -1025,6 +1349,9 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert nav_chat_ids(search_target_summary) == [source.id, target.id]
     end
   end
+
+  # The singular section contract remains compatible with already-open clients.
+  defp section_page(conn, path, params), do: conn |> get(path, params) |> json_response(200)
 
   defp chat_ids(payload) do
     payload

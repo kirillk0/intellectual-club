@@ -5,9 +5,9 @@ defmodule IntellectualClub.Chat.MessageText do
   deliberately excluded. Matching is within individual stored text contents.
   """
 
-  alias Ash.CiString
   alias IntellectualClub.Chat.{ChatMessageContent, ChatMessageItem, ChatMessageStep}
   require Ash.Query
+  require Ash.Expr
 
   @snippet_radius 240
   @trace_read_chunk_size 200
@@ -21,24 +21,52 @@ defmodule IntellectualClub.Chat.MessageText do
     :handoff_summary
   ]
 
-  def filter(query, {:contains, term}) when is_binary(term) do
-    term = contains_query_term(term)
+  @doc """
+  Filters `ChatMessage` queries to messages whose user-facing text contains
+  `term` (case-insensitive literal substring).
 
-    Ash.Query.filter(
-      query,
-      exists(
-        steps,
+  The partial trigram index is over raw `content_text`. Its kind and item-type
+  predicates must be present so PostgreSQL can use it for ILIKE rechecks.
+  """
+  def filter(query, search, opts \\ [])
+
+  def filter(query, {:contains, term}, opts) when is_binary(term) do
+    pattern = like_pattern(term)
+    owner_id = Keyword.get(opts, :owner_id)
+    content_owner = if owner_id, do: Ash.Expr.expr(owner_id == ^owner_id), else: true
+
+    query =
+      Ash.Query.filter(
+        query,
         exists(
-          items,
-          type in ^@searchable_trace_item_types and
-            exists(
-              contents,
-              item_type in ^@searchable_trace_item_types and kind == :text and
-                contains(content_text, ^term)
-            )
+          steps,
+          exists(
+            items,
+            type in ^@searchable_trace_item_types and
+              exists(
+                contents,
+                kind == :text and item_type in ^@searchable_trace_item_types and
+                  ^content_owner and fragment("? ILIKE ?", content_text, ^pattern)
+              )
+          )
         )
       )
-    )
+
+    if owner_id, do: Ash.Query.filter(query, owner_id == ^owner_id), else: query
+  end
+
+  @doc """
+  Whether `term` has a run of at least three letters or digits.
+
+  Trigram indexes can only narrow substring matches for such terms; anything
+  shorter would have to scan every stored text.
+  """
+  def indexable_term?(term) when is_binary(term), do: Regex.match?(~r/[\p{L}\p{N}]{3}/u, term)
+  def indexable_term?(_term), do: false
+
+  def like_pattern(term) do
+    escaped = String.replace(term, ["\\", "%", "_"], fn char -> "\\" <> char end)
+    "%" <> escaped <> "%"
   end
 
   def load_texts([], _actor), do: %{}
@@ -226,7 +254,7 @@ defmodule IntellectualClub.Chat.MessageText do
 
   defp read_matching_text_contents_for_items(item_ids, {:contains, term}, actor)
        when is_list(item_ids) and is_binary(term) do
-    term = contains_query_term(term)
+    pattern = like_pattern(term)
 
     item_ids
     |> chunk_ids()
@@ -234,7 +262,7 @@ defmodule IntellectualClub.Chat.MessageText do
       ChatMessageContent
       |> Ash.Query.filter(
         chat_message_item_id in ^chunk and item_type in ^@searchable_trace_item_types and
-          kind == :text and contains(content_text, ^term)
+          kind == :text and fragment("? ILIKE ?", content_text, ^pattern)
       )
       |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
       |> Ash.read!(actor: actor)
@@ -341,5 +369,4 @@ defmodule IntellectualClub.Chat.MessageText do
   end
 
   defp normalize_term(term), do: term |> to_string() |> String.trim()
-  defp contains_query_term(term), do: CiString.new(term)
 end
