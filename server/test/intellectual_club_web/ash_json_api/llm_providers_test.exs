@@ -9,6 +9,7 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
   import IntellectualClubWeb.AshJsonApiContract
 
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.Llm.LlmConfiguration
 
   @secret_keys ["api_key", "oauth_refresh_token"]
 
@@ -51,6 +52,74 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
       assert attributes["shared_outgoing"] == true
       assert attributes["credentials_present"] == ["oauth_refresh_token"]
       for key <- @secret_keys, do: refute(Map.has_key?(attributes, key))
+    end
+  end
+
+  describe "DELETE /api/ash/llm-providers/:id" do
+    test "lists every dependent configuration and preserves the provider and configurations" do
+      %{user: owner} = owner_fixture = user_fixture()
+      provider = create_provider!(owner)
+
+      first =
+        create_configuration!(owner,
+          provider: provider,
+          model_name: "shared-model",
+          note: "Main configuration"
+        )
+
+      second =
+        create_configuration!(owner,
+          provider: provider,
+          model_name: "shared-model",
+          note: "  ",
+          enabled: false
+        )
+
+      unrelated = create_configuration!(owner, model_name: "unrelated-model")
+
+      conn =
+        owner_fixture
+        |> signed_in()
+        |> json_api_delete("/api/ash/llm-providers/#{provider.id}")
+
+      assert assert_invalid!(conn) == [
+               "Cannot delete provider. It is used by configurations: " <>
+                 "##{first.id} — shared-model (Main configuration); ##{second.id} — shared-model"
+             ]
+
+      assert Ash.get!(LlmProvider, provider.id, actor: owner)
+      assert Ash.get!(LlmConfiguration, first.id, actor: owner)
+      assert Ash.get!(LlmConfiguration, second.id, actor: owner)
+      assert Ash.get!(LlmConfiguration, unrelated.id, actor: owner)
+    end
+
+    test "deletes a provider after its last configuration is deleted" do
+      %{user: owner} = owner_fixture = user_fixture()
+      provider = create_provider!(owner)
+      configuration = create_configuration!(owner, provider: provider)
+
+      delete!(owner_fixture, "/api/ash/llm-configurations/#{configuration.id}")
+      delete!(owner_fixture, "/api/ash/llm-providers/#{provider.id}")
+
+      assert_not_found(LlmProvider, provider.id, actor: owner)
+    end
+
+    test "rejects deletion by a shared recipient without disclosing configuration details" do
+      %{user: owner} = user_fixture()
+      %{user: recipient} = recipient_fixture = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, recipient]})
+      provider = create_provider!(owner)
+      configuration = create_configuration!(owner, provider: provider, note: "Private note")
+      share_configuration!(owner, configuration, group)
+
+      conn =
+        recipient_fixture
+        |> signed_in()
+        |> json_api_delete("/api/ash/llm-providers/#{provider.id}")
+
+      assert conn.status == 403
+      refute conn.resp_body =~ "Private note"
+      assert Ash.get!(LlmProvider, provider.id, actor: owner)
     end
   end
 

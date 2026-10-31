@@ -10,6 +10,9 @@ defmodule IntellectualClub.Llm.LlmProvider do
 
   alias IntellectualClub.Duplication
   alias IntellectualClub.Llm.Changes.ValidateProviderAuth
+  alias IntellectualClub.Llm.LlmConfiguration
+
+  require Ash.Query
 
   postgres do
     table("llm_providers")
@@ -112,7 +115,37 @@ defmodule IntellectualClub.Llm.LlmProvider do
   end
 
   actions do
-    defaults([:read, :destroy])
+    defaults([:read])
+
+    destroy :destroy do
+      primary?(true)
+      require_atomic?(false)
+
+      change fn changeset, context ->
+        Ash.Changeset.before_action(changeset, fn changeset ->
+          query =
+            LlmConfiguration
+            |> Ash.Query.filter(provider_id == ^changeset.data.id)
+            |> Ash.Query.select([:model_name, :note])
+            |> Ash.Query.sort(:id)
+
+          case Ash.read(query, actor: context.actor, authorize?: context.authorize?) do
+            {:ok, []} ->
+              changeset
+
+            {:ok, configurations} ->
+              labels = Enum.map_join(configurations, "; ", &configuration_label/1)
+
+              Ash.Changeset.add_error(changeset,
+                message: "Cannot delete provider. It is used by configurations: #{labels}"
+              )
+
+            {:error, error} ->
+              Ash.Changeset.add_error(changeset, error)
+          end
+        end)
+      end
+    end
 
     read :api_read do
       prepare fn query, _context ->
@@ -195,4 +228,10 @@ defmodule IntellectualClub.Llm.LlmProvider do
 
   defp credential_present?(value) when is_binary(value), do: String.trim(value) != ""
   defp credential_present?(_value), do: false
+
+  defp configuration_label(configuration) do
+    note = String.trim(configuration.note || "")
+    label = "##{configuration.id} — #{configuration.model_name}"
+    if note == "", do: label, else: "#{label} (#{note})"
+  end
 end

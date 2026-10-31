@@ -442,6 +442,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
         await stackNav.replace(returnTo.value || options.indexPath);
       }
     } catch (error) {
+      if (errors.setFromApiError(error)) return;
       console.error(error);
       alert('Failed to delete record.');
     } finally {

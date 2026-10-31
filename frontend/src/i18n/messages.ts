@@ -373,6 +373,7 @@ export const ruMessages: Record<string, string> = {
   'Failed to handoff chat.': 'Не удалось выполнить handoff чата.',
   'Failed to delete group.': 'Не удалось удалить группу.',
   'Failed to delete record.': 'Не удалось удалить запись.',
+  'Cannot delete provider. It is used by configurations:': 'Нельзя удалить провайдера. Он используется в конфигурациях:',
   'Failed to delete tag.': 'Не удалось удалить тег.',
   'Failed to delete the message.': 'Не удалось удалить сообщение.',
   'Failed to delete user.': 'Не удалось удалить пользователя.',

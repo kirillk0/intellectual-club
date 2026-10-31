@@ -20,7 +20,9 @@ vi.mock('@/api/jsonApi', async () => {
 });
 
 import type { JsonApiSingleResponse } from '@/api/jsonApi';
+import { HttpError } from '@/api/client';
 import { useCrudEditor } from '@/features/catalogs/model/useCrudEditor';
+import { setPreferredLocale, translate } from '@/i18n';
 import { useNavigationStack } from '@/features/stack/navigationStack';
 import {
   SERVER_STATE_QUERY_ROOT,
@@ -294,6 +296,45 @@ describe('useCrudEditor canonical documents', () => {
     await flushPromises();
 
     expect(editor.remoteUpdateAvailable.value).toBe(false);
+  });
+
+  it('shows deletion error details, keeps the record open and allows retrying', async () => {
+    jsonApiMocks.get.mockResolvedValue(document(1, 'Initial'));
+    const detail = 'Cannot delete provider. It is used by configurations: #42 — model (Main)';
+    jsonApiMocks.remove.mockRejectedValueOnce(new HttpError({
+      status: 400,
+      statusText: 'Bad Request',
+      bodyText: '',
+      bodyJson: { errors: [{ detail }] },
+    }));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    const { editor, router } = await mountEditor();
+    await vi.waitFor(() => expect(editor.loaded.value).toBe(true));
+
+    await editor.remove();
+
+    expect(editor.errors.formErrors.value).toEqual([detail]);
+    expect(editor.deleting.value).toBe(false);
+    expect(editor.form.name).toBe('Initial');
+    expect(router.currentRoute.value.path).toBe('/items/1');
+    expect(alert).not.toHaveBeenCalled();
+
+    setPreferredLocale('ru');
+    try {
+      expect(translate(detail)).toBe(
+        'Нельзя удалить провайдера. Он используется в конфигурациях: #42 — model (Main)'
+      );
+    } finally {
+      setPreferredLocale(null);
+    }
+
+    await editor.remove();
+
+    expect(jsonApiMocks.remove).toHaveBeenCalledTimes(2);
+    expect(editor.errors.formErrors.value).toEqual([]);
+    expect(router.currentRoute.value.path).toBe('/items');
   });
 
   it('disables the deleted detail before broad invalidation can refetch it', async () => {
