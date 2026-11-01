@@ -14,8 +14,9 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.{Chat, ChatMessageContent, ChatMessageItem, Handoff, Previews}
-  alias IntellectualClub.Chat.{Search, Threads}
+  alias IntellectualClub.Chat.{ReadState, Relations, Search, Threads}
   alias IntellectualClub.Sharing
+  alias IntellectualClub.SqlCapture
 
   describe "manual handoff" do
     test "POST /api/bff/chat-generation/:id/handoff persists the summary and creates the child chat",
@@ -777,6 +778,311 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       recipient_conn
       |> get(~p"/api/bff/chat-state/#{target.id}")
       |> response(404)
+    end
+  end
+
+  describe "batched continuation navigation" do
+    test "keeps branched families separate and orders siblings by creation time then id" do
+      %{user: actor} = user_fixture()
+      root = create_empty_chat!(actor)
+      message = create_message!(actor, root, role: :user)
+      earlier = ~U[2026-01-01 00:00:00.000000Z]
+      later = DateTime.add(earlier, 60, :second)
+
+      late_child = create_subchat!(actor, root, :handoff, created_at: later)
+
+      child_a =
+        create_subchat!(actor, root, :handoff,
+          created_at: earlier,
+          parent_message_id: message.id
+        )
+
+      leaf_a = create_subchat!(actor, child_a, :handoff)
+
+      child_b =
+        create_subchat!(actor, root, :handoff,
+          created_at: earlier,
+          parent_message_id: message.id
+        )
+
+      leaf_b = create_subchat!(actor, child_b, :handoff)
+      other_root = create_empty_chat!(actor)
+      other_leaf = create_subchat!(actor, other_root, :handoff)
+      standalone = create_empty_chat!(actor)
+      seeds = [leaf_b, other_leaf, late_child, leaf_a, root, standalone, leaf_b]
+      navs = Relations.continuation_navs(seeds, actor)
+
+      expected = [
+        {root.id, "1", nil, nil},
+        {child_a.id, "2a", :handoff, message.id},
+        {leaf_a.id, "3a", :handoff, nil},
+        {child_b.id, "2b", :handoff, message.id},
+        {leaf_b.id, "3b", :handoff, nil},
+        {late_child.id, "2c", :handoff, nil}
+      ]
+
+      assert MapSet.new(Map.keys(navs)) == MapSet.new(seeds, & &1.id)
+
+      for seed <- [root, leaf_a, leaf_b, late_child] do
+        assert Enum.map(navs[seed.id], &{&1.chat.id, &1.label, &1.kind, &1.message_id}) ==
+                 expected
+
+        assert Relations.continuation_nav(seed, actor) == navs[seed.id]
+      end
+
+      assert Enum.map(navs[other_leaf.id], &{&1.chat.id, &1.label}) ==
+               [{other_root.id, "1"}, {other_leaf.id, "2"}]
+
+      assert navs[standalone.id] == []
+      assert Relations.continuation_nav(standalone, actor) == []
+      assert Relations.continuation_nav(nil, actor) == []
+      assert Relations.continuation_navs([], actor) == %{}
+    end
+
+    test "starts a separate handoff family at fork and spawn boundaries" do
+      %{user: actor} = user_fixture()
+      root = create_empty_chat!(actor)
+      leaf = create_subchat!(actor, root, :handoff)
+
+      for kind <- [:fork, :spawn] do
+        subchat = create_subchat!(actor, leaf, kind)
+        continuation = create_subchat!(actor, subchat, :handoff)
+        navs = Relations.continuation_navs([root, leaf, subchat, continuation], actor)
+
+        for seed <- [root, leaf] do
+          assert Enum.map(navs[seed.id], &{&1.chat.id, &1.label}) ==
+                   [{root.id, "1"}, {leaf.id, "2"}]
+        end
+
+        for seed <- [subchat, continuation] do
+          assert Enum.map(navs[seed.id], &{&1.chat.id, &1.label, &1.kind}) ==
+                   [{subchat.id, "1", kind}, {continuation.id, "2", :handoff}]
+        end
+      end
+    end
+
+    test "reloads shared navigation and personal read state for the requesting actor" do
+      %{user: owner} = user_fixture()
+      %{user: viewer} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, viewer]})
+      bot = create_bot!(owner)
+      configuration = create_configuration!(owner)
+      share_bot!(owner, bot, group)
+      share_configuration!(owner, configuration, group)
+      attrs = [bot_id: bot.id, llm_configuration_id: configuration.id]
+      root = create_empty_chat!(owner, attrs)
+      shared_leaf = create_subchat!(owner, root, :handoff, attrs)
+      private_leaf = create_subchat!(owner, root, :handoff, attrs)
+
+      for chat <- [root, shared_leaf], do: share_chat!(owner, chat, group)
+
+      for {actor, chat} <- [{owner, root}, {viewer, shared_leaf}] do
+        assert {:ok, %{conflict: false}} =
+                 ReadState.mutate(
+                   chat.id,
+                   %{"action" => "unread", "expected_state_version" => 0},
+                   actor
+                 )
+      end
+
+      owner_navs = Relations.continuation_navs([root, shared_leaf, private_leaf], owner)
+      owner_chats = Enum.map(owner_navs[root.id], & &1.chat)
+      viewer_navs = Relations.continuation_navs(owner_chats, viewer)
+
+      assert Enum.map(owner_navs[root.id], & &1.chat.id) ==
+               [root.id, shared_leaf.id, private_leaf.id]
+
+      assert Map.get(viewer_navs, private_leaf.id, []) == []
+
+      for seed <- [root, shared_leaf] do
+        assert Enum.map(viewer_navs[seed.id], &{&1.chat.id, &1.label}) ==
+                 [{root.id, "1"}, {shared_leaf.id, "2"}]
+
+        states = Map.new(viewer_navs[seed.id], &{&1.chat.id, &1.chat.read_state})
+        refute states[root.id].is_unread
+        assert states[root.id].state_version == 0
+        assert states[shared_leaf.id].is_unread
+        assert states[shared_leaf.id].state_version == 1
+        assert Enum.all?(viewer_navs[seed.id], &(&1.chat.bot.id == bot.id))
+      end
+
+      owner_states = Map.new(owner_navs[root.id], &{&1.chat.id, &1.chat.read_state})
+      assert owner_states[root.id].is_unread
+      refute owner_states[shared_leaf.id].is_unread
+      assert Relations.continuation_navs([root, shared_leaf, private_leaf], owner) == owner_navs
+    end
+
+    test "does not connect visible descendants through an unreadable ancestor or seed" do
+      %{user: owner} = user_fixture()
+      %{user: viewer} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, viewer]})
+      bot = create_bot!(owner)
+      configuration = create_configuration!(owner)
+      share_bot!(owner, bot, group)
+      share_configuration!(owner, configuration, group)
+      attrs = [bot_id: bot.id, llm_configuration_id: configuration.id]
+      root = create_empty_chat!(owner, attrs)
+      hidden = create_subchat!(owner, root, :handoff, attrs)
+      visible = create_subchat!(owner, hidden, :handoff, attrs)
+      leaf = create_subchat!(owner, visible, :handoff, attrs)
+
+      for chat <- [root, visible, leaf], do: share_chat!(owner, chat, group)
+
+      navs = Relations.continuation_navs([root, hidden, visible, leaf], viewer)
+      assert navs[root.id] == []
+      assert Map.get(navs, hidden.id, []) == []
+      assert Relations.continuation_nav(hidden, viewer) == []
+
+      for seed <- [visible, leaf] do
+        assert Enum.map(navs[seed.id], &{&1.chat.id, &1.label}) ==
+                 [{visible.id, "1"}, {leaf.id, "2"}]
+      end
+    end
+
+    test "terminates cyclic handoff families without duplicate navigation entries" do
+      %{user: actor} = user_fixture()
+      first = create_empty_chat!(actor)
+      second = create_subchat!(actor, first, :handoff)
+
+      first =
+        first
+        |> Ash.Changeset.for_update(
+          :update,
+          %{parent_chat_id: second.id, parent_relation_kind: :handoff},
+          actor: actor
+        )
+        |> Ash.update!(actor: actor)
+
+      navs = Relations.continuation_navs([first, second], actor)
+
+      for seed <- [first, second] do
+        ids = Enum.map(navs[seed.id], & &1.chat.id)
+        assert Enum.sort(ids) == Enum.sort([first.id, second.id])
+        assert length(ids) == length(Enum.uniq(ids))
+      end
+    end
+
+    @tag :whitebox
+    test "query count does not grow with independent families of the same depth" do
+      %{user: actor} = user_fixture()
+      bot = create_bot!(actor)
+
+      families =
+        for _ <- 1..6 do
+          root = create_empty_chat!(actor, bot_id: bot.id)
+          middle = create_subchat!(actor, root, :handoff, bot_id: bot.id)
+          leaf = create_subchat!(actor, middle, :handoff, bot_id: bot.id)
+          {:ok, _message} = Threads.add_message_to_end(leaf, :user, "Leaf", actor: actor)
+          {root, middle, leaf}
+        end
+
+      seeds = Enum.map(families, &elem(&1, 2))
+
+      {single, one} =
+        SqlCapture.measure(fn -> Relations.continuation_navs(Enum.take(seeds, 1), actor) end)
+
+      {navs, many} = SqlCapture.measure(fn -> Relations.continuation_navs(seeds, actor) end)
+
+      assert map_size(single) == 1
+      assert map_size(navs) == length(seeds)
+      assert one.queries != []
+      assert length(many.queries) <= length(one.queries)
+      assert Enum.all?(many.queries, &(not &1.unmeasured? and not &1.error?))
+
+      for {root, middle, leaf} <- families do
+        assert Enum.map(navs[leaf.id], &{&1.chat.id, &1.label}) ==
+                 [{root.id, "1"}, {middle.id, "2"}, {leaf.id, "3"}]
+      end
+    end
+
+    @tag :whitebox
+    test "query count does not grow with the number of visible leaves at the same depth" do
+      %{user: actor} = user_fixture()
+      root = create_empty_chat!(actor)
+      first = create_subchat!(actor, root, :handoff)
+
+      {single, one} = SqlCapture.measure(fn -> Relations.continuation_navs([first], actor) end)
+      assert Enum.map(single[first.id], & &1.label) == ["1", "2"]
+
+      leaves = [first | for(_ <- 1..7, do: create_subchat!(actor, root, :handoff))]
+      {navs, many} = SqlCapture.measure(fn -> Relations.continuation_navs(leaves, actor) end)
+
+      assert one.queries != []
+      assert length(many.queries) <= length(one.queries)
+      assert Enum.all?(many.queries, &(not &1.unmeasured? and not &1.error?))
+
+      for leaf <- leaves do
+        assert Enum.map(navs[leaf.id], & &1.chat.id) == [root.id | Enum.map(leaves, & &1.id)]
+
+        assert Enum.map(navs[leaf.id], & &1.label) == [
+                 "1",
+                 "2a",
+                 "2b",
+                 "2c",
+                 "2d",
+                 "2e",
+                 "2f",
+                 "2g",
+                 "2h"
+               ]
+      end
+    end
+
+    @tag :whitebox
+    test "reads only the seeded handoff component without tool traces or large fork tasks" do
+      %{user: actor} = user_fixture()
+      bot = create_bot!(actor)
+      task = "unused-nav-fork-task:" <> String.duplicate("t", 40_000)
+      trace = "unused-nav-tool-trace:" <> String.duplicate("z", 40_000)
+
+      anchor =
+        create_tool_call_anchor!(actor,
+          step: [raw_response: %{payload: trace}],
+          content: [kind: :opaque, content_json: %{payload: trace}]
+        )
+
+      root = create_linked_chat!(actor, anchor, fork_task: task, bot_id: bot.id)
+      leaf = create_subchat!(actor, root, :handoff, bot_id: bot.id)
+
+      {:ok, message} =
+        Threads.add_message_to_end(leaf, :assistant, "Visible answer", actor: actor)
+
+      step = create_step!(actor, message, sequence: 2, raw_response: %{payload: trace})
+      call = create_item!(actor, step, type: :tool_call)
+      create_content!(actor, call, kind: :opaque, content_json: %{payload: trace})
+
+      result =
+        create_item!(actor, step, type: :tool_result, sequence: 2, tool_call_item_id: call.id)
+
+      create_content!(actor, result, content_text: trace, content_json: %{payload: trace})
+
+      for index <- 1..8 do
+        unrelated = create_empty_chat!(actor, note: "unrelated-nav-family-#{index}")
+        create_subchat!(actor, unrelated, :handoff, note: "unrelated-nav-leaf-#{index}")
+      end
+
+      {navs, capture} = SqlCapture.measure(fn -> Relations.continuation_navs([leaf], actor) end)
+      assert Enum.map(navs[leaf.id], & &1.chat.id) == [root.id, leaf.id]
+      assert List.last(navs[leaf.id]).chat.last_message.id == message.id
+      assert Enum.all?(navs[leaf.id], &(&1.chat.bot.id == bot.id and is_map(&1.chat.read_state)))
+      assert Enum.all?(capture.queries, &(not &1.unmeasured? and not &1.error?))
+      refute SqlCapture.returned?(capture, "unused-nav-fork-task:")
+      refute SqlCapture.returned?(capture, "unused-nav-tool-trace:")
+      refute SqlCapture.returned?(capture, "unrelated-nav-")
+
+      for table <- ["chat_message_steps", "chat_message_items", "chat_message_contents"] do
+        assert SqlCapture.selects_from(capture.queries, table) == []
+      end
+
+      chat_queries = Enum.filter(capture.queries, &(&1.source == "chats" and &1.select?))
+      assert chat_queries != []
+
+      for query <- chat_queries do
+        id_column = Enum.find_index(query.columns, &(&1 == "id"))
+        assert is_integer(id_column), query.sql
+        ids = Enum.map(query.rows, &Enum.at(&1, id_column))
+        assert Enum.all?(ids, &(&1 in [root.id, leaf.id])), inspect(ids)
+      end
     end
   end
 

@@ -1350,6 +1350,136 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
     end
   end
 
+  describe "batched list continuation navigation" do
+    test "keeps navigation on every visible branch and direct subchat in list, search and summary",
+         %{
+           conn: conn
+         } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      root = create_empty_chat!(actor, note: "batch-nav root")
+      first = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-nav first")
+      second = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-nav second")
+      standalone = create_empty_chat!(actor, note: "batch-nav standalone")
+      ordinary_subchat = create_subchat!(actor, first, :spawn)
+
+      subchats =
+        for {parent, kind} <- [{first, :fork}, {second, :spawn}] do
+          subchat = create_subchat!(actor, parent, kind)
+          continuation = create_subchat!(actor, subchat, :handoff)
+          {parent, subchat, continuation, kind}
+        end
+
+      summaries =
+        Map.new(subchats, fn {parent, _subchat, _continuation, _kind} ->
+          summary =
+            conn
+            |> get("/api/bff/chat-list/#{parent.id}/summary")
+            |> json_response(200)
+            |> Map.fetch!("chat")
+
+          {parent.id, summary}
+        end)
+
+      for {path, params} <- [
+            {"/api/bff/chat-list", %{}},
+            {"/api/bff/chat-list/search", %{q: "batch-nav"}},
+            {"/api/bff/chat-list/search", %{q: "batch-nav", section: "other"}},
+            {"/api/bff/chat-list/search", %{q: "batch-nav", sections: "unread,other"}}
+          ] do
+        payload = conn |> get(path, params) |> json_response(200)
+        assert Enum.sort(chat_ids(payload)) == Enum.sort([first.id, second.id, standalone.id])
+        assert chat_payload(payload, standalone.id)["continuation_nav"] == []
+
+        for {parent, subchat, continuation, kind} <- subchats do
+          for item <- [chat_payload(payload, parent.id), Map.fetch!(summaries, parent.id)] do
+            assert nav_chat_ids(item) == [root.id, first.id, second.id]
+            assert nav_labels(item) == ["1", "2a", "2b"]
+            assert item["parent_chat_id"] == root.id
+            assert item["parent_relation_kind"] == "handoff"
+            nested = Enum.find(item["subchats"], &(&1["id"] == subchat.id))
+            assert nested["parent_chat_id"] == parent.id
+            assert nested["parent_relation_kind"] == Atom.to_string(kind)
+            assert nested["child_handoff_count"] == 1
+            assert nav_chat_ids(nested) == [subchat.id, continuation.id]
+            assert nav_labels(nested) == ["1", "2"]
+
+            assert Enum.map(nested["continuation_nav"], & &1["kind"]) == [
+                     Atom.to_string(kind),
+                     "handoff"
+                   ]
+
+            assert Enum.all?(nested["continuation_nav"], &is_map(&1["read_state"]))
+
+            if parent.id == first.id do
+              ordinary = Enum.find(item["subchats"], &(&1["id"] == ordinary_subchat.id))
+              assert ordinary["continuation_nav"] == []
+            end
+          end
+        end
+      end
+    end
+
+    @tag :whitebox
+    test "batches top-level and direct subchat navigation together as the payload grows", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      root = create_empty_chat!(actor, note: "navigation-only-ancestor")
+      leaf = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
+      # Keep the summary seed's maximum traversal distance unchanged as width grows.
+      create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
+      subchat = create_subchat!(actor, leaf, :fork)
+      create_subchat!(actor, subchat, :handoff, note: "navigation-only-subchat-continuation")
+
+      requests = [
+        {"/api/bff/chat-list", %{}},
+        {"/api/bff/chat-list/search", %{q: "batch-sql-match"}},
+        {"/api/bff/chat-list/#{leaf.id}/summary", %{}}
+      ]
+
+      baseline =
+        for {path, params} <- requests do
+          {_payload, capture} =
+            SqlCapture.measure(fn -> conn |> get(path, params) |> json_response(200) end)
+
+          length(capture.queries)
+        end
+
+      for _ <- 1..5 do
+        create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
+        subchat = create_subchat!(actor, leaf, :spawn)
+        create_subchat!(actor, subchat, :handoff)
+      end
+
+      for {{path, params}, query_count} <- Enum.zip(requests, baseline) do
+        {payload, capture} =
+          SqlCapture.measure(fn -> conn |> get(path, params) |> json_response(200) end)
+
+        item =
+          if Map.has_key?(payload, "chat"),
+            do: payload["chat"],
+            else: chat_payload(payload, leaf.id)
+
+        assert length(item["continuation_nav"]) == 8
+        assert length(item["subchats"]) == 6
+        assert Enum.all?(item["subchats"], &(length(&1["continuation_nav"]) == 2))
+
+        assert length(capture.queries) <= query_count,
+               "#{path}: #{length(capture.queries)} queries, baseline #{query_count}"
+
+        assert Enum.all?(capture.queries, &(not &1.unmeasured? and not &1.error?))
+
+        assert Enum.count(capture.queries, fn query ->
+                 SqlCapture.returned?(query, "navigation-only-ancestor") and
+                   SqlCapture.returned?(query, "navigation-only-subchat-continuation")
+               end) == 1,
+               path
+      end
+    end
+  end
+
   # The singular section contract remains compatible with already-open clients.
   defp section_page(conn, path, params), do: conn |> get(path, params) |> json_response(200)
 

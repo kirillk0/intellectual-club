@@ -4,7 +4,9 @@ defmodule IntellectualClub.Chat.Relations do
   """
 
   alias IntellectualClub.BackgroundTasks.BackgroundTask
+  alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Chat
+  alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Fork
@@ -153,18 +155,132 @@ defmodule IntellectualClub.Chat.Relations do
   def child_relation_chats(_chat_id, _actor), do: []
 
   @spec continuation_nav(Chat.t(), map()) :: [continuation_nav_entry()]
-  def continuation_nav(%Chat{} = chat, actor) do
-    chat = fetch_relation_chat(chat.id, actor) || chat
-    root = continuation_root(chat, actor, MapSet.new())
-
-    entries =
-      root
-      |> continuation_nav_entries(actor, 1, "", MapSet.new())
-
-    if length(entries) > 1, do: entries, else: []
+  def continuation_nav(%Chat{id: id} = chat, actor) do
+    [chat] |> continuation_navs(actor) |> Map.get(id, [])
   end
 
   def continuation_nav(_chat, _actor), do: []
+
+  @doc """
+  Builds navigation once per readable handoff family, shared by all requested chats.
+  Only related topology is discovered, in batches, before loading display fields.
+  """
+  @spec continuation_navs([Chat.t()], map()) :: %{integer() => [continuation_nav_entry()]}
+  def continuation_navs([], _actor), do: %{}
+
+  def continuation_navs(chats, actor) when is_list(chats) do
+    ids = chats |> Enum.map(& &1.id) |> Enum.filter(&is_integer/1) |> Enum.uniq()
+
+    topology =
+      Chat
+      |> Ash.Query.filter(id in ^ids)
+      |> read_continuation_links(actor)
+      |> discover_continuations(actor, %{})
+
+    # Isolated chats have no navigation and need no display preloads.
+    linked_ids =
+      Enum.reduce(topology, MapSet.new(), fn {id, chat}, acc ->
+        if handoff_child?(chat) and Map.has_key?(topology, chat.parent_chat_id) do
+          acc |> MapSet.put(id) |> MapSet.put(chat.parent_chat_id)
+        else
+          acc
+        end
+      end)
+      |> MapSet.to_list()
+
+    loaded = load_continuation_chats(linked_ids, actor)
+    by_id = Map.new(loaded, &{&1.id, &1})
+
+    children =
+      loaded
+      |> Enum.filter(&handoff_child?/1)
+      |> Enum.group_by(& &1.parent_chat_id)
+
+    roots = Map.new(ids, &{&1, continuation_root(Map.get(by_id, &1), by_id, MapSet.new())})
+
+    entries_by_root =
+      roots
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq_by(& &1.id)
+      |> Map.new(fn root ->
+        entries = continuation_nav_entries(root, children, 1, "", MapSet.new())
+        {root.id, if(length(entries) > 1, do: entries, else: [])}
+      end)
+
+    Map.new(roots, fn {id, root} ->
+      {id, if(root, do: Map.get(entries_by_root, root.id, []), else: [])}
+    end)
+  end
+
+  defp read_continuation_links(query, actor) do
+    query
+    |> Ash.Query.select([:id, :parent_chat_id, :parent_relation_kind])
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, chats} -> chats
+      _other -> []
+    end
+  end
+
+  defp discover_continuations([], _actor, by_id), do: by_id
+
+  defp discover_continuations(frontier, actor, by_id) do
+    by_id = Enum.reduce(frontier, by_id, &Map.put(&2, &1.id, &1))
+    frontier_ids = Enum.map(frontier, & &1.id)
+
+    parent_ids =
+      frontier
+      |> Enum.filter(&handoff_child?/1)
+      |> Enum.map(& &1.parent_chat_id)
+      |> Enum.filter(&(is_integer(&1) and not Map.has_key?(by_id, &1)))
+      |> Enum.uniq()
+
+    # Each frontier is authorized before it can expose another level. An
+    # unreadable ancestor must not connect otherwise readable components.
+    Chat
+    |> Ash.Query.filter(
+      id in ^parent_ids or
+        (parent_chat_id in ^frontier_ids and parent_relation_kind == :handoff)
+    )
+    |> read_continuation_links(actor)
+    # Filter visited neighbors locally instead of sending a growing NOT IN list.
+    |> Enum.reject(&Map.has_key?(by_id, &1.id))
+    |> discover_continuations(actor, by_id)
+  end
+
+  defp load_continuation_chats([], _actor), do: []
+
+  defp load_continuation_chats(ids, actor) do
+    Chat
+    |> Ash.Query.filter(id in ^ids)
+    |> Ash.Query.select([
+      :id,
+      :note,
+      :bot_id,
+      :subagent,
+      :created_at,
+      :updated_at,
+      :last_message_id,
+      :parent_chat_id,
+      :parent_message_id,
+      :parent_relation_kind
+    ])
+    |> Ash.Query.sort(created_at: :asc, id: :asc)
+    |> Ash.Query.load(
+      [
+        :read_state,
+        bot: Ash.Query.select(Bot, [:id, :name]),
+        last_message: Ash.Query.select(ChatMessage, [:id, :status])
+      ],
+      strict?: true
+    )
+    |> Ash.read(actor: actor)
+    |> case do
+      {:ok, chats} -> chats
+      _other -> []
+    end
+  end
 
   defp do_lineage_root_id(%Chat{id: id}, _actor, _visited, hops)
        when hops >= @max_lineage_hops do
@@ -191,37 +307,24 @@ defmodule IntellectualClub.Chat.Relations do
     end
   end
 
-  defp continuation_root(%Chat{id: id} = chat, actor, visited) when is_integer(id) do
-    if MapSet.member?(visited, id) do
-      chat
-    else
-      continuation_root_from_parent(chat, actor, MapSet.put(visited, id))
-    end
-  end
+  defp continuation_root(%Chat{id: id} = chat, by_id, visited) do
+    parent = if handoff_child?(chat), do: Map.get(by_id, chat.parent_chat_id)
 
-  defp continuation_root(chat, _actor, _visited), do: chat
-
-  defp continuation_root_from_parent(%Chat{parent_chat_id: parent_id} = chat, actor, visited)
-       when is_integer(parent_id) do
-    if handoff_child?(chat) do
-      case fetch_relation_chat(parent_id, actor) do
-        %Chat{} = parent -> continuation_root(parent, actor, visited)
-        nil -> chat
-      end
+    if parent && not MapSet.member?(visited, id) do
+      continuation_root(parent, by_id, MapSet.put(visited, id))
     else
       chat
     end
   end
 
-  defp continuation_root_from_parent(chat, _actor, _visited), do: chat
+  defp continuation_root(nil, _by_id, _visited), do: nil
 
-  defp continuation_nav_entries(%Chat{id: id} = chat, actor, number, suffix, visited)
-       when is_integer(id) do
+  defp continuation_nav_entries(%Chat{id: id} = chat, children_by_parent, number, suffix, visited) do
     if MapSet.member?(visited, id) do
       []
     else
       next_visited = MapSet.put(visited, id)
-      children = child_handoff_chats(id, actor)
+      children = Map.get(children_by_parent, id, [])
       child_count = length(children)
 
       child_entries =
@@ -235,7 +338,13 @@ defmodule IntellectualClub.Chat.Relations do
               suffix <> branch_suffix(index)
             end
 
-          continuation_nav_entries(child, actor, number + 1, child_suffix, next_visited)
+          continuation_nav_entries(
+            child,
+            children_by_parent,
+            number + 1,
+            child_suffix,
+            next_visited
+          )
         end)
 
       [
@@ -247,20 +356,6 @@ defmodule IntellectualClub.Chat.Relations do
         }
         | child_entries
       ]
-    end
-  end
-
-  defp continuation_nav_entries(_chat, _actor, _number, _suffix, _visited), do: []
-
-  defp fetch_relation_chat(chat_id, actor) when is_integer(chat_id) do
-    Chat
-    |> Ash.Query.filter(id == ^chat_id)
-    |> Ash.Query.limit(1)
-    |> Ash.Query.load(relation_load(), strict?: true)
-    |> Ash.read(actor: actor)
-    |> case do
-      {:ok, [%Chat{} = chat]} -> chat
-      _other -> nil
     end
   end
 

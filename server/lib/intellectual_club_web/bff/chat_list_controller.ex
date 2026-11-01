@@ -79,11 +79,11 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
           |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-          |> put_continuation_nav(chat, actor)
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
         end)
+        |> put_continuation_navs(actor)
 
       json(conn, %{
         chats: payload,
@@ -274,13 +274,13 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         subchats: Map.get(subchats_by_parent, chat.id, [])
       )
       |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-      |> put_continuation_nav(chat, actor)
       |> Map.put(:message_count, entry.message_count)
       |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
       |> Map.put(:snippet, entry.snippet)
       |> Map.put(:message_id, entry.message_id)
       |> Map.put(:message_role, entry.message_role)
     end)
+    |> put_continuation_navs(actor)
   end
 
   def summary(conn, %{"id" => id} = params) do
@@ -341,11 +341,11 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           )
         )
         |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-        |> put_continuation_nav(chat, actor)
         |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
         |> Map.put(:first_message_preview, first_message_preview)
         |> Map.put(:first_message_role, first_message_role)
 
+      [payload] = put_continuation_navs([payload], actor)
       json(conn, %{chat: payload})
     else
       {:error, %Plug.Conn{} = conn} ->
@@ -543,7 +543,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
               subchats: []
             )
           )
-          |> put_continuation_nav(chat, actor)
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
@@ -594,22 +593,26 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     end
   end
 
-  defp put_continuation_nav(
-         %{child_handoff_count: 0} = payload,
-         %{parent_relation_kind: relation_kind},
-         _actor
-       )
-       when relation_kind != :handoff do
-    Map.put(payload, :continuation_nav, [])
+  defp put_continuation_navs(payloads, actor) do
+    navs =
+      payloads
+      |> Enum.flat_map(fn payload -> [payload | payload.subchats] end)
+      |> Enum.filter(&continuation_nav_needed?/1)
+      |> Enum.map(&%Chat{id: &1.id})
+      |> Relations.continuation_navs(actor)
+      |> Map.new(fn {id, entries} -> {id, ChatPayloads.serialize_continuation_nav(entries)} end)
+
+    Enum.map(payloads, &put_continuation_nav(&1, navs))
   end
 
-  defp put_continuation_nav(payload, chat, actor) do
-    Map.put(
-      payload,
-      :continuation_nav,
-      chat
-      |> Relations.continuation_nav(actor)
-      |> ChatPayloads.serialize_continuation_nav()
-    )
+  defp continuation_nav_needed?(%{parent_relation_kind: "handoff"}), do: true
+  defp continuation_nav_needed?(%{child_handoff_count: count}), do: count > 0
+
+  defp put_continuation_nav(payload, navs) do
+    entries = if continuation_nav_needed?(payload), do: Map.get(navs, payload.id, []), else: []
+
+    payload
+    |> Map.put(:continuation_nav, entries)
+    |> Map.update!(:subchats, &Enum.map(&1, fn child -> put_continuation_nav(child, navs) end))
   end
 end
