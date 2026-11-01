@@ -1,11 +1,11 @@
 defmodule IntellectualClub.HandoffTestHelpers do
   @moduledoc """
-  Helpers for handoff tests: reading the rendered first message of a handoff
-  chat, the continuation navigation of chat payloads, and scripting the summary provider (an OpenRouter-compatible chat
-  completions endpoint served by `IntellectualClub.TestHttpServer`).
+  Helpers for checkpoint tests: publishing and reading structured checkpoints,
+  and scripting the summary provider (an OpenRouter-compatible chat completions
+  endpoint served by `IntellectualClub.TestHttpServer`).
   """
 
-  alias IntellectualClub.Chat.{ChatMessage, Previews}
+  alias IntellectualClub.Chat.{Chat, ChatMessage, Handoff, HandoffRolloff, Previews, Threads}
   alias IntellectualClub.Generation.History
 
   @doc """
@@ -103,15 +103,23 @@ defmodule IntellectualClub.HandoffTestHelpers do
     |> Enum.filter(&is_binary/1)
   end
 
-  @doc "Labels of the continuation navigation of a chat payload (`[]` when absent)."
-  def nav_labels(%{"continuation_nav" => nav}) when is_list(nav), do: Enum.map(nav, & &1["label"])
-  def nav_labels(_payload), do: []
+  @doc "Appends a user checkpoint fixture without creating a chat or starting generation."
+  def append_checkpoint!(actor, chat, source_message, summary) do
+    {:ok, rolloff} =
+      HandoffRolloff.build(chat, actor, summary, source_message_id: source_message.id)
 
-  @doc "Chat ids of the continuation navigation of a chat payload (`[]` when absent)."
-  def nav_chat_ids(%{"continuation_nav" => nav}) when is_list(nav),
-    do: Enum.map(nav, & &1["chat_id"])
+    {:ok, message} =
+      Handoff.with_compaction_items(rolloff, fn items ->
+        Threads.add_message_with_items(chat, :user, items,
+          actor: actor,
+          parent_id: source_message.id,
+          status: :done,
+          token_count: rolloff.token_count
+        )
+      end)
 
-  def nav_chat_ids(_payload), do: []
+    %{chat: Ash.get!(Chat, chat.id, actor: actor), message: message, generation: nil}
+  end
 
   defp ordered_items(message) do
     message.steps |> sorted() |> Enum.flat_map(&sorted(&1.items))

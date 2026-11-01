@@ -68,7 +68,6 @@ const chatState = (
     children_by_message_id: {},
     children_without_message: [],
   },
-  continuation_nav: [],
   active_generation_message_id: null,
   idle_revision: `revision-${id}`,
 });
@@ -969,6 +968,49 @@ describe('useChatViewModel loading', () => {
 
     expect(viewModel.chat.value?.id).toBe(2);
     expect(viewModel.loaded.value).toBe(true);
+  });
+
+  it('compacts context in place and keeps the current chat after generation settles', async () => {
+    vi.useFakeTimers();
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    const state = chatState(1);
+    state.branch = [{ id: 10, role: 'user', status: 'done' }];
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(structuredClone(state));
+      if (path.includes('/11/poll?')) return Promise.resolve({
+        message_id: 11, status: 'done', active_generation_message_id: null,
+      });
+      return Promise.resolve(undefined);
+    });
+    const { viewModel, router } = await mountViewModel();
+    await flushPromises();
+    expect(viewModel.handoffDisabled.value).toBe(false);
+    apiMocks.post.mockImplementation((path: string) => {
+      if (path !== '/api/bff/chat-generation/1/handoff') return Promise.resolve(undefined);
+      state.branch.push({
+        id: 11, role: 'assistant', status: 'done', content: {
+          parts: [{ content_id: 1, sequence: 1, item_type: 'handoff_message', text: 'Context summary' }],
+          items: [], media: [],
+        },
+      });
+      return Promise.resolve({
+        branch: [...state.branch.slice(0, -1), { ...state.branch.at(-1), status: 'generating' }],
+        generation: { message_id: 11 },
+      });
+    });
+
+    await viewModel.handoffChat();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-generation/1/handoff', {});
+    expect(router.currentRoute.value.fullPath).toBe('/chats/1');
+    expect(viewModel.chat.value?.id).toBe(1);
+    expect(viewModel.branch.value.map((message) => message.id)).toEqual([10, 11]);
+    expect(viewModel.branch.value.at(-1)?.content?.parts[0]?.text).toBe('Context summary');
+    expect(viewModel.handoffPending.value).toBe(false);
+    expect(viewModel.activeGenerationId.value).toBeNull();
   });
 
   it('exports HTML independently and treats a canceled file save as non-error', async () => {

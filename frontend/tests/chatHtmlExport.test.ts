@@ -160,6 +160,40 @@ describe('buildChatHtmlExport', () => {
     }
   );
 
+  it.each(['en', 'ru'] as const)('keeps checkpoint text and archives collapsed in order in %s exports', async (locale) => {
+    const data = payload();
+    data.chats[1]!.messages[0]!.content = [
+      { type: 'answer', step_sequence: 1, item_sequence: 1, parts: [{ text: 'Before checkpoint' }], attachments: [] },
+      { type: 'handoff_history', step_sequence: 1, item_sequence: 2, parts: [{ text: 'First history', handoff_entry: { entry_kind: 'continuation' } }], attachments: [
+        { name: 'history.md', mime_type: 'text/markdown', size_bytes: 100, kind: 'file', enabled: true },
+      ] },
+      { type: 'handoff_message', step_sequence: 1, item_sequence: 3, parts: [{ text: 'First summary' }], attachments: [] },
+      { type: 'answer', step_sequence: 2, item_sequence: 1, parts: [{ text: 'Between checkpoints' }], attachments: [] },
+      { type: 'handoff_history', step_sequence: 2, item_sequence: 2, parts: [{ text: 'Second history' }], attachments: [] },
+      { type: 'handoff_message', step_sequence: 2, item_sequence: 3, parts: [{ text: 'Second summary' }], attachments: [] },
+      { type: 'answer', step_sequence: 3, item_sequence: 1, parts: [{ text: 'After checkpoint' }], attachments: [] },
+    ];
+    const { html } = await buildChatHtmlExport(data, { locale });
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const body = doc.querySelector('#chat-2-message-200 .message-body')!;
+    const checkpoints = [...body.querySelectorAll('details.handoff-context')];
+    expect(checkpoints).toHaveLength(4);
+    expect(checkpoints.every((entry) => !entry.hasAttribute('open'))).toBe(true);
+    expect(checkpoints.map((entry) => entry.querySelector('summary')!.textContent)).toEqual(
+      locale === 'en' ? ['History', 'Context summary', 'History', 'Context summary'] :
+        ['История', 'Сводка контекста', 'История', 'Сводка контекста']
+    );
+    expect([...body.children].map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining('Before checkpoint'), expect.stringContaining('First history'),
+      expect.stringContaining('First summary'), expect.stringContaining('Between checkpoints'),
+      expect.stringContaining('Second history'), expect.stringContaining('Second summary'),
+      expect.stringContaining('After checkpoint'),
+    ]);
+    expect(checkpoints[0]!.textContent).toContain('history.md');
+    expect(checkpoints[0]!.textContent).not.toContain('continuation');
+    expect(body.querySelectorAll('.attachment')).toHaveLength(1);
+  });
+
   it('creates a self-contained sanitized document with navigation and dialogs', async () => {
     const exported = await buildChatHtmlExport(payload(), { locale: 'en' });
 

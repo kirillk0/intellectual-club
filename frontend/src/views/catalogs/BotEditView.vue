@@ -266,9 +266,9 @@
 
           <section class="settings-section" :class="{ 'field-error': errors.hasField('handoff_message_block_id') }">
             <header class="settings-section__header">
-              <h3 class="settings-section__title">Handoff summary</h3>
+              <h3 class="settings-section__title">Context compaction</h3>
               <p class="settings-section__description">
-                Prompt the model uses to summarize a chat when it is handed off to a new chat.
+                Prompt the model uses to summarize context when compacting it in the current chat.
               </p>
             </header>
 
@@ -283,7 +283,7 @@
                   @open="openBlockEditor(selectedHandoffBlock.id)"
                 />
               </div>
-              <div v-else class="bot-handoff__block muted">Use default handoff prompt</div>
+              <div v-else class="bot-handoff__block muted">Use default compaction prompt</div>
               <div class="settings-actions">
                 <button type="button" :disabled="sharedReadonly" @click="openHandoffBlockPicker">
                   {{ form.handoff_message_block_id ? 'Change' : 'Select' }}
@@ -414,7 +414,7 @@
     <KnowledgeBlocksPickerModal
       v-model:open="handoffBlockPickerOpen"
       v-model:selected="handoffBlockPickerSelected"
-      title="Select handoff message block"
+      title="Select compaction summary block"
       :blocks="knowledgeBlocks"
       selectionMode="single"
       confirmLabel="Select"

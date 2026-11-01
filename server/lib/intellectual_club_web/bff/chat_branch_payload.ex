@@ -16,7 +16,6 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
   @display_item_types [
     :input,
     :handoff_request,
-    :handoff_context,
     :handoff_history,
     :handoff_message,
     :steering,
@@ -393,6 +392,7 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
                   sequence: Map.get(content, :sequence),
                   text: to_string(Map.get(content, :content_text, "")),
                   content_text_truncated: Map.get(content, :content_text_truncated) == true,
+                  handoff_entry: Map.get(content, :handoff_entry),
                   created_at: item_created_at
                 }
               end)
@@ -565,13 +565,13 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       item_type in [
         "input",
         "handoff_request",
-        "handoff_context",
         "handoff_history",
         "handoff_message"
       ]
 
   defp text_item_for_role?(item_type, "assistant") when is_binary(item_type),
-    do: item_type in ["answer", "handoff_summary", "steering"]
+    do:
+      item_type in ["answer", "handoff_summary", "steering", "handoff_history", "handoff_message"]
 
   defp text_item_for_role?(_item_type, _role), do: false
 
@@ -583,13 +583,12 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       item_type in [
         "input",
         "handoff_request",
-        "handoff_context",
         "handoff_history",
         "handoff_message"
       ]
 
   defp media_item_for_role?(item_type, "assistant") when is_binary(item_type),
-    do: item_type in ["handoff_summary", "artifact"]
+    do: item_type in ["handoff_summary", "artifact", "handoff_history", "handoff_message"]
 
   defp media_item_for_role?(_item_type, _role), do: false
 

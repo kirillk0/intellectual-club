@@ -18,7 +18,7 @@ defmodule IntellectualClubWeb.Bff.ChatForkContext do
   require Logger
 
   @retry_bucket_seconds 60
-  @display_types ~w(input answer reasoning tool_call tool_result steering artifact handoff_request handoff_context handoff_history handoff_message handoff_summary)
+  @display_types ~w(input answer reasoning tool_call tool_result steering artifact handoff_request handoff_history handoff_message handoff_summary)
 
   def linked?(chat), do: not is_nil(Map.get(chat, :fork_task))
 

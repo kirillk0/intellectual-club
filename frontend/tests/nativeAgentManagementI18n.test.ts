@@ -10,6 +10,8 @@ describe('native agent management translations', () => {
 
     expect(translate('Nested subchats limit')).toBe('Лимит вложенных сабчатов');
     expect(translate('Allow handoff in subchats')).toBe('Разрешить handoff в сабчатах');
+    expect(translate('Allow subagents to compact context and continue work.'))
+      .toBe('Разрешить сабагентам сжимать контекст и продолжать работу.');
     expect(translate('Spawn')).toBe('Спавн');
     expect(translate('Spawned from')).toBe('Спавн из');
     expect(translate('Spawned into')).toBe('Спавн в');

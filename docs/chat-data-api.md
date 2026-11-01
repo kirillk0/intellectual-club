@@ -100,8 +100,7 @@ boundary, followed by its local branch. Inherited messages retain their source
 `id` and `chat_id` and have `inherited: true`; they are read-only context. The
 reader never reloads their full source trace after projection. If the source is
 private or unavailable, the whole read fails without returning partial context.
-Handoff text is included as stored; this endpoint does not concatenate separate
-handoff chats into one conversation.
+Checkpoint text is included as stored, in its position in the current branch.
 
 Follow `next_offset` while `has_more` is true. Pagination is over the current
 branch, not a snapshot: edits and branch switches between requests can change the
@@ -119,7 +118,7 @@ behavior (meta matches, active/inactive grouping and one preferred hit per chat)
 Matching uses case-insensitive `ILIKE` against raw
 `chat_message_contents.content_text`. The existing partial trigram GIN index is
 on `content_text gin_trgm_ops`, with `kind = 'text'` and eligible `item_type`
-predicates: `input`, `handoff_request`, `handoff_context`, `handoff_history`,
+predicates: `input`, `handoff_request`, `handoff_history`,
 `handoff_message`, `answer`, and `handoff_summary`. Queries include those same
 predicates and check the parent item's type as well. Reasoning and opaque
 contents are not searchable even if they contain a matching `content_text`.

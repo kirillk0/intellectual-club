@@ -23,6 +23,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolFunction
   alias IntellectualClub.Tools.ToolInstance
+  alias IntellectualClubWeb.Bff.Serializer
   alias IntellectualClubWeb.Bff.ChatBranchPayload
 
   describe "GET /api/bff/chat-events" do
@@ -97,6 +98,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       create_message!(actor, chat)
       path = "/api/bff/chat-state/#{chat.id}/read-state"
       initial = conn |> get("/api/bff/chat-state/#{chat.id}") |> json_response(200)
+      refute Map.has_key?(initial, "continuation_nav")
 
       assert initial["chat"]["read_state"] == %{
                "activity_revision" => 0,
@@ -466,6 +468,128 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
              end)
 
       assert Enum.map(assistant["content"]["parts"], & &1["text"]) == ["Ordinary answer"]
+    end
+
+    test "assistant checkpoint pairs stay ordered with archives in persisted and runtime content",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      chat = create_empty_chat!(actor)
+      message = create_message!(actor, chat)
+      {:ok, file} = Files.create_from_binary("checkpoint.md", "text/markdown", "Archived history")
+      long_text = String.duplicate("Readable history\n", 10) <> "FULL_HISTORY_TAIL"
+
+      checkpoints =
+        for sequence <- [1, 2] do
+          step = create_step!(actor, message, sequence: sequence)
+          create_text_item!(actor, step, "Answer #{sequence}", sequence: 1)
+          history = create_item!(actor, step, type: :handoff_history, sequence: 2)
+
+          content =
+            create_content!(actor, history,
+              content_text: long_text,
+              content_json: %{
+                "entry_kind" => "message",
+                "role" => "assistant",
+                "private" => "PRIVATE_HISTORY"
+              }
+            )
+
+          create_content!(actor, history, kind: :media, file_id: file.id, sequence: 2)
+
+          summary =
+            create_text_item!(actor, step, "Summary #{sequence}",
+              type: :handoff_message,
+              sequence: 3
+            )
+
+          create_content!(actor, summary, kind: :media, file_id: file.id, sequence: 2)
+          {step, content}
+        end
+
+      last_step = create_step!(actor, message, sequence: 3)
+      create_text_item!(actor, last_step, "Final answer")
+      {second_step, full_content} = List.last(checkpoints)
+
+      runtime_step =
+        second_step
+        |> Ash.load!([items: [contents: :file]], actor: actor)
+        |> Serializer.step()
+        |> Map.put(:id, -2)
+        |> Map.update!(:items, fn items ->
+          Enum.map(items, fn item ->
+            if item.type == "handoff_history" do
+              Map.update!(item, :contents, fn contents ->
+                Enum.map(contents, fn content ->
+                  if content.kind == "text" do
+                    %{content | content_text: "History preview...", content_text_truncated: true}
+                  else
+                    content
+                  end
+                end)
+              end)
+            else
+              item
+            end
+          end)
+        end)
+        |> Serializer.normalize_runtime_step_for_client()
+
+      for runtime <- [nil, runtime_step] do
+        payload =
+          ChatBranchPayload.message(message, actor,
+            runtime_steps_by_message_id: %{message.id => runtime}
+          )
+
+        assert Enum.map(payload.content.items, &{&1.step_sequence, &1.item_type}) == [
+                 {1, "answer"},
+                 {1, "handoff_history"},
+                 {1, "handoff_message"},
+                 {2, "answer"},
+                 {2, "handoff_history"},
+                 {2, "handoff_message"},
+                 {3, "answer"}
+               ]
+
+        assert Enum.map(payload.content.parts, & &1.item_type) == [
+                 "answer",
+                 "handoff_history",
+                 "handoff_message",
+                 "answer",
+                 "handoff_history",
+                 "handoff_message",
+                 "answer"
+               ]
+
+        assert Enum.map(payload.content.media, &{&1.step_sequence, &1.item_type}) == [
+                 {1, "handoff_history"},
+                 {1, "handoff_message"},
+                 {2, "handoff_history"},
+                 {2, "handoff_message"}
+               ]
+
+        assert Enum.all?(payload.content.media, &(&1.media.filename == "checkpoint.md"))
+        histories = Enum.filter(payload.content.parts, &(&1.item_type == "handoff_history"))
+        assert hd(histories).text == long_text
+
+        if runtime do
+          assert List.last(histories).text == "History preview..."
+          assert List.last(histories).content_text_truncated
+        else
+          assert Enum.all?(histories, &(&1.text == long_text))
+          refute Enum.any?(histories, & &1.content_text_truncated)
+        end
+
+        assert Enum.all?(histories, &(&1.handoff_entry.role == "assistant"))
+        refute Jason.encode!(payload) =~ "PRIVATE_HISTORY"
+      end
+
+      full =
+        conn
+        |> sign_in_conn(fixture)
+        |> get(~p"/api/bff/chat-messages/#{message.id}/contents/#{full_content.id}/full")
+        |> json_response(200)
+
+      assert full["content"]["content_text"] == long_text
     end
 
     test "lean runtime content describes an empty handoff summary item" do

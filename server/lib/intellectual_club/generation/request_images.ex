@@ -92,7 +92,7 @@ defmodule IntellectualClub.Generation.RequestImages do
   end
 
   defp prepare_images_in_scope(raw_request, scope, opts, track) do
-    chat_scope_ids = ContentFiles.handoff_chat_scope_ids(scope.chat_id, scope.owner_id)
+    chat_scope_ids = List.wrap(scope.chat_id)
 
     with {:ok, inherited, bindings} <-
            inherited_snapshot(Keyword.get(opts, :source_step_id), scope, chat_scope_ids, opts) do

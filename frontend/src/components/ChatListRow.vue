@@ -28,7 +28,6 @@
           </div>
         </a>
       </RouterLink>
-      <slot name="meta-extra"></slot>
     </div>
 
     <div class="chat-result-badges">
@@ -115,7 +114,7 @@ function openActionsFromButton(event: MouseEvent) {
 function handleContextMenu(event: MouseEvent) {
   if (!props.actions) return;
 
-  // Nested links (e.g. continuation navigation) point at other chats: keep the native menu there.
+  // Keep the native context menu for nested links instead of applying row actions.
   const link = (event.target as Element | null)?.closest('a');
   if (link && link !== primaryLinkRef.value) return;
 

@@ -89,7 +89,9 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
            ]
   end
 
-  test "handoff item types preserve the ordinary user and assistant wire format" do
+  test "handoff request, summary and checkpoint use user and assistant wire roles" do
+    checkpoint_text = "History\n\n\n\nHandoff message\n\nContinue here\n"
+
     history = [
       %{
         role: :user,
@@ -101,26 +103,34 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
       },
       %{
         role: :user,
-        steps: [%{sequence: 1, items: [trace_item(1, :handoff_context, "Continue here")]}]
+        steps: [
+          %{
+            sequence: 1,
+            items: [
+              %{sequence: 1, type: :handoff_history, contents: []},
+              trace_item(2, :handoff_message, "Continue here")
+            ]
+          }
+        ]
       }
     ]
 
     assert HistoryInput.build_input_items(history) == [
              user_responses_message("Prepare transfer"),
              assistant_responses_message("Transfer ready", "final_answer"),
-             user_responses_message("Continue here")
+             user_responses_message(checkpoint_text)
            ]
 
     assert ChatHistory.build_messages(history) == [
              %{"role" => "user", "content" => "Prepare transfer"},
              %{"role" => "assistant", "content" => "Transfer ready"},
-             %{"role" => "user", "content" => "Continue here"}
+             %{"role" => "user", "content" => checkpoint_text}
            ]
 
     assert GooglePayload.build_input_steps(history) == [
              google_user_input("Prepare transfer"),
              google_model_output("Transfer ready"),
-             google_user_input("Continue here")
+             google_user_input(checkpoint_text)
            ]
 
     base_opts = %{
@@ -137,7 +147,7 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
     assert responses.raw_request["input"] == [
              user_responses_message("Prepare transfer"),
              assistant_responses_message("Transfer ready", "final_answer"),
-             user_responses_message("Continue here")
+             user_responses_message(checkpoint_text)
            ]
 
     openrouter =
@@ -148,7 +158,7 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
     assert openrouter.raw_request["messages"] == [
              %{"role" => "user", "content" => "Prepare transfer"},
              %{"role" => "assistant", "content" => "Transfer ready"},
-             %{"role" => "user", "content" => "Continue here"}
+             %{"role" => "user", "content" => checkpoint_text}
            ]
 
     anthropic =
@@ -163,7 +173,7 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
                "role" => "assistant",
                "content" => [%{"type" => "text", "text" => "Transfer ready"}]
              },
-             %{"role" => "user", "content" => [%{"type" => "text", "text" => "Continue here"}]}
+             %{"role" => "user", "content" => [%{"type" => "text", "text" => checkpoint_text}]}
            ]
 
     google =
@@ -174,7 +184,7 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
     assert google.raw_request["input"] == [
              google_user_input("Prepare transfer"),
              google_model_output("Transfer ready"),
-             google_user_input("Continue here")
+             google_user_input(checkpoint_text)
            ]
   end
 

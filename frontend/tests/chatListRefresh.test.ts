@@ -98,7 +98,6 @@ describe('chat list refresh after returning from the background', () => {
           BotSelectorModal: true,
           ChatBotFiltersPanel: true,
           ChatListRow: { props: ['title'], template: '<div class="chat-row">{{ title }}</div>' },
-          ContinuationNav: true,
           InitialRoutePlaceholder: true,
           StackToolbarTeleport: { template: '<div><slot /></div>' },
           SvgIcon: true,

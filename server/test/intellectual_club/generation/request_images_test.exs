@@ -866,28 +866,20 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
     end
 
-    test "handoff descendants may reuse ancestor pins" do
+    test "standalone chats cannot reuse another chat's pins after canonical media is removed" do
       fixture = request_fixture!(png_1x1())
       raw = responses_request(fixture.file)
       assert {:ok, prepared} = prepare(raw, scope(fixture))
       source = publish!(fixture, prepared)
       Ash.destroy!(fixture.content, actor: fixture.actor)
 
-      child =
-        create_chat!(fixture.actor, %{
-          parent_chat_id: fixture.chat.id,
-          parent_message_id: fixture.target_message.id,
-          parent_relation_kind: :handoff
-        })
+      standalone = create_chat!(fixture.actor)
+      standalone_scope = %ExecutionContext{owner_id: fixture.actor.id, chat_id: standalone.id}
+      assert {:ok, denied} = prepare(raw, standalone_scope)
+      assert denied.bindings.items == []
 
-      child_scope = %ExecutionContext{owner_id: fixture.actor.id, chat_id: child.id}
-
-      for opts <- [[], [source_step_id: source.id]] do
-        assert {:ok, inherited} = prepare(raw, child_scope, opts)
-        assert inherited.request == raw
-        assert [_item] = inherited.bindings.items
-        assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
-      end
+      assert {:error, :request_image_source_out_of_scope} =
+               prepare(raw, standalone_scope, source_step_id: source.id)
     end
 
     test "linked forks permit exact prefix pins but never future parent refs or snapshots" do

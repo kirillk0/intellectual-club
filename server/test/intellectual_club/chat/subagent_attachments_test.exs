@@ -117,22 +117,13 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert [%{file_external_id: image_id}] = image_result.media
       assert image_id == image.external_id
 
-      continuation =
-        create_empty_chat!(actor, %{parent_chat_id: parent.id, parent_relation_kind: :handoff})
-
       assert {:ok, {_content, loaded, @payload}} =
-               ContentFiles.load_payload_for_execution(file.external_id, %{
-                 context
-                 | chat_id: continuation.id
-               })
+               ContentFiles.load_payload_for_execution(file.external_id, context)
 
       assert loaded.id == file.id
 
       assert {:ok, {_content, _file, path}} =
-               ContentFiles.load_path_for_execution(file.external_id, %{
-                 context
-                 | chat_id: continuation.id
-               })
+               ContentFiles.load_path_for_execution(file.external_id, context)
 
       assert File.read!(path) == @payload
 
@@ -226,10 +217,10 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     end
   end
 
-  test "handoff collects only new artifact items and deduplicates across the chain" do
+  test "compaction retains ordinary artifacts once and excludes checkpoint archives" do
     %{user: actor} = user_fixture()
     {parent, _context} = parent_call!(actor, :fork)
-    {child, message, copied_step, reference} = child_answer!(actor, parent, :fork)
+    {_child, message, copied_step, reference} = child_answer!(actor, parent, :fork)
     copied = file!("copied.txt", "text/plain", "old")
     viewed = file!("viewed.png", "image/png", png_1x1())
     first = file!("first.txt", "text/plain", "first")
@@ -246,18 +237,14 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     attach!(actor, own_step, viewed, 1, :tool_result)
     attach!(actor, own_step, first, 2)
 
-    {continuation, final_message, final_step, _} = child_answer!(actor, child, :handoff)
-    attach!(actor, final_step, first, 2)
-    attach!(actor, final_step, final, 3)
+    archive = file!("full_conversation.md", "text/markdown", "Archived dialogue")
+    attach!(actor, own_step, archive, 3, :handoff_history)
+    summary = create_item!(actor, own_step, type: :handoff_message, sequence: 4)
+    create_content!(actor, summary, kind: :text, content_text: "Continue work")
 
-    opaque_item!(actor, own_step, :tool_result, 3, %{
-      "raw" => %{
-        "handoff" => %{
-          "chat_id" => continuation.id,
-          "generation_message_id" => final_message.id
-        }
-      }
-    })
+    final_step = create_step!(actor, message, sequence: 4)
+    attach!(actor, final_step, first, 1)
+    attach!(actor, final_step, final, 2)
 
     assert {:ok, snapshot} = Subagent.snapshot(reference, actor)
 
@@ -266,9 +253,10 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
              final.external_id
            ]
 
-    assert snapshot.result.raw["fork"]["final_message_id"] == final_message.id
+    assert snapshot.result.raw["fork"]["final_message_id"] == message.id
     refute snapshot.result.text =~ copied.external_id
     refute snapshot.result.text =~ viewed.external_id
+    refute snapshot.result.text =~ archive.external_id
   end
 
   test "an attachment-only answer returns its files without requiring answer text" do

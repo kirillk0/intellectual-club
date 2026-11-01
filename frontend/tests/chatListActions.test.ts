@@ -81,7 +81,6 @@ describe('chat list actions menu', () => {
         stubs: {
           BotSelectorModal: true,
           ChatBotFiltersPanel: true,
-          ContinuationNav: true,
           InitialRoutePlaceholder: true,
           StackToolbarTeleport: { template: '<div><slot /></div>' },
           SvgIcon: true,

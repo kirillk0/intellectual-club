@@ -117,7 +117,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       parent_message_id: chat.parent_message_id,
       parent_relation_kind: relation_kind_string(chat.parent_relation_kind),
       subagent: chat.subagent == true,
-      child_handoff_count: Keyword.get(opts, :child_handoff_count, 0),
       child_subchat_count: Keyword.get(opts, :child_subchat_count, 0),
       subchats: Keyword.get(opts, :subchats, []),
       blocks_count: loaded_count(Map.get(chat, :blocks_count)),
@@ -206,17 +205,6 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       created_at: datetime_iso(chat.created_at),
       updated_at: datetime_iso(chat.updated_at)
     }
-  end
-
-  def chat_continuation_nav_item(%{chat: %Chat{} = chat} = entry) do
-    chat
-    |> chat_relation_summary(
-      kind: Map.get(entry, :kind, chat.parent_relation_kind),
-      message_id: Map.get(entry, :message_id, chat.parent_message_id),
-      parent_chat_id: chat.parent_chat_id,
-      parent_message_id: chat.parent_message_id
-    )
-    |> Map.put(:label, to_string(Map.get(entry, :label, "")))
   end
 
   def chat_block_binding(%ChatKnowledgeBlock{} = binding) do
@@ -558,6 +546,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       content_text: preview_text,
       content_text_truncated: truncated?,
       content_json: content_json,
+      handoff_entry: handoff_entry_snapshot(item_type, content.content_json),
       media: Media.media_descriptor(content)
     }
   end
@@ -583,16 +572,18 @@ defmodule IntellectualClubWeb.Bff.Serializer do
   def runtime_message_content(step, role) when is_map(step) do
     text_types =
       if role == :assistant,
-        do: ["answer", "handoff_summary", "steering"],
+        do: ["answer", "handoff_summary", "steering", "handoff_history", "handoff_message"],
         else: [
           "input",
           "handoff_request",
-          "handoff_context",
           "handoff_history",
           "handoff_message"
         ]
 
-    media_types = if role == :assistant, do: ["artifact", "handoff_summary"], else: text_types
+    media_types =
+      if role == :assistant,
+        do: ["artifact", "handoff_summary", "handoff_history", "handoff_message"],
+        else: text_types
 
     Enum.reduce(Map.get(step, :items, []), %{items: [], parts: [], media: []}, fn item, acc ->
       type = Map.get(item, :type)
@@ -617,6 +608,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
               sequence: content.sequence,
               text: content.content_text,
               content_text_truncated: Map.get(content, :content_text_truncated) == true,
+              handoff_entry: Map.get(content, :handoff_entry),
               created_at: Map.get(item, :created_at) || Map.get(step, :created_at)
             })
           end)
@@ -742,7 +734,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     end
   end
 
-  defp relation_kind_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp relation_kind_string(value) when value in [:fork, :spawn], do: Atom.to_string(value)
   defp relation_kind_string(_value), do: nil
 
   defp latest_step_summary([]), do: nil
@@ -996,7 +988,14 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     content
     |> Map.take(~w(id external_id sequence kind)a)
     |> Map.put(:content_text, preview_text)
-    |> Map.put(:content_text_truncated, truncated?)
+    |> Map.put(
+      :content_text_truncated,
+      truncated? or Map.get(content, :content_text_truncated) == true
+    )
+    |> Map.put(
+      :handoff_entry,
+      handoff_entry_snapshot(item_type, content_json || Map.get(content, :handoff_entry))
+    )
     |> Map.put(:content_json, sanitized_content_json)
     |> Map.put(:media, media)
   end
@@ -1097,7 +1096,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     omitted_count = Map.get(metadata, "omitted_count", Map.get(metadata, :omitted_count))
 
     %{
-      entry_kind: if(entry_kind in ["message", "continuation", "omission"], do: entry_kind),
+      entry_kind: if(entry_kind in ["message", "omission"], do: entry_kind),
       role: if(role in ["user", "assistant"], do: role),
       created_at: if(is_binary(created_at), do: created_at),
       omitted_count: if(is_integer(omitted_count) and omitted_count > 0, do: omitted_count)

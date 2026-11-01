@@ -48,12 +48,10 @@ describe('chat relation positioning', () => {
     expect(parentRelationBannerForBranch(positionedParent, [9, 11])).toBe(positionedParent);
   });
 
-  it('keeps the parent banner when a fork anchor is incomplete or the relation is a handoff', () => {
+  it('keeps the parent banner when a fork anchor is incomplete', () => {
     const incomplete = { ...positionedParent, anchor_tool_call_item_id: null };
-    const handoff = { ...positionedParent, kind: 'handoff' };
 
     expect(parentRelationBannerForBranch(incomplete, [10])).toBe(incomplete);
-    expect(parentRelationBannerForBranch(handoff, [10])).toBe(handoff);
   });
 
   it('hides fallback child relations attached to inactive branch messages', () => {
@@ -75,7 +73,7 @@ describe('chat relation positioning', () => {
     ).toBe('canceled');
   });
 
-  it('keeps a handed-off child generating when its source message is done', () => {
+  it('prioritizes an active generation over a cached message status', () => {
     expect(
       childRelationGenerationState({
         chat_id: 20,

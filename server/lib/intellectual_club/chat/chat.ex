@@ -394,7 +394,7 @@ defmodule IntellectualClub.Chat.Chat do
     attribute :parent_relation_kind, :atom do
       allow_nil?(true)
       public?(true)
-      constraints(one_of: [:handoff, :fork, :spawn])
+      constraints(one_of: [:fork, :spawn])
     end
 
     attribute :fork_task, :string do
@@ -460,8 +460,8 @@ defmodule IntellectualClub.Chat.Chat do
       attribute_type: :integer
     )
 
-    # The tool instance that created this subagent lineage (fork or spawn);
-    # handoff continuations copy it. Its subchat policy governs the lineage.
+    # The tool instance that created this subagent lineage (fork or spawn).
+    # Its subchat policy governs the lineage.
     belongs_to(:parent_tool_instance, IntellectualClub.Tools.ToolInstance,
       allow_nil?: true,
       public?: false,

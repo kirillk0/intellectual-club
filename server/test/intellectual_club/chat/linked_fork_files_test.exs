@@ -21,10 +21,6 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     context = context(fixture.child, fixture.actor)
     %{user: other_actor} = user_fixture()
 
-    assert ContentFiles.handoff_chat_scope_ids(fixture.child.id, fixture.actor.id) == [
-             fixture.child.id
-           ]
-
     assert [] ==
              ChatMessage
              |> Ash.Query.filter(chat_id == ^fixture.child.id)
@@ -57,41 +53,14 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     )
   end
 
-  test "handoff descendants preserve a linked fork's restricted inherited file scope" do
+  test "standalone chats cannot inherit another chat's canonical or projected files" do
     fixture = fork_fixture!()
-
-    handoff =
-      create_empty_chat!(fixture.actor, %{
-        parent_chat_id: fixture.child.id,
-        parent_relation_kind: :handoff
-      })
-
-    nested_handoff =
-      create_empty_chat!(fixture.actor, %{
-        parent_chat_id: handoff.id,
-        parent_relation_kind: :handoff
-      })
-
+    standalone = create_empty_chat!(fixture.actor)
     own_step = followup_step!(fixture.actor, fixture.child)
     own = attach!(fixture.actor, own_step, :artifact, 1, "own-fork-artifact")
 
-    assert ContentFiles.handoff_chat_scope_ids(nested_handoff.id, fixture.actor.id) == [
-             nested_handoff.id,
-             handoff.id,
-             fixture.child.id
-           ]
-
-    assert_readable(context(nested_handoff, fixture.actor), fixture.allowed ++ [own])
-    assert_denied(context(nested_handoff, fixture.actor), fixture.denied)
-
-    # Handoff itself still grants access to its whole owned source chat.
-    ordinary_handoff =
-      create_empty_chat!(fixture.actor, %{
-        parent_chat_id: fixture.parent.id,
-        parent_relation_kind: :handoff
-      })
-
-    assert_readable(context(ordinary_handoff, fixture.actor), [fixture.future, fixture.result])
+    assert_denied(context(standalone, fixture.actor), fixture.allowed ++ fixture.denied ++ [own])
+    assert_materialized(followup_step!(fixture.actor, standalone), [], fixture.allowed ++ [own])
   end
 
   test "canonical followup images do not reuse future parent request-file bindings" do
@@ -150,27 +119,6 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
     assert_denied(context(fixture.child, fixture.actor), fixture.allowed)
     assert_materialized(followup_step!(fixture.actor, fixture.child), [], fixture.allowed)
-  end
-
-  test "handoff ancestry traversal terminates on a cycle" do
-    %{user: actor} = user_fixture()
-    first = create_empty_chat!(actor)
-
-    second =
-      create_empty_chat!(actor, %{parent_chat_id: first.id, parent_relation_kind: :handoff})
-
-    first
-    |> Ash.Changeset.for_update(
-      :update,
-      %{parent_chat_id: second.id, parent_relation_kind: :handoff},
-      actor: actor
-    )
-    |> Ash.update!(actor: actor)
-
-    assert ContentFiles.handoff_chat_scope_ids(second.id, actor.id) == [second.id, first.id]
-
-    assert {:error, :not_found} =
-             ContentFiles.load_payload_for_execution(Ecto.UUID.generate(), context(second, actor))
   end
 
   defp fork_fixture!(opts \\ []) do

@@ -40,7 +40,6 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
         one_of: [
           :input,
           :handoff_request,
-          :handoff_context,
           :handoff_history,
           :handoff_message,
           :steering,

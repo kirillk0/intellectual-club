@@ -321,6 +321,34 @@ describe('chat message branch options', () => {
     expect(pushChatRoute).toHaveBeenCalledWith(43);
   });
 
+  it('edits assistant output without changing checkpoint text or archives', () => {
+    const { actions } = createActions();
+    const media = (id: number, item_type: string) => ({
+      id, item_type, sequence: 1, kind: 'media',
+      media: {
+        external_id: `content-${id}`, file_external_id: `file-${id}`,
+        filename: `${id}.md`, mime_type: 'text/markdown', size_bytes: 10,
+        sha256: 'digest', is_image: false,
+      },
+    });
+    actions.startEdit({
+      ...assistantMessage,
+      content: {
+        items: [],
+        parts: [
+          { content_id: 1, sequence: 1, text: 'Answer', item_type: 'answer', step_sequence: 1 },
+          { content_id: 2, sequence: 1, text: 'History', item_type: 'handoff_history', step_sequence: 2 },
+          { content_id: 3, sequence: 1, text: 'Summary', item_type: 'handoff_message', step_sequence: 2 },
+          { content_id: 4, sequence: 1, text: 'Final answer', item_type: 'answer', step_sequence: 3 },
+        ],
+        media: [media(5, 'handoff_history'), media(6, 'artifact')],
+      },
+    });
+    expect(actions.editContents.value).toEqual(['Answer', 'Final answer']);
+    expect(actions.editExistingAttachments.value).toHaveLength(1);
+    expect(actions.editExistingAttachments.value[0]?.name).toBe('6.md');
+  });
+
   describe('branch dialog attachments', () => {
     const image = () => new File(['png'], 'pic.png', { type: 'image/png' });
     // The chat configuration (7) accepts no files; configuration 8 accepts images.

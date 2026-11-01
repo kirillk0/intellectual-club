@@ -8,7 +8,6 @@ defmodule IntellectualClub.Chat.Listing do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
-  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.Chat.Threads
 
@@ -34,8 +33,8 @@ defmodule IntellectualClub.Chat.Listing do
 
   def apply_hierarchy_filter(query, _actor, "drafts"), do: query
 
-  def apply_hierarchy_filter(query, actor, _section) do
-    query |> Ash.Query.filter(subagent == false) |> without_handoff_children(actor)
+  def apply_hierarchy_filter(query, _actor, _section) do
+    Ash.Query.filter(query, subagent == false)
   end
 
   def apply_section_sort(query, "drafts"),
@@ -63,19 +62,6 @@ defmodule IntellectualClub.Chat.Listing do
       )
 
   def apply_section(query, _section), do: query
-
-  @spec without_handoff_children(Ash.Query.t(), map()) :: Ash.Query.t()
-  def without_handoff_children(query, actor) do
-    relation_kind = Handoff.relation_kind()
-
-    Ash.Query.filter(
-      query,
-      not exists(
-        child_chats,
-        owner_id == ^actor.id and parent_relation_kind == ^relation_kind
-      )
-    )
-  end
 
   @spec apply_bot_filter(Ash.Query.t(), term()) :: Ash.Query.t()
   def apply_bot_filter(query, nil), do: query
@@ -111,36 +97,6 @@ defmodule IntellectualClub.Chat.Listing do
         end
     end
   end
-
-  @spec child_handoff_counts([integer()], map()) :: map()
-  def child_handoff_counts(chat_ids, actor) when is_list(chat_ids) do
-    ids =
-      chat_ids
-      |> Enum.filter(&is_integer/1)
-      |> Enum.uniq()
-
-    if ids == [] do
-      %{}
-    else
-      relation_kind = Handoff.relation_kind()
-
-      Chat
-      |> Ash.Query.filter(parent_chat_id in ^ids and parent_relation_kind == ^relation_kind)
-      |> Ash.Query.select([:id, :parent_chat_id])
-      |> Ash.read(actor: actor)
-      |> case do
-        {:ok, children} ->
-          Enum.reduce(children, %{}, fn child, acc ->
-            Map.update(acc, child.parent_chat_id, 1, &(&1 + 1))
-          end)
-
-        _other ->
-          %{}
-      end
-    end
-  end
-
-  def child_handoff_counts(_chat_ids, _actor), do: %{}
 
   @subchat_relation_kinds [:fork, :spawn]
 

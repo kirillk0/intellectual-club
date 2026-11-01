@@ -7,7 +7,6 @@ defmodule IntellectualClub.Chat.Search do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.MessageText
   alias IntellectualClub.Chat.Threads
@@ -636,24 +635,13 @@ defmodule IntellectualClub.Chat.Search do
   defp read_message_candidates(search, bot_filter, meta_ids, limit, actor, scoped_ids)
        when is_tuple(search) do
     meta_list = MapSet.to_list(meta_ids)
-    handoff_relation_kind = Handoff.relation_kind()
     scoped? = is_list(scoped_ids)
 
     ChatMessage
     |> MessageText.filter(search, owner_id: actor.id)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(
-      ^scoped? or
-        exists(
-          chat,
-          subagent == false and
-            not exists(
-              child_chats,
-              owner_id == ^actor.id and parent_relation_kind == ^handoff_relation_kind
-            )
-        )
-    )
+    |> Ash.Query.filter(^scoped? or exists(chat, subagent == false))
     |> Ash.Query.filter(role in [:user, :assistant])
     |> maybe_filter_chat_ids(scoped_ids, :chat_id)
     |> maybe_exclude_chat_ids(meta_list)

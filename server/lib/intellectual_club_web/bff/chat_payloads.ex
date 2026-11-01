@@ -50,7 +50,6 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
           subchat_usage_by_message_id: subchat_cost_summary.usage_by_message_id
         ),
       relations: serialize_relations(relations, lifecycle_states),
-      continuation_nav: serialize_continuation_nav(Relations.continuation_nav(chat, actor)),
       queued_messages: ChatQueuedMessagePayload.queued_messages(queued_messages),
       active_generation_message_id: active_generation_message_id(messages),
       idle_revision:
@@ -224,12 +223,6 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
         []
     end
   end
-
-  def serialize_continuation_nav(entries) when is_list(entries) do
-    Enum.map(entries, &Serializer.chat_continuation_nav_item/1)
-  end
-
-  def serialize_continuation_nav(_entries), do: []
 
   defp load_chat_blocks(chat_id, actor) do
     ChatKnowledgeBlock

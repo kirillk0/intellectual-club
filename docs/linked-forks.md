@@ -38,9 +38,10 @@ Subchat policy can reject functions inside subchats: `fork`, `fork_background`,
 `nested_subchats_limit` is exhausted, and `handoff` unless
 `allow_handoff_in_subchats` is enabled. The handoff policy belongs to the tool
 instance that created the subagent lineage: every fork and spawn chat records it
-in the private `parent_tool_instance_id` attribute, handoff continuations copy it,
-and deleting that instance clears the link. While the chat owner can read that
-instance, its setting decides; otherwise the instance executing `handoff` does.
+in the private `parent_tool_instance_id` attribute, and deleting that instance
+clears the link. Compaction keeps the same chat and lineage. While the chat owner
+can read that instance, its setting decides; otherwise the instance executing
+`handoff` does.
 A linked fork keeps the parent's tool list unchanged so the inherited request
 prefix stays cacheable. Instead, its boundary steering names the model-visible functions
 (`<alias>__<function>`) that are present in that list and rejected for the child.
@@ -48,9 +49,8 @@ The names are computed once at fork creation and stored in the private
 `fork_unavailable_functions` attribute, so every reconstruction of the steering is
 identical. Forks without such functions keep the original steering text.
 
-Chats that do not inherit a request prefix (spawn subchats and handoff continuations
-of subchats) omit rejected functions from both the tool payload and the system prompt
-tool context. Execution-time policy checks remain authoritative in every case.
+Chats that do not inherit a request prefix (spawn subchats) omit rejected
+functions from both the tool payload and the system prompt tool context. Execution-time policy checks remain authoritative in every case.
 
 ## Bot subagents
 
@@ -84,7 +84,8 @@ new follow-ups, steering, cancellation and inspection remain available.
 
 Background forks retain the existing generation-bound task lifecycle: finishing
 or canceling the parent cancels its unfinished tasks. The parent must await their
-status before finishing, or transfer them with a handoff. Linked storage does not
+status before finishing. Tool handoff now compacts the same message, so active
+tasks keep their lifecycle anchor and remain running. Linked storage does not
 make these tasks detached jobs.
 
 Agent Management also exposes `wait_backround_tasks` (disabled by default).

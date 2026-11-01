@@ -185,7 +185,7 @@ export type Chat = {
   llm_configuration_id: number | null;
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
-  parent_relation_kind?: string | null;
+  parent_relation_kind?: 'fork' | 'spawn' | null;
   subagent?: boolean | null;
   can_edit?: boolean | null;
   shared_incoming?: boolean | null;
@@ -208,9 +208,8 @@ export type ChatSummary = {
   active_generation_message_id?: number | null;
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
-  parent_relation_kind?: string | null;
+  parent_relation_kind?: 'fork' | 'spawn' | null;
   subagent?: boolean | null;
-  child_handoff_count?: number | null;
   child_subchat_count?: number | null;
   subchats?: ChatSummary[];
   created_at: string | null;
@@ -224,25 +223,6 @@ export type ChatSummary = {
   can_edit?: boolean | null;
   shared_incoming?: boolean | null;
   shared_outgoing?: boolean | null;
-  continuation_nav?: ChatContinuationNavItem[];
-};
-
-export type ChatContinuationNavItem = {
-  chat_id: number;
-  label: string;
-  message_id?: number | null;
-  parent_chat_id?: number | null;
-  parent_message_id?: number | null;
-  kind?: string | null;
-  note?: string | null;
-  bot_id?: number | null;
-  bot_name?: string | null;
-  subagent?: boolean | null;
-  active_generation_message_id?: number | null;
-  last_message_status?: string | null;
-  background_task?: boolean;
-  created_at?: string | null;
-  updated_at?: string | null;
 };
 
 export type ChatRelationSummary = {
@@ -378,7 +358,7 @@ export type ChatMessageContentPart = {
   text: string;
   content_text_truncated?: boolean;
   handoff_entry?: {
-    entry_kind: 'message' | 'continuation' | 'omission' | null;
+    entry_kind: 'message' | 'omission' | null;
     role: 'user' | 'assistant' | null;
     created_at: string | null;
     omitted_count: number | null;

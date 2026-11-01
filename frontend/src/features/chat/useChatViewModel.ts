@@ -39,13 +39,11 @@ import { useStackNavigation } from '@/features/stack/useStackNavigation';
 import { usePageTitleOverride } from '@/features/app/documentTitle';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { useChatServerEvents } from '@/features/chat/chatServerEvents';
-import { publishChatChange } from '@/features/chat/chatEvents';
 import type {
   Bot,
   Chat,
   ChatBranchMessage,
   ForkContext,
-  ChatContinuationNavItem,
   ChatExportPayload,
   ChatRelationSummary,
   ChatRelations,
@@ -190,7 +188,6 @@ export function useChatViewModel() {
   const branch = ref<ChatBranchMessage[]>([]);
   const queuedMessages = ref<ChatQueuedMessage[]>([]);
   const relations = ref<ChatRelations>(emptyChatRelations());
-  const continuationNav = ref<ChatContinuationNavItem[]>([]);
   const counters = ref<Counters>({
     prompt_token_count: 0,
     history_token_count: 0,
@@ -263,34 +260,6 @@ export function useChatViewModel() {
       (relation) => typeof relation.active_generation_message_id === 'number'
     );
   });
-  const handoffChildForMessage = (messageId: number) =>
-    childRelationsForMessage(messageId).find((relation) => relation.kind === 'handoff' && Number.isInteger(relation.chat_id));
-
-  const navigateToHandoffChildForMessage = async (sourceChatId: number, messageId: number) => {
-    const relation = handoffChildForMessage(messageId);
-    const targetChatId = relation?.chat_id;
-    if (!targetChatId || targetChatId === sourceChatId) return false;
-
-    const patch: Record<string, unknown> = {
-      parent_chat_id: sourceChatId,
-      parent_message_id: messageId,
-      parent_relation_kind: 'handoff',
-    };
-
-    if (typeof relation.active_generation_message_id === 'number') {
-      patch.active_generation_message_id = relation.active_generation_message_id;
-    }
-
-    publishChatChange({
-      operation: 'touch',
-      id: targetChatId,
-      patch,
-      meta: { reason: 'handoff' },
-    });
-    await navigateToChat(targetChatId);
-    return true;
-  };
-
   const shareModalOpen = ref(false);
   const shareGroups = ref<Group[]>([]);
   const sharedGroupIds = ref<number[]>([]);
@@ -439,15 +408,11 @@ export function useChatViewModel() {
     onQueuedMessagesUpdated: replaceQueuedMessages,
     onQueuedMessageCreated: upsertQueuedMessage,
     onGenerationSettled: async (messageId, status) => {
-      const settledChatId = chatId.value;
       if (layer.active.value && document.visibilityState === 'visible' && document.hasFocus()) {
         markWebPushGenerationSeen(chatId.value, messageId, status);
         closeWebPushNotificationsForChat(chatId.value);
       }
       await loadChatSafe({ mode: 'soft', includeSettings: false });
-      if (status === 'done' && chatId.value === settledChatId) {
-        await navigateToHandoffChildForMessage(settledChatId, messageId);
-      }
     },
   });
 
@@ -763,7 +728,6 @@ export function useChatViewModel() {
       branch.value = payload.branch || [];
       forkContext.value = payload.fork_context || null;
       relations.value = payload.relations || emptyChatRelations();
-      continuationNav.value = payload.continuation_nav || [];
       replaceQueuedMessages(payload.queued_messages || []);
       chatIdleRevision.value = typeof payload.idle_revision === 'string' ? payload.idle_revision : null;
       composerRuntime.syncServerGenerationState(payload.active_generation_message_id || null);
@@ -813,7 +777,6 @@ export function useChatViewModel() {
       branch.value = [];
       forkContext.value = null;
       relations.value = emptyChatRelations();
-      continuationNav.value = [];
       queuedMessages.value = [];
       chatIdleRevision.value = null;
       chatBlockCount.value = 0;
@@ -1094,7 +1057,7 @@ export function useChatViewModel() {
       await loadChatSafe({ mode: 'soft', includeSettings: false });
     } catch (error) {
       console.error(error);
-      window.alert(getApiErrorMessage(error, 'Failed to handoff chat.'));
+      window.alert(getApiErrorMessage(error, 'Failed to compact chat context.'));
     } finally {
       handoffPending.value = false;
     }
@@ -1214,7 +1177,6 @@ export function useChatViewModel() {
     historyReadonly,
     forkContext,
     branch,
-    continuationNav,
     parentRelation,
     parentRelationBanner,
     fallbackChildRelations,

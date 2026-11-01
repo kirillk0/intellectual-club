@@ -1,3 +1,4 @@
+import { translate } from '@/i18n';
 import type {
   ChatBranchMessage,
   ChatMessageContentPart,
@@ -19,6 +20,19 @@ export const handoffContextItemTypes = new Set<HandoffContextItemKind>([
 
 const finiteSequence = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+/** Identifies the trace item a content part, media or display item belongs to. */
+export const chatMessageDisplayItemIdentity = (value: {
+  step_id?: number | null;
+  step_sequence?: number | null;
+  item_id?: number | null;
+  item_sequence?: number | null;
+  item_type?: string | null;
+}) =>
+  `${value.step_id ?? ''}:${value.item_id ?? ''}:${value.step_sequence ?? ''}:${value.item_sequence ?? ''}:${value.item_type ?? ''}`;
+
+export const handoffContextItemLabel = (itemType: HandoffContextItemKind) =>
+  translate(itemType === 'handoff_history' ? 'History' : 'Context summary');
 
 export const isSteeringContentPart = (part: ChatMessageContentPart) => part.item_type === 'steering';
 
@@ -43,7 +57,7 @@ const inferredDisplayItems = (message: ChatBranchMessage): ChatMessageDisplayIte
   for (const value of values) {
     const itemType = String(value.item_type || '');
     if (!itemType) continue;
-    const key = `${value.step_id ?? ''}:${value.item_id ?? ''}:${value.step_sequence ?? ''}:${value.item_sequence ?? ''}:${itemType}`;
+    const key = chatMessageDisplayItemIdentity({ ...value, item_type: itemType });
     if (seen.has(key)) continue;
     seen.add(key);
     items.push({
@@ -112,24 +126,21 @@ export const primaryChatMessageText = (message: ChatBranchMessage) =>
   primaryChatMessageTexts(message).at(-1) ?? '';
 
 export const fullChatMessageText = (message: ChatBranchMessage) => {
-  const parts = sortedChatMessageContentParts(message);
-  const history = parts
-    .filter((part) => part.item_type === 'handoff_history')
-    .map((part) => String(part.text ?? ''))
-    .filter((text) => text.trim() !== '');
-  const handoffMessage = parts
-    .filter((part) => part.item_type === 'handoff_message')
-    .map((part) => String(part.text ?? ''))
-    .filter((text) => text.trim() !== '');
+  const texts: string[] = [];
+  let previousItem = '';
 
-  if (history.length || handoffMessage.length) {
-    return [
-      history.length ? `History\n\n${history.join('\n\n')}` : '',
-      handoffMessage.length ? `Handoff message\n\n${handoffMessage.join('\n\n')}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+  for (const part of sortedChatMessageContentParts(message)) {
+    if (message.role === 'assistant' && isSteeringContentPart(part)) continue;
+    const text = String(part.text ?? '');
+    if (!text.trim()) continue;
+
+    const identity = chatMessageDisplayItemIdentity(part);
+    if (isHandoffContextItemType(part.item_type) && identity !== previousItem) {
+      texts.push(handoffContextItemLabel(part.item_type));
+    }
+    texts.push(text);
+    previousItem = identity;
   }
 
-  return primaryChatMessageTexts(message).join('\n\n');
+  return texts.join('\n\n');
 };

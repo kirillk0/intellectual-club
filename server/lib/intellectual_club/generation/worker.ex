@@ -17,6 +17,7 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Generation.Context
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.PersistenceOperation
@@ -1182,16 +1183,15 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp finalize_done_from_step(state, step_id, opts \\ [])
-       when is_integer(step_id) and is_list(opts) do
+  defp finalize_done_from_step(state, step_id) when is_integer(step_id) do
     state = cancel_tasks(state)
 
     {:noreply,
      begin_persistence(state, {:done, step_id}, fn ->
        safe_chat_persist_value(state, :done, fn ->
-         effect = durable_completion_effect!(state, step_id, opts)
+         effect = durable_completion_effect!(state)
          Persistence.persist_completed_from_step!(state.context.message_id, step_id)
-         _ = settle_background_task_lifecycle!(state, effect)
+         _ = BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
          result = if effect == :ok, do: {:queue_boundary, settle_done_queue!(state)}, else: effect
          record_terminal_event!(state, :done, completion_suppressed?(result))
          result
@@ -1199,20 +1199,8 @@ defmodule IntellectualClub.Generation.Worker do
      end)}
   end
 
-  defp durable_completion_effect!(state, step_id, opts) do
-    result =
-      case Map.get(state.context, :completion_effect) do
-        :manual_handoff ->
-          run_completion_effect(state)
-
-        _other ->
-          case terminal_handoff_payload(step_id, opts) do
-            %{} = payload -> transfer_terminal_handoff(state, step_id, payload)
-            nil -> :ok
-          end
-      end
-
-    case result do
+  defp durable_completion_effect!(state) do
+    case run_completion_effect(state) do
       {:error, error_text} -> raise CompletionEffectFailure, message: error_text
       result -> result
     end
@@ -1223,20 +1211,19 @@ defmodule IntellectualClub.Generation.Worker do
 
     case Handoff.complete_manual_generation(state.context.message_id, actor) do
       {:ok, result} ->
-        case QueueCoordinator.transfer_to_handoff(
+        case QueueCoordinator.reanchor_manual_compaction(
                state.context.message_id,
-               result.chat.id,
-               nil
+               result.message.id
              ) do
           {:ok, payload} ->
-            {:handoff, Map.put(result, :queue_transfer, payload)}
+            {:manual_compaction, Map.put(result, :queue_reanchor, payload)}
 
           {:error, reason} ->
-            {:error, "Failed to transfer manual handoff queue: #{inspect(reason)}"}
+            {:error, "Failed to reanchor manual compaction queue: #{inspect(reason)}"}
         end
 
       {:error, reason} ->
-        {:error, "Failed to complete manual handoff: #{inspect(reason)}"}
+        {:error, "Failed to complete manual compaction: #{inspect(reason)}"}
     end
   end
 
@@ -1276,45 +1263,11 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp completion_suppressed?({:queue_boundary, {:ok, _context}}), do: true
 
-  defp completion_suppressed?({:handoff, %{queue_transfer: %{transferred_count: count}}})
+  defp completion_suppressed?({:manual_compaction, %{queue_reanchor: %{reanchored_count: count}}})
        when is_integer(count) and count > 0,
        do: true
 
-  defp completion_suppressed?({:terminal_handoff, _payload, _transfer}), do: true
   defp completion_suppressed?(_result), do: false
-
-  defp settle_background_task_lifecycle!(
-         state,
-         {:terminal_handoff, payload, _transfer}
-       ) do
-    child_message_id =
-      parse_int(
-        Map.get(payload, "generation_message_id") ||
-          Map.get(payload, :generation_message_id)
-      )
-
-    if is_integer(child_message_id) do
-      task_ids =
-        BackgroundTasks.transfer_active_for_handoff!(
-          state.context.message_id,
-          child_message_id
-        )
-
-      Logger.info(
-        "Transferred background task lifecycle through handoff " <>
-          "count=#{length(task_ids)} source_message_id=#{state.context.message_id} " <>
-          "child_message_id=#{child_message_id}"
-      )
-
-      task_ids
-    else
-      raise CompletionEffectFailure, message: "Invalid terminal handoff generation"
-    end
-  end
-
-  defp settle_background_task_lifecycle!(state, _effect) do
-    BackgroundTasks.request_cancel_for_lifecycle_message!(state.context.message_id)
-  end
 
   defp record_terminal_event!(state, status, suppressed?) do
     case Notifications.record_generation_finished(state.context.message_id, status,
@@ -1332,56 +1285,6 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp terminal_handoff_payload(step_id, opts) do
-    case Keyword.get(opts, :terminal_handoff) do
-      %{} = payload ->
-        payload
-
-      _other ->
-        step_id
-        |> Persistence.load_step_for_followup!()
-        |> Map.get(:results, [])
-        |> handoff_payload()
-    end
-  end
-
-  defp transfer_terminal_handoff(state, step_id, payload) do
-    child_chat_id = parse_int(Map.get(payload, "chat_id") || Map.get(payload, :chat_id))
-
-    if is_integer(child_chat_id) do
-      case QueueCoordinator.prepare_terminal_handoff(
-             state.context.message_id,
-             child_chat_id
-           ) do
-        {:ok, transfer} ->
-          generation_message_id = transfer.child_generation_message_id
-          queue_anchor_message_id = transfer.child_queue_anchor_message_id
-
-          canonical_payload =
-            payload
-            |> Map.put("generation_message_id", generation_message_id)
-            |> Map.put("queue_anchor_message_id", queue_anchor_message_id)
-
-          _ =
-            Persistence.enrich_handoff_tool_results!(
-              step_id,
-              child_chat_id,
-              canonical_payload
-            )
-
-          runtime_payload =
-            Map.put(canonical_payload, :prepared_context, transfer.prepared_context)
-
-          {:terminal_handoff, runtime_payload, transfer}
-
-        {:error, reason} ->
-          {:error, "Failed to transfer handoff queue: #{inspect(reason)}"}
-      end
-    else
-      {:error, "Invalid terminal handoff destination"}
-    end
-  end
-
   defp finish_done_queue(state, {:ok, context}) do
     QueueDispatcher.start_prepared(context)
     NotificationsDispatcher.suppress_generation_finished(state.context.message_id, :done)
@@ -1391,82 +1294,16 @@ defmodule IntellectualClub.Generation.Worker do
     NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
   end
 
-  defp finish_terminal_handoff_queue(state, payload) do
-    child_chat_id = parse_int(Map.get(payload, "chat_id") || Map.get(payload, :chat_id))
-
-    case Map.get(payload, :prepared_context) do
-      %{} = context ->
-        QueueDispatcher.start_prepared(context)
-
-      _other ->
-        resume_terminal_handoff_generation(state, payload)
-    end
-
-    if is_integer(child_chat_id), do: QueueDispatcher.kick(child_chat_id)
-
-    NotificationsDispatcher.suppress_generation_finished(
-      state.context.message_id,
-      :done
-    )
-  end
-
-  defp resume_terminal_handoff_generation(state, payload) do
-    generation_message_id =
-      parse_int(
-        Map.get(payload, "generation_message_id") ||
-          Map.get(payload, :generation_message_id)
-      )
-
-    if is_integer(generation_message_id) do
-      actor = %User{id: state.context.owner_id}
-
-      case Subagent.resume_generation_if_needed(generation_message_id, actor) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning(
-            "Durable handoff generation start deferred " <>
-              "message_id=#{generation_message_id} reason=#{inspect(reason)}"
-          )
-      end
-    end
-
-    :ok
-  end
-
-  defp finish_manual_handoff_queue(
+  defp finish_manual_compaction_queue(
          state,
-         %{chat: %{id: child_chat_id}, queue_transfer: %{transferred_count: count}}
+         %{queue_reanchor: %{chat_id: chat_id, reanchored_count: count}}
        )
-       when is_integer(child_chat_id) and count > 0 do
-    QueueDispatcher.kick(child_chat_id)
-
-    NotificationsDispatcher.suppress_generation_finished(
-      state.context.message_id,
-      :done
-    )
+       when count > 0 do
+    QueueDispatcher.kick(chat_id)
+    NotificationsDispatcher.suppress_generation_finished(state.context.message_id, :done)
   end
 
-  defp finish_manual_handoff_queue(state, %{queue_transfer: %{transferred_count: 0}}) do
-    NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
-  end
-
-  defp finish_manual_handoff_queue(state, %{chat: %{id: child_chat_id}})
-       when is_integer(child_chat_id) do
-    case QueueDispatcher.handoff(state.context.message_id, child_chat_id, nil) do
-      {:transferred, _payload} ->
-        NotificationsDispatcher.suppress_generation_finished(
-          state.context.message_id,
-          :done
-        )
-
-      _other ->
-        NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
-    end
-  end
-
-  defp finish_manual_handoff_queue(state, _result) do
+  defp finish_manual_compaction_queue(state, _result) do
     NotificationsDispatcher.notify_generation_finished(state.context.message_id, :done)
   end
 
@@ -2405,9 +2242,12 @@ defmodule IntellectualClub.Generation.Worker do
                   raw_request: state.runtime_step.raw_request
                 )
               end) do
-         case handoff_payload(persisted.results) do
-           %{} = payload ->
-             {:ok, {:handoff, payload}}
+         case compaction_result(state, persisted.results) do
+           %{} = result ->
+             case prepare_compaction_followup(state, persisted, result) do
+               {:ok, next_step} -> {:ok, {:next_step, next_step}}
+               {:error, reason} -> {:error, reason}
+             end
 
            nil ->
              case prepare_tool_followup(state, persisted) do
@@ -2419,21 +2259,132 @@ defmodule IntellectualClub.Generation.Worker do
      end)}
   end
 
-  defp handoff_payload(results) when is_list(results) do
+  defp compaction_result(state, results) do
     Enum.find_value(results, fn result ->
-      raw =
-        result
-        |> tool_call_to_map()
-        |> Map.get(:result_raw, %{})
+      if handoff_tool_call?(state, result) do
+        case result |> tool_call_to_map() |> Map.get(:result_raw, %{}) do
+          %{"compaction" => %{"summary" => summary}} when is_binary(summary) ->
+            if String.trim(summary) != "", do: result
 
-      handoff_payload_from_raw(raw)
+          _other ->
+            nil
+        end
+      end
     end)
   end
 
-  defp handoff_payload(_results), do: nil
+  defp prepare_compaction_followup(state, persisted, result) do
+    actor = %User{id: state.context.owner_id}
+    summary = result.result_raw["compaction"]["summary"]
 
-  defp handoff_payload_from_raw(%{"handoff" => %{} = payload}), do: payload
-  defp handoff_payload_from_raw(_raw), do: nil
+    preparation =
+      PersistenceFailure.capture(
+        fn -> Handoff.prepare_compaction(state.context.message_id, actor, summary) end,
+        :compaction_preparation
+      )
+
+    case preparation do
+      {:ok, rolloff} ->
+        publish_compaction_followup(state, persisted, rolloff, 0)
+
+      # Only explicit preparation refusals are tool errors. Database failures,
+      # exceptions and every publication failure retain the normal recovery path.
+      {:error, reason}
+      when reason in [
+             :fork_context_unavailable,
+             :message_not_found,
+             :not_found,
+             :forbidden,
+             :invalid_message_id,
+             :invalid_chat_id,
+             :empty_summary,
+             :invalid_summary
+           ] ->
+        prepare_refused_compaction_followup(state, result, reason)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp prepare_refused_compaction_followup(state, result, reason) do
+    refusal = %{
+      text:
+        "[tool error] Context compaction could not be prepared (#{reason}). " <>
+          "No checkpoint was created. Continue using the current conversation.",
+      result_raw: %{
+        "error" => "compaction_preparation_failed",
+        "reason" => Atom.to_string(reason)
+      }
+    }
+
+    with {:ok, persisted} <-
+           safe_persist_value(state, :compaction_refusal, fn ->
+             Persistence.refuse_compaction_tool_result!(
+               state.context.message_id,
+               state.runtime_step.id,
+               result.tool_call_item_id,
+               refusal
+             )
+
+             Persistence.load_step_for_followup!(state.runtime_step.id,
+               raw_request: state.runtime_step.raw_request
+             )
+           end),
+         {:ok, _followup, next_step} <- prepare_tool_followup(state, persisted) do
+      {:ok, next_step}
+    end
+  end
+
+  defp publish_compaction_followup(state, persisted, rolloff, attempt) do
+    result =
+      safe_request_persist_value(state, :compaction, fn ->
+        Handoff.with_compaction_items(rolloff, fn items ->
+          with {:ok, queued_messages} <- read_pending_steers(state),
+               queued_specs = queued_steering_specs(queued_messages),
+               initial = build_compaction_request(state, items),
+               steering = Map.get(persisted, :steering_items, []),
+               {:ok, followup} <-
+                 maybe_inject_steering(state, initial, steering ++ queued_specs) do
+            Persistence.complete_step_and_start_next_with_compaction!(
+              state.context.message_id,
+              state.runtime_step.id,
+              state.step_sequence + 1,
+              followup.raw_request,
+              items,
+              queued_specs,
+              request_step_options(state)
+            )
+          end
+        end)
+      end)
+
+    case result do
+      {:ok, %{} = next_step} ->
+        {:ok, next_step}
+
+      {:ok, {:error, :queued_steering_changed}} when attempt < 8 ->
+        publish_compaction_followup(state, persisted, rolloff, attempt + 1)
+
+      {:error, :queued_steering_changed} when attempt < 8 ->
+        publish_compaction_followup(state, persisted, rolloff, attempt + 1)
+
+      {:ok, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp build_compaction_request(state, items) do
+    history = [%{role: :user, status: :done, steps: [%{sequence: 1, items: items}]}]
+
+    Context.build_compaction_request(
+      Map.put(state.context, :adapter_module, state.adapter),
+      history
+    )
+  end
 
   defp build_followup_with_steering(state, persisted) do
     try do
@@ -2477,7 +2428,19 @@ defmodule IntellectualClub.Generation.Worker do
   defp maybe_inject_steering(_state, followup, []), do: {:ok, followup}
 
   defp maybe_inject_steering(state, followup, steering_items) do
-    inject_steering_request(state, followup.raw_request, steering_items)
+    context = context_for_request(state.context, followup)
+    inject_steering_request(%{state | context: context}, followup.raw_request, steering_items)
+  end
+
+  defp context_for_request(context, %{raw_request: request, request_snapshot: snapshot}) do
+    context
+    |> Map.put(:request_payload, request)
+    |> Map.put(:messages, snapshot.model_input)
+    |> Map.put(:history_length, Map.get(snapshot, :history_length))
+  end
+
+  defp context_for_request(context, %{raw_request: request}) do
+    Map.put(context, :request_payload, request)
   end
 
   defp prepare_tool_followup(state, persisted, attempt \\ 0) do
@@ -2527,6 +2490,27 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   defp continue_after_tool_step(next_state, next_step, opts) do
+    compacted? = Map.get(next_step, :compacted?, false)
+
+    next_state =
+      if compacted? do
+        snapshot = next_state.adapter.request_snapshot(next_step.raw_request)
+
+        context =
+          next_state.context
+          |> Map.put(:messages, snapshot.model_input)
+          |> Map.put(:history, [])
+          |> Map.put(:history_length, Map.get(snapshot, :history_length))
+
+        next_state
+        |> stop_provider_session()
+        |> Map.put(:context, context)
+        |> Map.put(:tool_round, 0)
+        |> Map.put(:refusal_round, 0)
+      else
+        next_state
+      end
+
     raw_request = next_step.raw_request
     step_id = next_step.step_id
     next_sequence = next_state.step_sequence + 1
@@ -2546,10 +2530,15 @@ defmodule IntellectualClub.Generation.Worker do
       |> install_runtime_step(runtime_step)
       |> install_request_images(next_step)
       |> Map.put(:step_attempt, 1)
-      |> Map.put(:tool_round, next_state.tool_round + Keyword.get(opts, :tool_round_delta, 1))
+      |> Map.put(
+        :tool_round,
+        next_state.tool_round +
+          if(compacted?, do: 0, else: Keyword.get(opts, :tool_round_delta, 1))
+      )
       |> Map.put(
         :refusal_round,
-        next_state.refusal_round + Keyword.get(opts, :refusal_round_delta, 0)
+        next_state.refusal_round +
+          if(compacted?, do: 0, else: Keyword.get(opts, :refusal_round_delta, 0))
       )
       |> Map.put(:retry_timer_ref, nil)
       |> Map.put(:stream_task, nil)
@@ -2633,13 +2622,6 @@ defmodule IntellectualClub.Generation.Worker do
     continue_after_tool_step(state, next_step, opts)
   end
 
-  defp persistence_finished(state, {:tool_followup, _opts}, {:ok, {:handoff, payload}}) do
-    advance(
-      %{state | steering_attempt: nil},
-      {:done, state.runtime_step.id, [terminal_handoff: payload]}
-    )
-  end
-
   defp persistence_finished(state, {:queued_steers, continuation, _retry?, _started?}, {:ok, nil}) do
     continuation = if state.continuation == :idle, do: continuation, else: state.continuation
     state = %{state | queued_steering_retry_attempt: 0, steering_attempt: nil}
@@ -2680,8 +2662,7 @@ defmodule IntellectualClub.Generation.Worker do
 
     case effect do
       {:queue_boundary, queue_result} -> finish_done_queue(state, queue_result)
-      {:handoff, result} -> finish_manual_handoff_queue(state, result)
-      {:terminal_handoff, payload, _transfer} -> finish_terminal_handoff_queue(state, payload)
+      {:manual_compaction, result} -> finish_manual_compaction_queue(state, result)
     end
 
     broadcast(state, {:done, state.context.message_id})
@@ -3165,8 +3146,8 @@ defmodule IntellectualClub.Generation.Worker do
   defp dispatch_continuation(state, {:tool_results, results, opts}),
     do: handle_tool_results(state, results, opts)
 
-  defp dispatch_continuation(state, {:done, step_id, opts}),
-    do: finalize_done_from_step(state, step_id, opts)
+  defp dispatch_continuation(state, {:done, step_id, _opts}),
+    do: finalize_done_from_step(state, step_id)
 
   defp dispatch_continuation(state, {:backoff, delay}) do
     token = make_ref()
@@ -3214,8 +3195,7 @@ defmodule IntellectualClub.Generation.Worker do
   # A confirmed terminal commit may resolve pending cancel callers even after
   # validation observes its cleared fence. All intermediate results are discarded.
   defp terminal_acknowledgement?({:done, _step_id}, {:ok, effect}) do
-    match?({:queue_boundary, _}, effect) or match?({:handoff, _}, effect) or
-      match?({:terminal_handoff, _, _}, effect)
+    match?({:queue_boundary, _}, effect) or match?({:manual_compaction, _}, effect)
   end
 
   defp terminal_acknowledgement?({:error, _text}, {:ok, :ok}), do: true

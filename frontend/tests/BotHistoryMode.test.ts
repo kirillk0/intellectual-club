@@ -73,7 +73,7 @@ describe('bot history mode', () => {
   it('groups settings into titled sections with Russian translations', async () => {
     const view = await mountView('/catalogs/bots/new');
     const titles = view.findAll('.settings-section__title').map((title) => title.text());
-    expect(titles).toEqual(['Avatar', 'Generation', 'Handoff summary', 'Limits']);
+    expect(titles).toEqual(['Avatar', 'Generation', 'Context compaction', 'Limits']);
 
     const texts = view
       .findAll('.settings-section__title, .settings-section__description, .settings-field__label, .settings-field__hint')

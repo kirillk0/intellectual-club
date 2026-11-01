@@ -1,7 +1,7 @@
 <template>
   <div class="chat-header-toolbar">
     <div class="toolbar chat-toolbar fill">
-      <div class="chat-toolbar__title-wrap" :class="{ 'chat-toolbar__title-wrap--with-continuations': hasContinuationNav }">
+      <div class="chat-toolbar__title-wrap">
         <span v-if="isUnread" class="chat-read-dot" :title="t('Unread')" :aria-label="t('Unread')" role="status"></span>
         <span v-else-if="isSnoozed" class="chat-snooze-marker" :title="snoozeLabel" :aria-label="snoozeLabel" role="status">◷</span>
         <div v-if="chatBaseTitle" class="chat-toolbar__title" :title="chatFullTitle">
@@ -17,14 +17,6 @@
             <SvgIcon name="edit" size="14" />
           </button>
         </div>
-        <ContinuationNav
-          class="chat-toolbar__continuation-nav"
-          :items="continuationNav"
-          :current-chat-id="currentChatId"
-          mode="header"
-          :stack="true"
-          @navigate="emit('open-continuation', $event)"
-        />
       </div>
 
       <div class="header-actions toolbar-actions-right chat-toolbar__actions">
@@ -150,23 +142,9 @@
               <span class="chat-menu-item__icon" aria-hidden="true">
                 <SvgIcon name="branch" size="16" />
               </span>
-              <span class="chat-menu-item__label">{{ t(handoffPending ? 'Handing off…' : 'Handoff') }}</span>
+              <span class="chat-menu-item__label">{{ t(handoffPending ? 'Compacting context…' : 'Compact context') }}</span>
             </button>
             <div v-if="canEdit" class="menu-divider" aria-hidden="true"></div>
-            <div v-if="hasContinuationNav" class="menu-item chat-menu-section chat-menu-section--continuations">
-              <div class="chat-menu-section__heading">
-                <SvgIcon name="branch" size="16" />
-                <span>{{ t('Chat continuations') }}</span>
-              </div>
-              <ContinuationNav
-                class="chat-menu-continuation-nav"
-                :items="continuationNav"
-                :current-chat-id="currentChatId"
-                mode="list"
-                :stack="true"
-                @navigate="emit('open-continuation', $event)"
-              />
-            </div>
             <div class="menu-item chat-menu-section">
               <div class="chat-menu-section__heading">
                 <SvgIcon name="bot" size="16" />
@@ -259,13 +237,11 @@
 
 <script setup lang="ts">
 import { computed, type ComponentPublicInstance } from 'vue';
-import type { RouteLocationRaw } from 'vue-router';
 
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-import ContinuationNav from '@/components/ContinuationNav.vue';
 import { translate } from '@/i18n';
 import ChatConfigurationSelect from './ChatConfigurationSelect.vue';
-import type { ChatReadState, ChatContinuationNavItem, LlmConfiguration } from '@/types/api';
+import type { ChatReadState, LlmConfiguration } from '@/types/api';
 
 interface Props {
   selectedConfig: number | '';
@@ -287,11 +263,9 @@ interface Props {
   menuStyle: Record<string, string>;
   currentBotId: number | null;
   currentBotName: string;
-  currentChatId: number;
   chatBaseTitle: string;
   chatFullTitle: string;
   chatNote: string;
-  continuationNav: ChatContinuationNavItem[];
   creatingChat: boolean;
   deleting: boolean;
   canEdit: boolean;
@@ -320,7 +294,6 @@ const props = withDefaults(defineProps<Props>(), {
   selectedDisabledConfigReason: null,
   configurationOptionsReady: true,
   generationConfigLabel: '',
-  continuationNav: () => [],
 });
 
 const emit = defineEmits<{
@@ -329,7 +302,6 @@ const emit = defineEmits<{
   'mark-unread': [];
   'open-snooze': [];
   unsnooze: [];
-  'open-continuation': [to: RouteLocationRaw];
   'update:selectedConfig': [value: number | ''];
   'change-config': [];
   'toggle-menu': [];
@@ -358,8 +330,6 @@ const configSelectorDisabled = computed(
     props.configSyncStatus === 'pending'
 );
 
-const hasContinuationNav = computed(() => props.continuationNav.length > 1);
-
 const configSelectorTitle = computed(() => {
   if (!props.canEdit) return t('Shared chats are read-only');
   if (!props.configurationOptionsReady) return t('Loading configurations…');
@@ -376,8 +346,8 @@ const generationConfigMismatchText = computed(() => {
 });
 
 const handoffDisabledTitle = computed(() => {
-  if (props.isGenerating) return t('Cannot handoff while generating or syncing configuration');
-  if (props.configSyncStatus === 'pending') return t('Cannot handoff while generating or syncing configuration');
+  if (props.isGenerating) return t('Cannot compact context while generating or syncing configuration');
+  if (props.configSyncStatus === 'pending') return t('Cannot compact context while generating or syncing configuration');
   return undefined;
 });
 
@@ -551,25 +521,6 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   stroke-width: 1.35;
 }
 
-.chat-toolbar__continuation-nav {
-  flex: 0 1 auto;
-  width: max-content;
-  max-width: 100%;
-  margin: 0;
-}
-
-.chat-toolbar__title-wrap--with-continuations .chat-toolbar__title {
-  flex: 0 1 auto;
-  max-width: min(21vw, 20rem);
-}
-
-@media (min-width: 721px) {
-  :global(.toolbar-host .toolbar.fill > .chat-toolbar__title-wrap.chat-toolbar__title-wrap--with-continuations) {
-    width: max-content;
-    max-width: min(58vw, max(16rem, calc(100vw - 58rem)), 56rem);
-  }
-}
-
 .chat-menu-item {
   display: flex;
   align-items: center;
@@ -594,10 +545,6 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   text-align: left;
   padding: 8px 12px 10px;
   border-bottom: 1px solid var(--color-border);
-}
-
-.chat-menu-section--continuations {
-  display: none;
 }
 
 .chat-menu-section__heading {
@@ -647,19 +594,6 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
   stroke-width: 1.35;
 }
 
-.chat-menu-continuation-nav {
-  margin-top: 8px;
-  max-width: 100%;
-}
-
-.chat-menu-continuation-nav :deep(.continuation-nav__icon) {
-  display: none;
-}
-
-.chat-menu-continuation-nav :deep(.continuation-nav__items) {
-  gap: 6px;
-}
-
 @media (max-width: 720px) {
   .chat-toolbar {
     gap: 6px;
@@ -667,10 +601,6 @@ const setMenuButtonRef = (el: TemplateRefValue) => {
 
   .chat-toolbar__title-wrap {
     display: none;
-  }
-
-  .chat-menu-section--continuations {
-    display: block;
   }
 
   .chat-toolbar__actions {

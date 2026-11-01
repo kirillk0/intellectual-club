@@ -56,8 +56,10 @@ retains its pinned configuration and request. The queue remains one chat-wide
 FIFO: a nonempty queue still prevents a direct start, switching its anchor pauses
 it with `branch_changed`, and Send next explicitly reanchors it to the selected
 branch. A generating sibling does not block delivery on that selected branch.
-Handoff transfers only follow-ups anchored to its source message and steering
-addressed to that generation.
+Tool handoff compacts context inside the same assistant message, so follow-ups,
+steering and background tasks retain their generation anchor. Manual compaction
+reanchors only follow-ups and steering addressed to its summary generation to the
+new checkpoint message in the same chat. Neither path transfers work between chats.
 
 ## Fallbacks and subchats
 
@@ -82,10 +84,10 @@ generation runs; the new selection applies to the next message only.
 Retry and orphan recovery resolve the configuration from the message (the chat
 configuration is only a fallback when the message has none or it is unreadable) and
 derive prompt-block file and secret grants from that same configuration. Work
-derived from a running turn — spawn and fork subagent chats and tool handoff
-targets — inherits the turn's configuration (`Chat.GenerationConfiguration`).
-Manual handoff targets and queued follow-ups wait for the next user message and
-therefore follow the current chat selection.
+derived from a running turn — spawn and fork subagent chats — inherits the turn's
+configuration (`Chat.GenerationConfiguration`). Tool compaction keeps the running
+turn's pinned model, prompt and tools. A manual checkpoint waits for the next turn;
+that turn and queued follow-ups follow the current chat selection.
 
 ## Branch options
 

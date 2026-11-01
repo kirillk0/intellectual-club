@@ -10,7 +10,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Generation.Lease
-  alias IntellectualClub.Generation.History
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
@@ -475,7 +474,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   end
 
   describe "handoff" do
-    test "handoff creates one child chat and defers generation until the terminal boundary" do
+    test "handoff returns a repeatable compaction request without creating a child chat" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)
       {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
@@ -497,87 +496,49 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         tool_call_item_id: tool_call_item.id
       }
 
-      assert {:ok, %ExecutionResult{} = result} =
+      summary = "Continue with the compacted context."
+
+      for _attempt <- 1..2 do
+        assert {:ok, %ExecutionResult{} = result} =
+                 NativeAgentManagement.execute(
+                   tool_instance,
+                   "handoff",
+                   %{"summary" => summary},
+                   context
+                 )
+
+        assert result.raw == %{"compaction" => %{"summary" => summary}}
+        assert result.text =~ "same message"
+        assert result.media == []
+        assert result.artifacts == []
+      end
+
+      second_context = %{context | tool_call_item_id: create_tool_call_item!(assistant, actor).id}
+      second_summary = "A later checkpoint has its own summary."
+
+      assert {:ok, %ExecutionResult{raw: %{"compaction" => %{"summary" => ^second_summary}}}} =
                NativeAgentManagement.execute(
                  tool_instance,
                  "handoff",
-                 %{"summary" => "Continue in the new chat."},
-                 context
-               )
-
-      payload = result.raw["handoff"]
-      assert is_integer(payload["chat_id"])
-      assert is_integer(payload["message_id"])
-      refute Map.has_key?(payload, "generation_message_id")
-
-      target =
-        Chat
-        |> Ash.get!(payload["chat_id"], actor: actor, load: [:last_message])
-
-      assert target.parent_chat_id == source.id
-      assert target.parent_message_id == assistant.id
-      assert target.parent_relation_kind == :handoff
-
-      [first_message | _] = messages_for_chat!(actor, target.id)
-
-      first_message_types =
-        first_message.steps
-        |> Enum.flat_map(& &1.items)
-        |> Enum.sort_by(& &1.sequence)
-        |> Enum.map(& &1.type)
-
-      assert first_message_types == [:handoff_history, :handoff_message]
-
-      first_message_text = History.project_user_input_text(first_message)
-      assert String.starts_with?(first_message_text, "History")
-      assert String.contains?(first_message_text, "Continue in the new chat.")
-      assert String.contains?(first_message_text, "Start")
-      assert String.contains?(first_message_text, "Working")
-
-      assert [] ==
-               ChatMessage
-               |> Ash.Query.filter(chat_id == ^target.id and role == :assistant)
-               |> Ash.read!(actor: actor)
-
-      assert {:ok, %ExecutionResult{} = repeated} =
-               NativeAgentManagement.execute(
-                 tool_instance,
-                 "handoff",
-                 %{"summary" => "Continue in the new chat."},
-                 context
-               )
-
-      assert repeated.raw["handoff"] == payload
-
-      second_tool_call_item = create_tool_call_item!(assistant, actor)
-
-      second_context = %{
-        context
-        | tool_call_item_id: second_tool_call_item.id
-      }
-
-      assert {:ok, %ExecutionResult{} = second_call} =
-               NativeAgentManagement.execute(
-                 tool_instance,
-                 "handoff",
-                 %{"summary" => "A concurrent duplicate handoff."},
+                 %{"summary" => second_summary},
                  second_context
                )
 
-      assert second_call.raw["handoff"] == payload
-
-      assert [target.id] ==
+      assert [] ==
                Chat
-               |> Ash.Query.filter(
-                 parent_tool_call_item_id == ^tool_call_item.id and
-                   parent_relation_kind == :handoff
-               )
-               |> Ash.Query.select([:id])
+               |> Ash.Query.filter(parent_chat_id == ^source.id)
                |> Ash.read!(actor: actor)
-               |> Enum.map(& &1.id)
+
+      assert [user_message.id, assistant.id] ==
+               messages_for_chat!(actor, source.id) |> Enum.map(& &1.id)
+
+      refute messages_for_chat!(actor, source.id)
+             |> Enum.flat_map(& &1.steps)
+             |> Enum.flat_map(& &1.items)
+             |> Enum.any?(&(&1.type in [:handoff_history, :handoff_message]))
     end
 
-    test "handoff child keeps the calling generation's configuration after the selector moves" do
+    test "handoff preserves the calling message's configuration when the selector moves" do
       %{user: actor} = user_fixture()
       pinned = create_configuration!(actor)
       selected = create_configuration!(actor)
@@ -596,8 +557,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
       |> Ash.update!(actor: actor)
 
-      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
-
       context = %ExecutionContext{
         owner_id: actor.id,
         chat_id: source.id,
@@ -606,27 +565,25 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         tool_call_item_id: create_tool_call_item!(assistant, actor).id
       }
 
-      assert {:ok, %ExecutionResult{raw: %{"handoff" => %{"chat_id" => target_id}}}} =
+      assert {:ok, %ExecutionResult{raw: %{"compaction" => %{"summary" => summary}}}} =
                NativeAgentManagement.execute(
-                 tool_instance,
+                 create_tool_instance!(actor, type: "native-agent-management"),
                  "handoff",
                  %{"summary" => "Continue with the same model."},
                  context
                )
 
-      assert Ash.get!(Chat, target_id, actor: actor).llm_configuration_id == pinned.id
+      assert summary == "Continue with the same model."
+      assert Ash.get!(ChatMessage, assistant.id, actor: actor).llm_configuration_id == pinned.id
+      assert Ash.get!(Chat, source.id, actor: actor).llm_configuration_id == selected.id
     end
 
-    test "cancel after handoff tool execution leaves the source queue blocked and child idle" do
+    test "cancel after a compaction request blocks the same source queue without a child chat" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)
       {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)
-
       assistant = create_generating_message!(actor, source, parent_id: user_message.id)
-
       assert {:ok, lease} = Lease.acquire(assistant.id)
-      tool_call_item = create_tool_call_item!(assistant, actor)
-      tool_instance = create_tool_instance!(actor, type: "native-agent-management")
 
       assert {:ok, queued} =
                QueuedMessages.enqueue_follow_up(
@@ -640,24 +597,17 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         chat_id: source.id,
         message_id: assistant.id,
         assistant_message_id: assistant.id,
-        tool_call_item_id: tool_call_item.id,
+        tool_call_item_id: create_tool_call_item!(assistant, actor).id,
         generation_fence_token: lease.fence_token
       }
 
-      assert {:ok, %ExecutionResult{} = result} =
+      assert {:ok, %ExecutionResult{raw: %{"compaction" => _}}} =
                NativeAgentManagement.execute(
-                 tool_instance,
+                 create_tool_instance!(actor, type: "native-agent-management"),
                  "handoff",
                  %{"summary" => "This result loses the cancel race."},
                  context
                )
-
-      child_chat_id = result.raw["handoff"]["chat_id"]
-
-      assert [] ==
-               ChatMessage
-               |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
-               |> Ash.read!(actor: actor)
 
       assert :canceled = QueueCoordinator.cancel_generation(assistant.id)
       assert :ok = Lease.release(lease)
@@ -665,12 +615,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
 
       assert {:ok, blocked} = QueuedMessages.get(queued.id, actor)
       assert blocked.chat_id == source.id
+      assert blocked.anchor_message_id == assistant.id
       assert blocked.status == :blocked
       assert blocked.blocked_reason == "generation_canceled"
+      assert Ash.get!(ChatMessage, assistant.id, actor: actor).status == :canceled
 
       assert [] ==
-               ChatMessage
-               |> Ash.Query.filter(chat_id == ^child_chat_id and role == :assistant)
+               Chat
+               |> Ash.Query.filter(parent_chat_id == ^source.id)
                |> Ash.read!(actor: actor)
     end
 
@@ -687,7 +639,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
                NativeAgentManagement.execute(tool_instance, "handoff", %{"summary" => "ok"}, nil)
     end
 
-    test "handoff cannot create a child from a stale parent generation epoch" do
+    test "handoff cannot request compaction from a stale generation epoch" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)
       {:ok, user_message} = Threads.add_message_to_end(source, :user, "Start", actor: actor)

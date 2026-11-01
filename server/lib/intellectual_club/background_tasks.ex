@@ -222,58 +222,6 @@ defmodule IntellectualClub.BackgroundTasks do
 
   def cancel_for_lifecycle_message_async(_message_id), do: :ok
 
-  @doc false
-  @spec transfer_active_for_handoff!(pos_integer(), pos_integer()) :: [Ecto.UUID.t()]
-  def transfer_active_for_handoff!(source_message_id, child_message_id)
-      when is_integer(source_message_id) and source_message_id > 0 and
-             is_integer(child_message_id) and child_message_id > 0 do
-    case Ash.transaction([ChatMessage, BackgroundTask], fn ->
-           messages =
-             [source_message_id, child_message_id]
-             |> Enum.uniq()
-             |> Enum.sort()
-             |> Map.new(fn message_id -> {message_id, lock_lifecycle_message(message_id)} end)
-
-           source_message = Map.fetch!(messages, source_message_id)
-           child_message = Map.fetch!(messages, child_message_id)
-
-           validate_handoff_lifecycle_messages!(source_message, child_message)
-
-           BackgroundTask
-           |> Ash.Query.filter(
-             (lifecycle_message_id == ^source_message_id or
-                (is_nil(lifecycle_message_id) and source_message_id == ^source_message_id)) and
-               status in ^@active_statuses and cancel_requested != true
-           )
-           |> Ash.Query.sort(id: :asc)
-           |> Ash.Query.lock("FOR NO KEY UPDATE")
-           |> Ash.read!(authorize?: false)
-           |> Enum.map(fn task ->
-             if task.owner_id != child_message.owner_id do
-               Repo.rollback(:background_task_owner_mismatch)
-             end
-
-             case update_task(
-                    task,
-                    %{lifecycle_message_id: child_message.id},
-                    actor(task.owner_id)
-                  ) do
-               {:ok, %BackgroundTask{} = transferred} -> transferred.id
-               {:error, reason} -> Repo.rollback(reason)
-             end
-           end)
-         end) do
-      {:ok, task_ids} ->
-        task_ids
-
-      {:error, reason} ->
-        raise "Failed to transfer background tasks through handoff: #{inspect(reason)}"
-    end
-  end
-
-  def transfer_active_for_handoff!(_source_message_id, _child_message_id),
-    do: raise(ArgumentError, "Invalid background task handoff lifecycle")
-
   @doc "Returns an owned task record for adapter integrations."
   @spec get(Ecto.UUID.t(), pos_integer()) :: {:ok, BackgroundTask.t()} | {:error, :not_found}
   def get(task_id, owner_id)
@@ -1855,15 +1803,6 @@ defmodule IntellectualClub.BackgroundTasks do
     |> Ash.Query.lock("FOR NO KEY UPDATE")
     |> Ash.read_one!(authorize?: false)
   end
-
-  defp validate_handoff_lifecycle_messages!(
-         %ChatMessage{role: :assistant, status: :done, owner_id: owner_id},
-         %ChatMessage{role: :assistant, status: :generating, owner_id: owner_id}
-       ),
-       do: :ok
-
-  defp validate_handoff_lifecycle_messages!(_source_message, _child_message),
-    do: Repo.rollback(:invalid_background_task_handoff_lifecycle)
 
   defp lock_background_task(task_id, opts \\ []) when is_binary(task_id) and is_list(opts) do
     query =

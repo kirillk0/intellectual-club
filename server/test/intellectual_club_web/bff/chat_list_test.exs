@@ -1,16 +1,13 @@
 defmodule IntellectualClubWeb.Bff.ChatListTest do
   @moduledoc """
   Chat list endpoints (list, summary, search): previews, labels and counts, ordering,
-  pagination and stats, the subchat hierarchy and continuation navigation.
+  pagination and stats, and the fork/spawn subchat hierarchy.
   """
 
   use IntellectualClubWeb.ConnCase, async: true
 
-  import IntellectualClub.HandoffTestHelpers, only: [nav_labels: 1, nav_chat_ids: 1]
-
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.Previews
   alias IntellectualClub.SqlCapture
@@ -378,7 +375,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       %{user: actor} = user_fixture()
 
       for {role, types, ignored_type} <- [
-            {:user, [:input, :handoff_request, :handoff_context], :answer},
+            {:user, [:input, :handoff_request], :answer},
             {:assistant, [:answer, :handoff_summary], :input}
           ] do
         chat = create_empty_chat!(actor)
@@ -734,45 +731,6 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert payload["page"]["number"] == 1
       assert payload["page"]["per_page"] == 20
       assert payload["page"]["has_next"] == false
-    end
-
-    test "keeps the original first message preview through nested handoffs",
-         %{
-           conn: conn
-         } do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
-      source = create_chat!(actor)
-
-      {:ok, opening} =
-        Threads.add_message_to_end(source, :assistant, "Original assistant opening", actor: actor)
-
-      {:ok, last_message} =
-        Threads.add_message(source, :user, "Continue the work",
-          actor: actor,
-          parent_id: opening.id
-        )
-
-      assert {:ok, %{chat: first_target, message: first_root}} =
-               Handoff.create_handoff_chat(source, actor, "First transfer",
-                 source_message_id: last_message.id
-               )
-
-      assert {:ok, %{chat: terminal_target}} =
-               Handoff.create_handoff_chat(first_target, actor, "Nested transfer",
-                 source_message_id: first_root.id
-               )
-
-      payload =
-        conn
-        |> get(~p"/api/bff/chat-list", %{"preview_len" => "80"})
-        |> json_response(200)
-
-      terminal_payload = chat_payload(payload, terminal_target.id)
-
-      assert is_map(terminal_payload)
-      assert terminal_payload["first_message_preview"] == "Original assistant opening"
-      assert terminal_payload["first_message_role"] == "assistant"
     end
 
     test "returns loaded configuration labels", %{conn: conn} do
@@ -1176,7 +1134,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
     end
   end
 
-  describe "GET /api/bff/chat-list subchats and continuations" do
+  describe "GET /api/bff/chat-list subchats" do
     test "hides fork and spawn subagents and returns them under parent", %{
       conn: conn
     } do
@@ -1242,240 +1200,51 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert spawn_payload["first_message_preview"] == "Spawn answer"
     end
 
-    test "returns only terminal chats from continuation chains", %{
-      conn: conn
-    } do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
-
-      first = create_chat!(actor)
-
-      middle =
-        create_chat!(actor, parent_chat_id: first.id, parent_relation_kind: :handoff)
-
-      terminal =
-        create_chat!(actor, parent_chat_id: middle.id, parent_relation_kind: :handoff)
-
-      _old_subchat =
-        create_chat!(actor, parent_chat_id: first.id, parent_relation_kind: :fork, subagent: true)
-
-      terminal_subchat =
-        create_chat!(actor,
-          parent_chat_id: terminal.id,
-          parent_relation_kind: :fork,
-          subagent: true
-        )
-
-      terminal_spawn =
-        create_chat!(actor,
-          parent_chat_id: terminal.id,
-          parent_relation_kind: :spawn,
-          subagent: true
-        )
-
-      standalone = create_chat!(actor)
-
-      payload =
-        conn
-        |> get(~p"/api/bff/chat-list")
-        |> json_response(200)
-
-      assert Enum.sort(chat_ids(payload)) == Enum.sort([terminal.id, standalone.id])
-      assert payload["page"]["total"] == 2
-      assert payload["stats"]["total_chats"] == 2
-
-      terminal_payload = chat_payload(payload, terminal.id)
-
-      assert terminal_payload["child_subchat_count"] == 2
-
-      assert Enum.map(terminal_payload["subchats"], & &1["id"]) == [
-               terminal_subchat.id,
-               terminal_spawn.id
-             ]
-    end
-
-    test "continuations expose relation and navigation hints in list, summary and search", %{
-      conn: conn
-    } do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
-
-      source = create_empty_chat!(actor, note: "List source")
-      {:ok, source_message} = Threads.add_message_to_end(source, :user, "Root", actor: actor)
-
-      {:ok, %{chat: target}} =
-        Handoff.create_handoff_chat(source, actor, "List summary",
-          source_message_id: source_message.id
-        )
-
-      conn = get(conn, ~p"/api/bff/chat-list")
-      payload = json_response(conn, 200)
-
-      source_summary = Enum.find(payload["chats"], &(&1["id"] == source.id))
-      target_summary = Enum.find(payload["chats"], &(&1["id"] == target.id))
-
-      assert is_nil(source_summary)
-      assert target_summary["parent_chat_id"] == source.id
-      assert target_summary["parent_message_id"] == source_message.id
-      assert target_summary["parent_relation_kind"] == "handoff"
-      assert nav_labels(target_summary) == ["1", "2"]
-      assert nav_chat_ids(target_summary) == [source.id, target.id]
-
-      source_summary_payload =
-        conn
-        |> get(~p"/api/bff/chat-list/#{source.id}/summary")
-        |> json_response(200)
-        |> Map.fetch!("chat")
-
-      assert nav_labels(source_summary_payload) == ["1", "2"]
-      assert nav_chat_ids(source_summary_payload) == [source.id, target.id]
-
-      summary_payload =
-        conn
-        |> get(~p"/api/bff/chat-list/#{target.id}/summary")
-        |> json_response(200)
-        |> Map.fetch!("chat")
-
-      assert nav_labels(summary_payload) == ["1", "2"]
-      assert nav_chat_ids(summary_payload) == [source.id, target.id]
-
-      search_payload =
-        conn
-        |> get(~p"/api/bff/chat-list/search", %{"q" => "List summary"})
-        |> json_response(200)
-
-      search_target_summary = Enum.find(search_payload["chats"], &(&1["id"] == target.id))
-      assert nav_labels(search_target_summary) == ["1", "2"]
-      assert nav_chat_ids(search_target_summary) == [source.id, target.id]
-    end
-  end
-
-  describe "batched list continuation navigation" do
-    test "keeps navigation on every visible branch and direct subchat in list, search and summary",
+    test "independent chats remain visible in list, summary and search without navigation metadata",
          %{
            conn: conn
          } do
       %{user: actor} = fixture = user_fixture()
       conn = sign_in_conn(conn, fixture)
-      root = create_empty_chat!(actor, note: "batch-nav root")
-      first = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-nav first")
-      second = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-nav second")
-      standalone = create_empty_chat!(actor, note: "batch-nav standalone")
-      ordinary_subchat = create_subchat!(actor, first, :spawn)
+      first = create_empty_chat!(actor, note: "Independent first")
+      second = create_empty_chat!(actor, note: "Independent second")
+      fork = create_subchat!(actor, first, :fork)
+      spawn = create_subchat!(actor, second, :spawn)
 
-      subchats =
-        for {parent, kind} <- [{first, :fork}, {second, :spawn}] do
-          subchat = create_subchat!(actor, parent, kind)
-          continuation = create_subchat!(actor, subchat, :handoff)
-          {parent, subchat, continuation, kind}
+      for {path, params} <- [
+            {"/api/bff/chat-list", %{}},
+            {"/api/bff/chat-list/search", %{q: "Independent"}},
+            {"/api/bff/chat-list/search", %{q: "Independent", section: "other"}},
+            {"/api/bff/chat-list/search", %{q: "Independent", sections: "unread,other"}}
+          ] do
+        payload = conn |> get(path, params) |> json_response(200)
+        assert Enum.sort(chat_ids(payload)) == Enum.sort([first.id, second.id])
+
+        if path == "/api/bff/chat-list" do
+          assert payload["page"]["total"] == 2
+          assert payload["stats"]["total_chats"] == 2
+          assert payload["stats"]["no_bot_chat_count"] == 2
         end
 
-      summaries =
-        Map.new(subchats, fn {parent, _subchat, _continuation, _kind} ->
+        for {parent, child, kind} <- [{first, fork, "fork"}, {second, spawn, "spawn"}] do
           summary =
             conn
             |> get("/api/bff/chat-list/#{parent.id}/summary")
             |> json_response(200)
             |> Map.fetch!("chat")
 
-          {parent.id, summary}
-        end)
-
-      for {path, params} <- [
-            {"/api/bff/chat-list", %{}},
-            {"/api/bff/chat-list/search", %{q: "batch-nav"}},
-            {"/api/bff/chat-list/search", %{q: "batch-nav", section: "other"}},
-            {"/api/bff/chat-list/search", %{q: "batch-nav", sections: "unread,other"}}
-          ] do
-        payload = conn |> get(path, params) |> json_response(200)
-        assert Enum.sort(chat_ids(payload)) == Enum.sort([first.id, second.id, standalone.id])
-        assert chat_payload(payload, standalone.id)["continuation_nav"] == []
-
-        for {parent, subchat, continuation, kind} <- subchats do
-          for item <- [chat_payload(payload, parent.id), Map.fetch!(summaries, parent.id)] do
-            assert nav_chat_ids(item) == [root.id, first.id, second.id]
-            assert nav_labels(item) == ["1", "2a", "2b"]
-            assert item["parent_chat_id"] == root.id
-            assert item["parent_relation_kind"] == "handoff"
-            nested = Enum.find(item["subchats"], &(&1["id"] == subchat.id))
-            assert nested["parent_chat_id"] == parent.id
-            assert nested["parent_relation_kind"] == Atom.to_string(kind)
-            assert nested["child_handoff_count"] == 1
-            assert nav_chat_ids(nested) == [subchat.id, continuation.id]
-            assert nav_labels(nested) == ["1", "2"]
-
-            assert Enum.map(nested["continuation_nav"], & &1["kind"]) == [
-                     Atom.to_string(kind),
-                     "handoff"
-                   ]
-
-            assert Enum.all?(nested["continuation_nav"], &is_map(&1["read_state"]))
-
-            if parent.id == first.id do
-              ordinary = Enum.find(item["subchats"], &(&1["id"] == ordinary_subchat.id))
-              assert ordinary["continuation_nav"] == []
-            end
+          for item <- [chat_payload(payload, parent.id), summary] do
+            assert item["parent_relation_kind"] == nil
+            assert item["child_subchat_count"] == 1
+            refute Map.has_key?(item, "continuation_nav")
+            refute Map.has_key?(item, "child_handoff_count")
+            assert [nested] = item["subchats"]
+            assert nested["id"] == child.id
+            assert nested["parent_relation_kind"] == kind
+            refute Map.has_key?(nested, "continuation_nav")
+            refute Map.has_key?(nested, "child_handoff_count")
           end
         end
-      end
-    end
-
-    @tag :whitebox
-    test "batches top-level and direct subchat navigation together as the payload grows", %{
-      conn: conn
-    } do
-      %{user: actor} = fixture = user_fixture()
-      conn = sign_in_conn(conn, fixture)
-      root = create_empty_chat!(actor, note: "navigation-only-ancestor")
-      leaf = create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
-      # Keep the summary seed's maximum traversal distance unchanged as width grows.
-      create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
-      subchat = create_subchat!(actor, leaf, :fork)
-      create_subchat!(actor, subchat, :handoff, note: "navigation-only-subchat-continuation")
-
-      requests = [
-        {"/api/bff/chat-list", %{}},
-        {"/api/bff/chat-list/search", %{q: "batch-sql-match"}},
-        {"/api/bff/chat-list/#{leaf.id}/summary", %{}}
-      ]
-
-      baseline =
-        for {path, params} <- requests do
-          {_payload, capture} =
-            SqlCapture.measure(fn -> conn |> get(path, params) |> json_response(200) end)
-
-          length(capture.queries)
-        end
-
-      for _ <- 1..5 do
-        create_subchat!(actor, root, :handoff, subagent: false, note: "batch-sql-match")
-        subchat = create_subchat!(actor, leaf, :spawn)
-        create_subchat!(actor, subchat, :handoff)
-      end
-
-      for {{path, params}, query_count} <- Enum.zip(requests, baseline) do
-        {payload, capture} =
-          SqlCapture.measure(fn -> conn |> get(path, params) |> json_response(200) end)
-
-        item =
-          if Map.has_key?(payload, "chat"),
-            do: payload["chat"],
-            else: chat_payload(payload, leaf.id)
-
-        assert length(item["continuation_nav"]) == 8
-        assert length(item["subchats"]) == 6
-        assert Enum.all?(item["subchats"], &(length(&1["continuation_nav"]) == 2))
-
-        assert length(capture.queries) <= query_count,
-               "#{path}: #{length(capture.queries)} queries, baseline #{query_count}"
-
-        assert Enum.all?(capture.queries, &(not &1.unmeasured? and not &1.error?))
-
-        assert Enum.count(capture.queries, fn query ->
-                 SqlCapture.returned?(query, "navigation-only-ancestor") and
-                   SqlCapture.returned?(query, "navigation-only-subchat-continuation")
-               end) == 1,
-               path
       end
     end
   end

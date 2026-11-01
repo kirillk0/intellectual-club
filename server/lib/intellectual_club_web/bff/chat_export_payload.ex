@@ -21,28 +21,26 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
 
   require Ash.Query
 
-  @relation_kinds [:handoff, :fork, :spawn]
+  @relation_kinds [:fork, :spawn]
   @max_lineage_hops 100
   @compact_preview_character_limit 50
   @message_text_types %{
     "user" => [
       :input,
       :handoff_request,
-      :handoff_context,
       :handoff_history,
       :handoff_message
     ],
-    "assistant" => [:answer, :handoff_summary, :steering]
+    "assistant" => [:answer, :handoff_summary, :steering, :handoff_history, :handoff_message]
   }
   @message_media_types %{
     "user" => [
       :input,
       :handoff_request,
-      :handoff_context,
       :handoff_history,
       :handoff_message
     ],
-    "assistant" => [:handoff_summary, :artifact]
+    "assistant" => [:handoff_summary, :artifact, :handoff_history, :handoff_message]
   }
 
   @spec build(Chat.t(), map()) :: map()
@@ -130,7 +128,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
       ChatForkContext.linked?(chat) ->
         chat
 
-      not is_integer(chat.parent_chat_id) ->
+      chat.parent_relation_kind not in @relation_kinds or not is_integer(chat.parent_chat_id) ->
         chat
 
       true ->
@@ -398,7 +396,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
     created_at = map_value(metadata, "created_at")
 
     %{
-      entry_kind: if(entry_kind in ["message", "continuation", "omission"], do: entry_kind),
+      entry_kind: if(entry_kind in ["message", "omission"], do: entry_kind),
       role: if(role in ["user", "assistant"], do: role),
       omitted_count: if(is_integer(omitted_count) and omitted_count > 0, do: omitted_count),
       created_at: if(is_binary(created_at), do: created_at)

@@ -94,15 +94,6 @@
                         @navigate="openChat"
                         @open-actions="openChatActions(c, $event)"
                       >
-                        <template #meta-extra>
-                          <ContinuationNav
-                            :items="c.continuation_nav || []"
-                            :current-chat-id="c.id"
-                            mode="list"
-                            :stack="true"
-                            @navigate="openChat"
-                          />
-                        </template>
                         <template #badges>
                           <span
                             v-if="c.shared_outgoing"
@@ -116,9 +107,6 @@
                             {{ matchBadgeLabel(c.match_type) }}
                           </span>
                           <span v-if="relationBadgeLabel(c)" class="badge">{{ relationBadgeLabel(c) }}</span>
-                          <span v-if="!hasContinuationNav(c) && Number(c.child_handoff_count || 0) > 0" class="badge">
-                            {{ continuationCountLabel(c.child_handoff_count || 0) }}
-                          </span>
                         </template>
                       </ChatListRow>
                       <div v-if="subchatCount(c) > 0" class="subchat-toggle-row">
@@ -272,7 +260,6 @@ import ChatListRow, { type ChatListRowActionsRequest } from '@/components/ChatLi
 import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
 import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import { chatReadStateInput, updateChatReadState, isChatReadStateConflict, type ChatReadStateAction } from '@/features/chat/chatReadState';
-import ContinuationNav from '@/components/ContinuationNav.vue';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
@@ -836,7 +823,7 @@ function patchExistingChatRows<T extends ChatSummary>(items: T[], summary: ChatS
 }
 
 function isNewChatChangeReason(reason: unknown) {
-  return ['create', 'copy', 'continue', 'branch-new-chat', 'branch-move-new-chat', 'handoff'].includes(String(reason || ''));
+  return ['create', 'copy', 'continue', 'branch-new-chat', 'branch-move-new-chat'].includes(String(reason || ''));
 }
 
 function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
@@ -847,39 +834,11 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
     return;
   }
 
-  if (Number(summary.child_handoff_count || 0) > 0) {
-    const existedInPage = chats.value.some((chat) => chat.id === summary.id);
-    chats.value = chats.value.filter((chat) => chat.id !== summary.id);
-    chatSearchResults.value = chatSearchResults.value.filter((chat) => chat.id !== summary.id);
-    if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
-    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
-    return;
-  }
-
-  const continuationParentId =
-    summary.parent_relation_kind === 'handoff' && Number.isInteger(summary.parent_chat_id)
-      ? Number(summary.parent_chat_id)
-      : null;
-  const continuationParentWasVisible =
-    continuationParentId != null && chats.value.some((chat) => chat.id === continuationParentId);
-
-  if (continuationParentWasVisible) {
-    chats.value = chats.value.filter((chat) => chat.id !== continuationParentId);
-    chatSearchResults.value = chatSearchResults.value.filter(
-      (chat) => chat.id !== continuationParentId
-    );
-    totalChats.value = Math.max(0, totalChats.value - 1);
-  }
-
   const existedInPage = chats.value.some((chat) => chat.id === summary.id);
 
   if (matchesBotFilter(summary)) {
     chats.value = mergeChatRows(chats.value, summary);
-    if (
-      !existedInPage &&
-      isNewChatChangeReason(changeReason) &&
-      (continuationParentId == null || continuationParentWasVisible)
-    ) {
+    if (!existedInPage && isNewChatChangeReason(changeReason)) {
       totalChats.value += 1;
     }
   } else if (existedInPage) {
@@ -1123,20 +1082,12 @@ function chatMetaText(chat: ChatSummary) {
   ].join(' · ');
 }
 
-function continuationCountLabel(count: number) {
-  return count === 1 ? translate('1 continuation') : translate('{count} continuations', { count });
-}
-
 function subchatCountLabel(count: number) {
   return count === 1 ? translate('1 subchat') : translate('{count} subchats', { count });
 }
 
-function hasContinuationNav(chat: ChatSummary) {
-  return Array.isArray(chat.continuation_nav) && chat.continuation_nav.length > 1;
-}
-
 function relationMeta(chat: ChatSummary) {
-  return chatListRelationMeta(chat, translate, continuationCountLabel);
+  return chatListRelationMeta(chat, translate);
 }
 
 function relationBadgeLabel(chat: ChatSummary) {

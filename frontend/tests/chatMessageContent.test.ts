@@ -97,7 +97,7 @@ describe('chat message content', () => {
     expect(chatMessageHandoffSystemEventKind(request)).toBe('handoff_request');
   });
 
-  it('keeps handoff context and mixed display items in the ordinary message UI', () => {
+  it('keeps user input and mixed display items in the ordinary message UI', () => {
     const context: ChatBranchMessage = {
       id: 12,
       role: 'user',
@@ -109,10 +109,10 @@ describe('chat message content', () => {
             step_sequence: 1,
             item_id: 1,
             item_sequence: 1,
-            item_type: 'handoff_context',
+            item_type: 'input',
           },
         ],
-        parts: [part(1, 'Continue here', 'handoff_context', 1, 1)],
+        parts: [part(1, 'Continue here', 'input', 1, 1)],
         media: [],
       },
     };
@@ -151,6 +151,30 @@ describe('chat message content', () => {
     expect(chatMessageHandoffSystemEventKind(mixed)).toBeNull();
   });
 
+  it('keeps answers and repeated checkpoint pairs in timeline order when copying all', () => {
+    const message: ChatBranchMessage = {
+      id: 15, role: 'assistant', status: 'done',
+      content: {
+        items: [], media: [], parts: [
+          part(7, 'Final answer', 'answer', 3, 1),
+          part(6, 'Second summary', 'handoff_message', 2, 3),
+          part(5, 'Second history', 'handoff_history', 2, 2),
+          part(4, 'Middle answer', 'answer', 2, 1),
+          part(3, 'First summary', 'handoff_message', 1, 3),
+          part(2, 'First history', 'handoff_history', 1, 2),
+          part(1, 'First answer', 'answer', 1, 1),
+        ],
+      },
+    };
+
+    expect(primaryChatMessageText(message)).toBe('Final answer');
+    expect(fullChatMessageText(message)).toBe([
+      'First answer', 'History', 'First history', 'Context summary', 'First summary',
+      'Middle answer', 'History', 'Second history', 'Context summary', 'Second summary', 'Final answer',
+    ].join('\n\n'));
+    expect(chatMessageHandoffSystemEventKind(message)).toBeNull();
+  });
+
   it('copies the handoff message first and both structured sections when copying all', () => {
     const message: ChatBranchMessage = {
       id: 14,
@@ -169,10 +193,10 @@ describe('chat message content', () => {
 
     expect(isHandoffContextItemType('handoff_history')).toBe(true);
     expect(isHandoffContextItemType('handoff_message')).toBe(true);
-    expect(isHandoffContextItemType('handoff_context')).toBe(false);
+    expect(isHandoffContextItemType('input')).toBe(false);
     expect(primaryChatMessageText(message)).toBe('Transfer summary');
     expect(fullChatMessageText(message)).toBe(
-      'History\n\nOriginal request\n\nEarlier answer\n\nHandoff message\n\nTransfer summary'
+      'History\n\nOriginal request\n\nEarlier answer\n\nContext summary\n\nTransfer summary'
     );
   });
 });

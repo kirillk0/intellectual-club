@@ -205,9 +205,14 @@ defmodule IntellectualClub.Chat.ForkHistory do
 
   defp provider_boundary_item?(item) do
     case History.item_type(item) do
-      type when type in [:tool_result, :artifact, :error] -> false
-      :steering -> steering_before_response?(item)
-      _other -> true
+      type when type in [:tool_result, :artifact, :error, :handoff_history, :handoff_message] ->
+        false
+
+      :steering ->
+        steering_before_response?(item)
+
+      _other ->
+        true
     end
   end
 

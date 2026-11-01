@@ -46,8 +46,8 @@ defmodule IntellectualClub.Chat.Preparations.SearchChatList do
                     JOIN chat_message_contents c ON c.chat_message_item_id = i.id
                     WHERE s.chat_message_id = m.id AND c.owner_id = m.owner_id
                       AND c.kind = 'text'
-                      AND c.item_type IN ('input', 'handoff_request', 'handoff_context', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
-                      AND i.type IN ('input', 'handoff_request', 'handoff_context', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
+                      AND c.item_type IN ('input', 'handoff_request', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
+                      AND i.type IN ('input', 'handoff_request', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
                       AND c.content_text ILIKE ?
                     OFFSET 0
                   )
@@ -105,8 +105,8 @@ defmodule IntellectualClub.Chat.Preparations.SearchChatList do
             JOIN chat_message_contents c ON c.chat_message_item_id = i.id
             WHERE s.chat_message_id = ranked.id AND c.owner_id = ?
               AND c.kind = 'text'
-              AND c.item_type IN ('input', 'handoff_request', 'handoff_context', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
-              AND i.type IN ('input', 'handoff_request', 'handoff_context', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
+              AND c.item_type IN ('input', 'handoff_request', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
+              AND i.type IN ('input', 'handoff_request', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')
               AND c.content_text ILIKE ?
             OFFSET 0
           ) LIMIT 1)

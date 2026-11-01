@@ -126,6 +126,7 @@ defmodule IntellectualClub.Generation.Context do
     source_branch = effective_history_branch!(chat, target_parent_id, actor)
 
     source_branch
+    |> History.after_compaction()
     |> history_branch_for_generation()
     |> History.for_mode(history_mode_for_chat(chat), chat.llm_configuration_id)
     |> Enum.map(fn message ->
@@ -134,6 +135,54 @@ defmodule IntellectualClub.Generation.Context do
         content: project_history_message_text(message)
       }
     end)
+  end
+
+  @doc "Replaces model history while retaining the turn's original immutable request envelope."
+  def build_compaction_request(context, history) when is_map(context) and is_list(history) do
+    actor = %{id: context.owner_id}
+
+    first_step =
+      ChatMessageStep
+      |> Ash.Query.filter(chat_message_id == ^context.message_id)
+      |> Ash.Query.sort(sequence: :asc)
+      |> Ash.Query.limit(1)
+      |> Ash.read_one!(actor: actor)
+
+    if is_nil(first_step), do: raise(ArgumentError, "Generation has no pinned request")
+
+    pinned = StepRequests.request_for_step!(first_step.id, actor: actor)
+    adapter = context.adapter_module
+    snapshot = adapter.request_snapshot(pinned)
+
+    initial =
+      context
+      |> Map.take([
+        :supports_image_input,
+        :provider_type,
+        :chat_id,
+        :owner_id,
+        :conversation_affinity_id
+      ])
+      |> Map.merge(%{
+        history: history,
+        system_prompt: snapshot.system_prompt,
+        model_name: RequestPayload.model_name(pinned, context.model_name),
+        parameters: %{},
+        tools: [],
+        cache_control_enabled: not is_nil(Map.get(snapshot, :history_length))
+      })
+      |> adapter.build_initial_request()
+
+    # A recovered turn may resolve changed tool bindings, and the last request
+    # may temporarily expose only handoff. Neither is the pinned tool contract.
+    # Keep provider-native/hosted tools and every request option from the first
+    # request; rebuild only canonical model input and discard remote prefixes.
+    request =
+      pinned
+      |> Map.drop(["previous_response_id", "previous_interaction_id"])
+      |> Map.merge(Map.take(initial.raw_request, ["input", "messages"]))
+
+    %{raw_request: request, request_snapshot: adapter.request_snapshot(request)}
   end
 
   def prepare_retry(message_id, opts \\ []) when is_integer(message_id) and is_list(opts) do
@@ -706,6 +755,7 @@ defmodule IntellectualClub.Generation.Context do
 
     history =
       source_branch
+      |> History.after_compaction()
       |> history_branch_for_generation()
       |> History.for_mode(history_mode, chat.llm_configuration_id)
 
@@ -1307,8 +1357,6 @@ defmodule IntellectualClub.Generation.Context do
     |> elem(0)
     |> Enum.reverse()
   end
-
-  defp history_branch_for_generation(_other), do: []
 
   defp maybe_insert_turn_aborted_marker(acc, previous_message, current_message)
        when is_list(acc) and is_map(previous_message) and is_map(current_message) do

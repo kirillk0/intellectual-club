@@ -172,7 +172,7 @@ inside) `arguments`:
 ```
 
 `chat_id` identifies the executing chat. `root_chat_id` is the root of its accessible
-parent lineage, shared by nested spawn/fork subagents and handoff continuations.
+parent lineage, shared by nested spawn/fork subagents.
 It is captured once in the generation context (also for retries and prepared raw
 requests), not chosen by the model. `user_id` identifies the executing actor from
 that context, **not** the owner of a shared outlet tool instance. Runners can use the

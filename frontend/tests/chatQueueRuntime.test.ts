@@ -254,7 +254,7 @@ describe('chat queue runtime', () => {
     expect(apiMocks.post).toHaveBeenCalledTimes(1);
   });
 
-  it('removes a terminal retry routed into a handoff child from the source panel', async () => {
+  it('removes a queue entry moved to another chat from the source panel', async () => {
     const failed = failedSteer();
     apiMocks.post.mockResolvedValueOnce({
       queued_message: { ...failed, kind: 'follow_up', chat_id: 3, status: 'pending', blocked_reason: null },

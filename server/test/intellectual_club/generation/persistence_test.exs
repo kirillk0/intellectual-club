@@ -8,6 +8,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.ChatMessageItem
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.LinkedForkCleanup
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Threads
@@ -17,6 +18,7 @@ defmodule IntellectualClub.Generation.PersistenceTest do
   alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Llm.LlmUsageRecord
+  alias IntellectualClub.Files.File, as: StoredFile
 
   require Ash.Query
 
@@ -997,6 +999,394 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       assert next_step.status == :waiting_provider
       assert StepRequests.request_for_step!(next_step.id, actor: actor) == next_request
       assert Enum.any?(source_step.items, &(&1.id == steering_item_id and &1.type == :steering))
+    end
+  end
+
+  describe "compaction transitions" do
+    test "a preparation refusal replaces one receipt idempotently and cannot rewrite a published step" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+      request = %{"model" => "demo-model", "messages" => []}
+      step_id = Persistence.ensure_step_started!(message.id, request)
+
+      runtime =
+        RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: request)
+        |> add_tool_call_to_runtime_step("handoff", "agent_management__handoff", %{}, 1)
+        |> add_tool_call_to_runtime_step("other", "other__tool", %{}, 2)
+
+      %{tool_calls: [call, other]} = Persistence.persist_provider_completed!(message.id, runtime)
+
+      original =
+        Persistence.persist_tool_result!(message.id, step_id, call, %{
+          text: "Context compaction requested.",
+          result_raw: %{"compaction" => %{"summary" => "Checkpoint"}}
+        })
+
+      other_result =
+        Persistence.persist_tool_result!(message.id, step_id, other, %{text: "Other result"})
+
+      refusal = %{
+        text: "[tool error] Context compaction could not be prepared.",
+        result_raw: %{"error" => "compaction_preparation_failed"}
+      }
+
+      refused =
+        Persistence.refuse_compaction_tool_result!(message.id, step_id, call.item_id, refusal)
+
+      assert refused.item_id == original.item_id
+      assert refused.tool_call_item_id == original.tool_call_item_id
+      assert refused.sequence == original.sequence
+      assert refused.responses_item["id"] == original.responses_item["id"]
+      assert refused.responses_item["output"] == refusal.text
+      assert refused.result_raw == refusal.result_raw
+      assert refused.text == refusal.text
+
+      assert Persistence.refuse_compaction_tool_result!(
+               message.id,
+               step_id,
+               call.item_id,
+               refusal
+             ) == refused
+
+      assert Persistence.persist_tool_result!(message.id, step_id, call, original) == refused
+      assert Persistence.load_step_for_followup!(step_id).results == [refused, other_result]
+      assert Persistence.list_missing_tool_calls!(step_id) == []
+
+      assert_raise ArgumentError, "Tool result is not a pending compaction receipt", fn ->
+        Persistence.refuse_compaction_tool_result!(message.id, step_id, other.item_id, refusal)
+      end
+
+      with_generation_lease(message.id, fn lease ->
+        Persistence.complete_step_and_start_next!(message.id, step_id, 2, request, lease: lease)
+      end)
+
+      assert_raise ArgumentError, "Cannot refuse compaction after its step transition", fn ->
+        Persistence.refuse_compaction_tool_result!(message.id, step_id, call.item_id, refusal)
+      end
+
+      assert Persistence.load_step_for_followup!(step_id).results == [refused, other_result]
+    end
+
+    test "a checkpoint without queued steers keeps the message alive and forces a full receiving request" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+
+      request = %{
+        "model" => "demo-model",
+        "messages" => [
+          %{"role" => "user", "content" => String.duplicate("Original history ", 400)}
+        ]
+      }
+
+      step_id = Persistence.ensure_step_started!(message.id, 1, request, [])
+      summary = "Checkpoint summary"
+
+      runtime =
+        RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: request)
+        |> add_tool_call_to_runtime_step(
+          "handoff_checkpoint",
+          "agent_management__handoff",
+          %{
+            "summary" => summary
+          },
+          1
+        )
+
+      %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime)
+
+      result =
+        Persistence.persist_tool_result!(message.id, step_id, call, %{
+          text: "Compact",
+          result_raw: %{"compaction" => %{"summary" => summary}}
+        })
+
+      assert {:ok, rolloff} = Handoff.prepare_compaction(message.id, actor, summary)
+      next_request = Map.put(request, "checkpoint", true)
+
+      with_generation_lease(message.id, fn lease ->
+        next =
+          Handoff.with_compaction_items(rolloff, fn items ->
+            Persistence.complete_step_and_start_next_with_compaction!(
+              message.id,
+              step_id,
+              2,
+              next_request,
+              items,
+              [],
+              lease: lease
+            )
+          end)
+
+        assert %{compacted?: true} = next
+        assert next.step_sequence == 2
+        assert next.raw_request == next_request
+
+        persisted =
+          Ash.get!(ChatMessage, message.id, actor: actor, load: [steps: [items: [:contents]]])
+
+        assert persisted.status == :generating
+        assert persisted.finished_at == nil
+        assert persisted.generation_fence_token == lease.fence_token
+        [source, receiving] = Enum.sort_by(persisted.steps, & &1.sequence)
+        assert source.id == step_id
+        assert source.status == :done
+        assert %DateTime{} = source.finished_at
+        assert receiving.id == next.step_id
+        assert receiving.status == :waiting_provider
+        assert receiving.finished_at == nil
+        assert receiving.request_mode == :full
+        assert receiving.request_base_sequence == nil
+        assert receiving.request_base_hash == nil
+        assert receiving.request_checkpoint_distance == 0
+        assert StepRequests.request_for_step!(source.id, actor: actor) == request
+        assert StepRequests.request_for_step!(receiving.id, actor: actor) == next_request
+        items = Enum.sort_by(source.items, & &1.sequence)
+
+        assert Enum.map(items, & &1.type) == [
+                 :tool_call,
+                 :tool_result,
+                 :handoff_history,
+                 :handoff_message
+               ]
+
+        assert Enum.at(items, 1).id == result.item_id
+        assert item_text(List.last(items)) == summary
+        [archive] = Enum.at(items, 2).contents |> Enum.filter(&(&1.kind == :media))
+        assert is_integer(archive.file_id)
+
+        file_ids = StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort()
+
+        assert_raise ArgumentError, ~r/successor already exists/, fn ->
+          Handoff.with_compaction_items(rolloff, fn duplicate_items ->
+            Persistence.complete_step_and_start_next_with_compaction!(
+              message.id,
+              step_id,
+              2,
+              next_request,
+              duplicate_items,
+              [],
+              lease: lease
+            )
+          end)
+        end
+
+        assert StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort() ==
+                 file_ids
+
+        unchanged = Ash.get!(ChatMessageStep, source.id, actor: actor, load: [:items])
+
+        assert Enum.sort(Enum.map(unchanged.items, & &1.id)) ==
+                 Enum.sort(Enum.map(items, & &1.id))
+      end)
+    end
+
+    test "checkpoint publication rolls back archive, pair, receiving request and steering delivery together" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+      request = %{"model" => "demo-model", "messages" => []}
+      step_id = Persistence.ensure_step_started!(message.id, 1, request, [])
+
+      runtime =
+        tool_call_runtime_step(step_id, "atomic_handoff", "agent_management__handoff", %{
+          "summary" => "Atomic checkpoint"
+        })
+
+      %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime)
+
+      Persistence.persist_tool_result!(message.id, step_id, call, %{
+        text: "Compact",
+        result_raw: %{"compaction" => %{"summary" => "Atomic checkpoint"}}
+      })
+
+      trailing =
+        create_archived_steering_item!(
+          step_id,
+          "Steering already committed during the old response",
+          :after_response,
+          actor
+        )
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_steer(message.id, "Still pending steering", actor)
+
+      queued_specs = [
+        %{id: queued.id, text: "Still pending steering", updated_at: queued.updated_at}
+      ]
+
+      durable_steering = Persistence.load_step_for_followup!(step_id).steering_items
+      assert Enum.map(durable_steering, & &1.item_id) == [trailing.id]
+
+      next_request = %{
+        request
+        | "messages" =>
+            Enum.map(durable_steering ++ queued_specs, &%{"role" => "user", "content" => &1.text})
+      }
+
+      assert {:ok, rolloff} = Handoff.prepare_compaction(message.id, actor, "Atomic checkpoint")
+      original = Ash.get!(ChatMessageStep, step_id, actor: actor, load: [:items])
+      file_ids = StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort()
+
+      with_generation_lease(message.id, fn lease ->
+        publish = fn items ->
+          Persistence.complete_step_and_start_next_with_compaction!(
+            message.id,
+            step_id,
+            2,
+            next_request,
+            items,
+            queued_specs,
+            lease: lease
+          )
+        end
+
+        assert {:error, :publication_failed} =
+                 Handoff.with_compaction_items(rolloff, fn items ->
+                   assert %{compacted?: true} = publish.(items)
+                   {:error, :publication_failed}
+                 end)
+
+        assert StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort() ==
+                 file_ids
+
+        unchanged = Ash.get!(ChatMessage, message.id, actor: actor, load: [steps: [:items]])
+        assert unchanged.status == :generating
+        assert [source] = unchanged.steps
+        assert source.id == step_id
+        assert source.status == :waiting_tools
+
+        assert Enum.sort(Enum.map(source.items, & &1.id)) ==
+                 Enum.sort(Enum.map(original.items, & &1.id))
+
+        assert {:ok, still_pending} = QueuedMessages.get(queued.id, actor)
+        assert still_pending.status == :pending
+        assert still_pending.steering_item_id == nil
+
+        next = Handoff.with_compaction_items(rolloff, publish)
+
+        receiving =
+          Ash.get!(ChatMessageStep, next.step_id, actor: actor, load: [items: [:contents]])
+
+        steering =
+          receiving.items |> Enum.filter(&(&1.type == :steering)) |> Enum.sort_by(& &1.sequence)
+
+        assert Enum.map(steering, &item_text/1) == ["Still pending steering"]
+
+        assert Enum.count(
+                 Ash.get!(ChatMessage, message.id,
+                   actor: actor,
+                   load: [steps: [items: [:contents]]]
+                 ).steps
+                 |> Enum.flat_map(& &1.items),
+                 fn item ->
+                   item.type == :steering and
+                     item_text(item) == "Steering already committed during the old response"
+                 end
+               ) == 1
+
+        assert {:ok, delivered} = QueuedMessages.get(queued.id, actor)
+        assert delivered.status == :delivered
+        assert delivered.steering_item_id == List.last(steering).id
+        assert delivered.target_generation_message_id == message.id
+        assert StepRequests.request_for_step!(receiving.id, actor: actor) == next_request
+        checkpoint_source = Ash.get!(ChatMessageStep, step_id, actor: actor, load: [:items])
+        assert Enum.count(checkpoint_source.items, &(&1.type == :handoff_history)) == 1
+        assert Enum.count(checkpoint_source.items, &(&1.type == :handoff_message)) == 1
+
+        assert Ash.get!(ChatMessageItem, trailing.id, actor: actor).chat_message_step_id ==
+                 step_id
+      end)
+    end
+
+    test "changed steering rejects the whole checkpoint and can be retried with the current snapshot" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+      request = %{"model" => "demo-model", "messages" => []}
+      step_id = Persistence.ensure_step_started!(message.id, 1, request, [])
+
+      runtime =
+        tool_call_runtime_step(step_id, "edited_steer_handoff", "agent_management__handoff", %{
+          "summary" => "Retry the checkpoint"
+        })
+
+      %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime)
+
+      Persistence.persist_tool_result!(message.id, step_id, call, %{
+        text: "Compact",
+        result_raw: %{"compaction" => %{"summary" => "Retry the checkpoint"}}
+      })
+
+      assert {:ok, queued} = QueuedMessages.enqueue_steer(message.id, "Old steer", actor)
+      stale_specs = [%{id: queued.id, text: "Old steer", updated_at: queued.updated_at}]
+      assert {:ok, edited} = QueuedMessages.update(queued.id, %{content: "Edited steer"}, actor)
+
+      assert {:ok, rolloff} =
+               Handoff.prepare_compaction(message.id, actor, "Retry the checkpoint")
+
+      file_ids = StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort()
+
+      with_generation_lease(message.id, fn lease ->
+        assert {:error, :queued_steering_changed} =
+                 Handoff.with_compaction_items(rolloff, fn items ->
+                   Persistence.complete_step_and_start_next_with_compaction!(
+                     message.id,
+                     step_id,
+                     2,
+                     request,
+                     items,
+                     stale_specs,
+                     lease: lease
+                   )
+                 end)
+
+        unchanged = Ash.get!(ChatMessage, message.id, actor: actor, load: [steps: [:items]])
+        assert unchanged.status == :generating
+        assert [source] = unchanged.steps
+        assert source.id == step_id
+        assert source.status == :waiting_tools
+        refute Enum.any?(source.items, &(&1.type in [:handoff_history, :handoff_message]))
+
+        assert StoredFile |> Ash.read!(authorize?: false) |> Enum.map(& &1.id) |> Enum.sort() ==
+                 file_ids
+
+        assert {:ok, pending} = QueuedMessages.get(queued.id, actor)
+        assert pending.status == :pending
+        assert pending.steering_item_id == nil
+
+        current_specs = [%{id: edited.id, text: "Edited steer", updated_at: edited.updated_at}]
+
+        current_request = %{
+          request
+          | "messages" => [%{"role" => "user", "content" => "Edited steer"}]
+        }
+
+        next =
+          Handoff.with_compaction_items(rolloff, fn items ->
+            Persistence.complete_step_and_start_next_with_compaction!(
+              message.id,
+              step_id,
+              2,
+              current_request,
+              items,
+              current_specs,
+              lease: lease
+            )
+          end)
+
+        assert %{compacted?: true} = next
+        assert StepRequests.request_for_step!(next.step_id, actor: actor) == current_request
+
+        receiving =
+          Ash.get!(ChatMessageStep, next.step_id, actor: actor, load: [items: [:contents]])
+
+        assert [steer] = Enum.filter(receiving.items, &(&1.type == :steering))
+        assert item_text(steer) == "Edited steer"
+        assert {:ok, delivered} = QueuedMessages.get(queued.id, actor)
+        assert delivered.status == :delivered
+        assert delivered.steering_item_id == steer.id
+        completed_source = Ash.get!(ChatMessageStep, step_id, actor: actor, load: [:items])
+        assert Enum.count(completed_source.items, &(&1.type == :handoff_history)) == 1
+        assert Enum.count(completed_source.items, &(&1.type == :handoff_message)) == 1
+      end)
     end
   end
 

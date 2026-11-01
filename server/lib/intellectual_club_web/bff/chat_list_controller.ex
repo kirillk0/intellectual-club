@@ -9,7 +9,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   alias IntellectualClub.Chat.ChatDraft
   alias IntellectualClub.Chat.Listing
   alias IntellectualClub.Chat.ListingStats
-  alias IntellectualClub.Chat.Relations
   alias IntellectualClub.Chat.Revisions
   alias IntellectualClub.Chat.ReadState
   alias IntellectualClub.Chat.Search, as: ChatSearch
@@ -18,7 +17,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClubWeb.Bff.ChatAccess
   alias IntellectualClubWeb.Bff.ChatParams
-  alias IntellectualClubWeb.Bff.ChatPayloads
   alias IntellectualClubWeb.Bff.Helpers
   alias IntellectualClubWeb.Bff.Serializer
 
@@ -58,7 +56,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         Listing.active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
 
       sidebar_stats = ListingStats.sidebar(actor)
-      child_handoff_counts = Listing.child_handoff_counts(Enum.map(chats, & &1.id), actor)
       child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
 
       {subchats_by_parent, subchat_lifecycle_states} =
@@ -74,7 +71,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
           Serializer.chat_summary(chat,
             activity_at: activity_at,
-            child_handoff_count: Map.get(child_handoff_counts, chat.id, 0),
             child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
@@ -83,7 +79,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           |> Map.put(:first_message_preview, first_message_preview)
           |> Map.put(:first_message_role, first_message_role)
         end)
-        |> put_continuation_navs(actor)
 
       json(conn, %{
         chats: payload,
@@ -280,7 +275,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Map.put(:message_id, entry.message_id)
       |> Map.put(:message_role, entry.message_role)
     end)
-    |> put_continuation_navs(actor)
   end
 
   def summary(conn, %{"id" => id} = params) do
@@ -312,7 +306,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       first_message_previews =
         Listing.active_root_message_previews([chat], active_branch_summaries, preview_len, actor)
 
-      child_handoff_counts = Listing.child_handoff_counts([chat.id], actor)
       child_subchat_counts = Listing.child_subchat_counts([chat.id], actor)
 
       {subchats_by_parent, _subchat_lifecycle_states} =
@@ -335,7 +328,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             chat,
             lifecycle_states,
             activity_at: activity_at,
-            child_handoff_count: Map.get(child_handoff_counts, chat.id, 0),
             child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
@@ -345,7 +337,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> Map.put(:first_message_preview, first_message_preview)
         |> Map.put(:first_message_role, first_message_role)
 
-      [payload] = put_continuation_navs([payload], actor)
       json(conn, %{chat: payload})
     else
       {:error, %Plug.Conn{} = conn} ->
@@ -421,7 +412,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> Enum.filter(&generation_readable?(&1, actor.id, readable_foreign_chat_ids))
         |> Enum.map(&Map.take(&1, [:chat_id, :message_id]))
 
-      # A subchat remains visible under its original id after its worker hands off.
+      # Include persisted subchat lifecycle state when no worker is registered.
       inactive_chat_ids = chat_ids -- Enum.map(chat_generations, & &1.chat_id)
       chat_generations = chat_generations ++ subchat_generations(inactive_chat_ids, actor)
 
@@ -448,10 +439,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Ash.Query.load(:last_message, strict?: true)
       |> Ash.read!(actor: actor)
 
-    child_handoff_counts = Listing.child_handoff_counts(Enum.map(chats, & &1.id), actor)
-
     chats
-    |> Subagent.lifecycle_states(actor, child_handoff_counts)
+    |> Subagent.lifecycle_states(actor)
     |> Enum.sort_by(fn {chat_id, _state} -> chat_id end)
     |> Enum.flat_map(fn
       {chat_id, %{active_generation_message_id: message_id}} when is_integer(message_id) ->
@@ -510,10 +499,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Map.values()
       |> List.flatten()
 
-    child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
-
     lifecycle_states =
-      Subagent.lifecycle_states(subchats, actor, child_handoff_counts)
+      Subagent.lifecycle_states(subchats, actor)
       |> with_read_states(subchats)
 
     active_branch_summaries = Listing.active_branch_summaries(subchats, actor)
@@ -538,7 +525,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
               chat,
               lifecycle_states,
               activity_at: activity_at,
-              child_handoff_count: Map.get(child_handoff_counts, chat.id, 0),
               child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
               subchats: []
             )
@@ -563,8 +549,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Map.values()
       |> List.flatten()
 
-    child_handoff_counts = Listing.child_handoff_counts(Enum.map(subchats, & &1.id), actor)
-    Subagent.lifecycle_states(subchats, actor, child_handoff_counts) |> with_read_states(subchats)
+    Subagent.lifecycle_states(subchats, actor) |> with_read_states(subchats)
   end
 
   defp with_read_states(states, chats) do
@@ -591,28 +576,5 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       _other ->
         opts
     end
-  end
-
-  defp put_continuation_navs(payloads, actor) do
-    navs =
-      payloads
-      |> Enum.flat_map(fn payload -> [payload | payload.subchats] end)
-      |> Enum.filter(&continuation_nav_needed?/1)
-      |> Enum.map(&%Chat{id: &1.id})
-      |> Relations.continuation_navs(actor)
-      |> Map.new(fn {id, entries} -> {id, ChatPayloads.serialize_continuation_nav(entries)} end)
-
-    Enum.map(payloads, &put_continuation_nav(&1, navs))
-  end
-
-  defp continuation_nav_needed?(%{parent_relation_kind: "handoff"}), do: true
-  defp continuation_nav_needed?(%{child_handoff_count: count}), do: count > 0
-
-  defp put_continuation_nav(payload, navs) do
-    entries = if continuation_nav_needed?(payload), do: Map.get(navs, payload.id, []), else: []
-
-    payload
-    |> Map.put(:continuation_nav, entries)
-    |> Map.update!(:subchats, &Enum.map(&1, fn child -> put_continuation_nav(child, navs) end))
   end
 end

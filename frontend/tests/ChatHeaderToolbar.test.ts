@@ -31,11 +31,9 @@ const mountToolbar = (props: Record<string, unknown> = {}) =>
       menuStyle: {},
       currentBotId: 3,
       currentBotName: 'Helper',
-      currentChatId: 1,
       chatBaseTitle: 'Helper',
       chatFullTitle: 'Helper',
       chatNote: '',
-      continuationNav: [],
       creatingChat: false,
       deleting: false,
       canEdit: true,
@@ -127,4 +125,14 @@ it('offers an immediate unread mark and cancellation for a snoozed chat', async 
   await menu().get('[data-read-action="unsnooze"]').trigger('click');
   expect(wrapper.emitted('mark-unread')).toHaveLength(1);
   expect(wrapper.emitted('unsnooze')).toHaveLength(1);
+});
+
+it('offers in-place context compaction', async () => {
+  wrapper = mountToolbar();
+  const compact = menu().findAll('button').find((button) => button.text() === 'Compact context')!;
+  await compact.trigger('click');
+  expect(wrapper.emitted('handoff')).toHaveLength(1);
+  expect(menu().text()).not.toContain('Handing off');
+  await wrapper.setProps({ handoffPending: true });
+  expect(menu().text()).toContain('Compacting context…');
 });

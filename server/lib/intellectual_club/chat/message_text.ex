@@ -14,7 +14,6 @@ defmodule IntellectualClub.Chat.MessageText do
   @searchable_trace_item_types [
     :input,
     :handoff_request,
-    :handoff_context,
     :handoff_history,
     :handoff_message,
     :answer,
@@ -278,7 +277,7 @@ defmodule IntellectualClub.Chat.MessageText do
 
   defp wanted_trace_item_type(message) do
     case Map.get(message, :role) do
-      :user -> [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
+      :user -> [:input, :handoff_request, :handoff_history, :handoff_message]
       :assistant -> [:answer, :handoff_summary]
       _ -> []
     end

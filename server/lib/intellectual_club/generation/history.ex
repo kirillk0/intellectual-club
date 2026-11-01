@@ -15,7 +15,6 @@ defmodule IntellectualClub.Generation.History do
   @user_input_item_types [
     :input,
     :handoff_request,
-    :handoff_context,
     :handoff_history,
     :handoff_message
   ]
@@ -23,7 +22,6 @@ defmodule IntellectualClub.Generation.History do
   @item_types [
     :input,
     :handoff_request,
-    :handoff_context,
     :handoff_history,
     :handoff_message,
     :steering,
@@ -37,6 +35,127 @@ defmodule IntellectualClub.Generation.History do
     :other
   ]
   @content_kinds [:text, :opaque, :media]
+
+  @doc """
+  Starts an already selected canonical branch at its last complete checkpoint.
+
+  A checkpoint is an adjacent `:handoff_history`, `:handoff_message` pair in one
+  trace step. Messages follow branch order; steps and items follow `:sequence`,
+  never database ids. Incomplete pairs do not establish a new boundary. Linked
+  fork response cutoffs are applied by `ForkHistory` before this projection.
+
+  The pair, including all its media, becomes a context-only `:user` trace with
+  message and step status `:done`, even if its source was later canceled. Only
+  later items/steps of that source message and subsequent messages survive,
+  together with after-response steering from the checkpoint's source step.
+  Before-response steering is already summarized and is not replayed. The suffix
+  retains its roles, configuration ids and statuses. The virtual checkpoint has
+  a distinct identity and source message provenance; item/content ids stay real.
+  Call this before status filtering and `for_mode/3`. Persisted records are not changed.
+  """
+  @spec after_compaction([map()]) :: [map()]
+  def after_compaction(history) when is_list(history) do
+    checkpoint =
+      history
+      |> Enum.with_index()
+      |> Enum.reduce(nil, fn {message, index}, previous ->
+        case last_checkpoint(message) do
+          nil -> previous
+          boundary -> {index, message, boundary}
+        end
+      end)
+
+    case checkpoint do
+      nil ->
+        history
+
+      {index, message, {ordered_steps, step_index, item_index}} ->
+        step = Enum.at(ordered_steps, step_index)
+        checkpoint_items = Enum.slice(items(step), item_index, 2)
+
+        remaining_items =
+          (step |> items() |> Enum.take(item_index) |> Enum.filter(&after_response_steering?/1)) ++
+            Enum.drop(items(step), item_index + 2)
+
+        later_steps = Enum.drop(ordered_steps, step_index + 1)
+
+        tail_steps =
+          if remaining_items == [],
+            do: later_steps,
+            else: [Map.put(step, :items, remaining_items) | later_steps]
+
+        tail = if tail_steps == [], do: [], else: [Map.put(message, :steps, tail_steps)]
+
+        [checkpoint_message(message, step, checkpoint_items)] ++
+          tail ++ Enum.drop(history, index + 1)
+    end
+  end
+
+  defp last_checkpoint(message) do
+    ordered_steps =
+      message
+      |> steps()
+      |> Enum.sort_by(&sort_seq/1)
+      |> Enum.map(fn step -> Map.put(step, :items, Enum.sort_by(items(step), &sort_seq/1)) end)
+
+    ordered_steps
+    |> Enum.with_index()
+    |> Enum.reduce(nil, fn {step, step_index}, previous ->
+      step
+      |> items()
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.with_index()
+      |> Enum.reduce(previous, fn {[history_item, summary_item], item_index}, previous ->
+        if item_type(history_item) == :handoff_history and
+             item_type(summary_item) == :handoff_message do
+          {ordered_steps, step_index, item_index}
+        else
+          previous
+        end
+      end)
+    end)
+  end
+
+  defp after_response_steering?(item) do
+    item_type(item) == :steering and
+      Enum.any?(opaque_payloads(item), &(Map.get(&1, "placement") == "after_response"))
+  end
+
+  defp checkpoint_message(message, step, checkpoint_items) do
+    source_message_id =
+      if Map.get(message, :compaction_checkpoint) == true,
+        do: Map.get(message, :source_message_id),
+        else: Map.get(message, :id)
+
+    summary_item = List.last(checkpoint_items)
+
+    id =
+      case item_id(summary_item) do
+        id when is_integer(id) and id > 0 ->
+          -id
+
+        _other ->
+          {:compaction_checkpoint, source_message_id, Map.get(step, :id), sort_seq(step),
+           sort_seq(summary_item)}
+      end
+
+    # Only the message identity is virtual. Keep real item/content identities for
+    # attachments, but discard response and aborted-turn metadata from the prefix.
+    message
+    |> Map.take([:chat_id, :parent_id, :created_at, :llm_configuration_id, :fork_inherited])
+    |> Map.merge(%{
+      id: id,
+      compaction_checkpoint: true,
+      source_message_id: source_message_id,
+      role: :user,
+      status: :done,
+      steps: [
+        step
+        |> Map.take([:id, :sequence])
+        |> Map.merge(%{status: :done, items: checkpoint_items})
+      ]
+    })
+  end
 
   @doc """
   Selects model-visible history without reading historical raw responses.
@@ -473,7 +592,6 @@ defmodule IntellectualClub.Generation.History do
   defp metadata_value(metadata, "omitted_count"),
     do: Map.get(metadata, "omitted_count", Map.get(metadata, :omitted_count))
 
-  defp history_entry_kind("continuation"), do: :continuation
   defp history_entry_kind("omission"), do: :omission
   defp history_entry_kind(_kind), do: :message
 

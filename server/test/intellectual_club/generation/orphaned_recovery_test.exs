@@ -16,13 +16,13 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
 
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, ChatMessageStepRequestFile}
-  alias IntellectualClub.Chat.{ContentFiles, Spawn, Threads}
+  alias IntellectualClub.Chat.{ContentFiles, Handoff, Spawn, Threads}
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Files.FilesystemStorage
   alias IntellectualClub.Generation.{Lease, Persistence, Recovery, RequestImages, RuntimeTrace}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
-  alias IntellectualClub.Generation.ToolCall
+  alias IntellectualClub.Generation.StepRequests
   alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.TestSupport.ImageRecoveryProvider
 
@@ -193,6 +193,211 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       assert Enum.map(steps, & &1.sequence) == [1, 2]
       assert hd(steps).id == step_id
       assert hd(steps).status == :done
+    end
+
+    for boundary <- [:persisted_tool_result, :committed_checkpoint] do
+      @tag compaction_boundary: boundary
+      test "recovers #{boundary} without duplicating a compaction checkpoint", %{
+        compaction_boundary: boundary
+      } do
+        test_pid = self()
+
+        chunks =
+          sse_chunks([
+            %{
+              "id" => "recovered-compaction",
+              "object" => "chat.completion",
+              "created" => 1,
+              "model" => "test-model",
+              "choices" => [
+                %{
+                  "index" => 0,
+                  "message" => %{
+                    "role" => "assistant",
+                    "content" => "Recovered on the same message."
+                  },
+                  "finish_reason" => "stop"
+                }
+              ]
+            }
+          ])
+
+        {base_url, server} =
+          start_scripted_server!(%{
+            "/chat/completions" => [
+              {200,
+               fn ->
+                 send(test_pid, {:recovered_compaction_request, self()})
+
+                 receive do
+                   :finish -> chunks
+                 after
+                   5_000 -> raise "Recovery provider was not released"
+                 end
+               end}
+            ]
+          })
+
+        %{user: actor} = user_fixture()
+
+        configuration =
+          create_configuration!(actor,
+            model_name: "test-model",
+            provider_attrs: %{type: :openrouter_chat_completion, base_url: base_url}
+          )
+
+        bot = create_bot!(actor, history_mode: :agent)
+        chat = create_chat!(actor, llm_configuration_id: configuration.id, bot_id: bot.id)
+        tool = create_tool_instance!(actor, type: "native-agent-management")
+        create_chat_tool_binding!(actor, chat, tool, alias: "agent_management")
+
+        message =
+          create_generating_message!(actor, chat,
+            user_text: "Original recovery instruction",
+            llm_configuration_id: configuration.id
+          )
+
+        request = %{
+          "model" => "test-model",
+          "messages" => [%{"role" => "user", "content" => "Original recovery instruction"}],
+          "stream" => true
+        }
+
+        step_id = Persistence.ensure_step_started!(message.id, 1, request, [])
+        summary = "Recover from this durable checkpoint summary."
+
+        runtime =
+          RuntimeTrace.new_step(id: step_id, sequence: 1, raw_request: request)
+          |> add_runtime_tool_call(
+            "recover_handoff",
+            "agent_management__handoff",
+            %{"summary" => summary},
+            1
+          )
+          |> RuntimeTrace.apply_event({:set_step_raw_response, %{"id" => "old-tool-response"}})
+          |> RuntimeTrace.apply_event({:set_step_response_final, true})
+
+        %{tool_calls: [call]} = Persistence.persist_provider_completed!(message.id, runtime)
+
+        result =
+          Persistence.persist_tool_result!(message.id, step_id, call, %{
+            text: "Context compaction requested. Work continues in the same message.",
+            result_raw: %{"compaction" => %{"summary" => summary}},
+            media_contents: [],
+            artifact_contents: []
+          })
+
+        {checkpoint_ids, old_receiving_step_id} =
+          if boundary == :committed_checkpoint do
+            assert {:ok, rolloff} = Handoff.prepare_compaction(message.id, actor, summary)
+            assert {:ok, lease} = Lease.acquire(message.id)
+
+            continued_request = %{
+              request
+              | "messages" => [%{"role" => "user", "content" => summary}]
+            }
+
+            next =
+              Handoff.with_compaction_items(rolloff, fn items ->
+                Persistence.complete_step_and_start_next_with_compaction!(
+                  message.id,
+                  step_id,
+                  2,
+                  continued_request,
+                  items,
+                  [],
+                  lease: lease
+                )
+              end)
+
+            assert %{compacted?: true} = next
+            assert :ok = Lease.release(lease)
+            source = Ash.get!(ChatMessageStep, step_id, actor: actor, load: [:items])
+
+            ids =
+              source.items
+              |> Enum.filter(&(&1.type in [:handoff_history, :handoff_message]))
+              |> Enum.map(& &1.id)
+              |> Enum.sort()
+
+            assert length(ids) == 2
+            {ids, next.step_id}
+          else
+            {nil, nil}
+          end
+
+        assert :ok = GenerationSupervisor.recover_orphaned_generations()
+        assert_receive {:recovered_compaction_request, provider}, 3_000
+        assert :ok = GenerationSupervisor.recover_orphaned_generations()
+        assert [_request] = scripted_requests(server, "/chat/completions")
+        [continued] = scripted_requests(server, "/chat/completions")
+        assert Jason.encode!(continued["messages"]) =~ summary
+
+        refute Enum.any?(
+                 continued["messages"],
+                 &(&1["role"] == "tool" or Map.has_key?(&1, "tool_calls"))
+               )
+
+        refute Jason.encode!(continued["messages"]) =~ "recover_handoff"
+
+        recovering = load_message!(message.id, actor)
+        assert recovering.status == :generating
+        assert recovering.chat_id == chat.id
+        [source, receiving] = Enum.sort_by(recovering.steps, & &1.sequence)
+        assert source.id == step_id
+        assert source.status == :done
+        assert receiving.status == :waiting_provider
+        assert receiving.request_mode == :full
+
+        assert StepRequests.request_for_step!(receiving.id, actor: actor)["messages"] ==
+                 continued["messages"]
+
+        assert Enum.filter(source.items, &(&1.type == :tool_result)) |> Enum.map(& &1.id) == [
+                 result.item_id
+               ]
+
+        checkpoints =
+          source.items
+          |> Enum.filter(&(&1.type in [:handoff_history, :handoff_message]))
+          |> Enum.sort_by(& &1.sequence)
+
+        assert Enum.map(checkpoints, & &1.type) == [:handoff_history, :handoff_message]
+        assert Enum.at(checkpoints, 1) |> item_text() == summary
+        if checkpoint_ids, do: assert(Enum.sort(Enum.map(checkpoints, & &1.id)) == checkpoint_ids)
+        if old_receiving_step_id, do: assert(receiving.id != old_receiving_step_id)
+
+        [archive] =
+          checkpoints |> hd() |> Map.fetch!(:contents) |> Enum.filter(&(&1.kind == :media))
+
+        assert {:ok, {_file, archive_text}} = Files.load_payload(archive.file_id)
+        assert archive_text =~ "Original recovery instruction"
+
+        assert [] ==
+                 Chat
+                 |> Ash.Query.filter(
+                   parent_chat_id == ^chat.id and parent_relation_kind == :handoff
+                 )
+                 |> Ash.read!(actor: actor)
+
+        send(provider, :finish)
+        completed = wait_for_status!(message.id, actor, [:done])
+        assert :ok = GenerationSupervisor.recover_orphaned_generations()
+
+        assert Enum.map(Enum.sort_by(completed.steps, & &1.sequence), & &1.id) == [
+                 source.id,
+                 receiving.id
+               ]
+
+        assert length(scripted_requests(server, "/chat/completions")) == 1
+
+        final_checkpoints =
+          load_message!(message.id, actor).steps
+          |> Enum.flat_map(& &1.items)
+          |> Enum.filter(&(&1.type in [:handoff_history, :handoff_message]))
+
+        assert Enum.sort(Enum.map(final_checkpoints, & &1.id)) ==
+                 Enum.sort(Enum.map(checkpoints, & &1.id))
+      end
     end
 
     test "resumes a native agent sleep from the persisted call timestamp" do
@@ -383,33 +588,6 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       assert_canceled_subagent_result!(parent, child_chat, actor)
     end
 
-    test "follows a handoff from the fork child into a canceled generation" do
-      %{user: actor} = user_fixture()
-      parent = fork_parent!(actor)
-      child_chat = create_fork_child!(actor, parent)
-
-      {:ok, fork_generation_message} =
-        Threads.add_message_to_end(child_chat, :assistant, "", actor: actor)
-
-      handoff_chat =
-        create_subchat!(actor, child_chat, :handoff,
-          parent_message_id: fork_generation_message.id
-        )
-
-      handoff_generation_message = add_canceled_answer!(actor, handoff_chat)
-
-      persist_handoff_result!(
-        actor,
-        fork_generation_message,
-        handoff_chat,
-        handoff_generation_message
-      )
-
-      :ok = GenerationSupervisor.recover_orphaned_generations()
-
-      assert_canceled_subagent_result!(parent, child_chat, actor)
-    end
-
     test "background and global recovery of a prepared spawn serialize on its canonical generation" do
       %{user: actor} = user_fixture()
       brief = "Double recovery"
@@ -548,34 +726,6 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       )
 
     message
-  end
-
-  defp persist_handoff_result!(actor, source_message, handoff_chat, handoff_message) do
-    step = actor |> first_step!(source_message) |> Ash.load!([:items], actor: actor)
-    sequence = Enum.max([0 | Enum.map(step.items, & &1.sequence)]) + 1
-    call_item = create_item!(actor, step, sequence: sequence, type: :tool_call)
-
-    call = %ToolCall{
-      item_id: call_item.id,
-      step_id: step.id,
-      sequence: sequence,
-      call_id: "handoff_#{System.unique_integer([:positive])}",
-      name: "agent_management__handoff",
-      args: %{"summary" => "Continue in the handoff chat."},
-      raw: %{}
-    }
-
-    Persistence.persist_tool_result!(source_message.id, step.id, call, %{
-      text: "Handoff started.",
-      result_raw: %{
-        "handoff" => %{
-          "chat_id" => handoff_chat.id,
-          "generation_message_id" => handoff_message.id
-        }
-      },
-      media_contents: [],
-      artifact_contents: []
-    })
   end
 
   defp assert_canceled_subagent_result!(parent, child_chat, actor) do

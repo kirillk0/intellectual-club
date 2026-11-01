@@ -155,166 +155,6 @@ defmodule IntellectualClub.BackgroundTasksTest do
       assert {:ok, %{status: :queued, cancel_requested: false}} =
                BackgroundTasks.fetch_internal(unrelated.id)
     end
-
-    test "handoff transfers active task lifecycle without changing provenance" do
-      %{user: actor} = user_fixture()
-      source = create_source_tool_call!(actor)
-      child = create_source_tool_call!(actor)
-      unrelated_source = create_source_tool_call!(actor)
-
-      queued = create_background_task!(actor, source_message_attrs(source, actor))
-
-      running =
-        create_background_task!(
-          actor,
-          source
-          |> source_message_attrs(actor)
-          |> Map.merge(%{status: :running, started_at: DateTime.utc_now()})
-        )
-
-      completed =
-        create_background_task!(actor, source_message_attrs(source, actor))
-        |> then(fn task ->
-          assert {:ok, completed} = BackgroundTasks.mark_completed(task, %{text: "done"})
-          completed
-        end)
-
-      canceling =
-        create_background_task!(
-          actor,
-          source
-          |> source_message_attrs(actor)
-          |> Map.put(:cancel_requested, true)
-        )
-
-      unrelated =
-        create_background_task!(actor, source_message_attrs(unrelated_source, actor))
-
-      set_message_status!(actor, source.message, :done, finished_at: DateTime.utc_now())
-
-      transferred_ids =
-        BackgroundTasks.transfer_active_for_handoff!(source.message.id, child.message.id)
-
-      assert MapSet.new(transferred_ids) == MapSet.new([queued.id, running.id])
-
-      assert {:ok, transferred_queued} = BackgroundTasks.fetch_internal(queued.id)
-      assert transferred_queued.lifecycle_message_id == child.message.id
-      assert transferred_queued.source_message_id == source.message.id
-      assert transferred_queued.source_chat_id == source.chat.id
-      assert transferred_queued.execution_context["message_id"] == source.message.id
-
-      assert {:ok, transferred_running} = BackgroundTasks.fetch_internal(running.id)
-      assert transferred_running.lifecycle_message_id == child.message.id
-
-      assert {:ok, unchanged_completed} = BackgroundTasks.fetch_internal(completed.id)
-      assert unchanged_completed.lifecycle_message_id == source.message.id
-
-      assert {:ok, unchanged_canceling} = BackgroundTasks.fetch_internal(canceling.id)
-      assert unchanged_canceling.lifecycle_message_id == source.message.id
-
-      assert {:ok, unchanged_unrelated} = BackgroundTasks.fetch_internal(unrelated.id)
-      assert unchanged_unrelated.lifecycle_message_id == unrelated_source.message.id
-
-      assert [canceling_id] =
-               BackgroundTasks.request_cancel_for_lifecycle_message!(source.message.id)
-
-      assert canceling_id == canceling.id
-
-      requested_child_ids =
-        BackgroundTasks.request_cancel_for_lifecycle_message!(child.message.id)
-
-      assert MapSet.new(requested_child_ids) == MapSet.new([queued.id, running.id])
-    end
-
-    test "transferred lifecycle authorizes queued work after the source is done" do
-      %{user: actor} = user_fixture()
-      source = create_source_tool_call!(actor)
-      child = create_source_tool_call!(actor)
-
-      task =
-        create_background_task!(
-          actor,
-          source
-          |> source_message_attrs(actor)
-          |> Map.merge(%{
-            source_step_id: source.step.id,
-            source_tool_call_item_id: source.item.id
-          })
-        )
-
-      set_message_status!(actor, source.message, :done, finished_at: DateTime.utc_now())
-
-      assert [task_id] =
-               BackgroundTasks.transfer_active_for_handoff!(source.message.id, child.message.id)
-
-      assert task_id == task.id
-      assert {:ok, running} = BackgroundTasks.mark_running(task)
-      assert running.status == :running
-      assert running.lifecycle_message_id == child.message.id
-
-      context = tool_call_context(source, actor)
-
-      assert :authorized ==
-               BackgroundTasks.with_active_task_authority(task, context, fn -> :authorized end)
-    end
-
-    test "failed handoff transfer leaves the original lifecycle unchanged" do
-      %{user: actor} = user_fixture()
-      source = create_source_tool_call!(actor)
-      invalid_child = create_source_tool_call!(actor)
-      task = create_background_task!(actor, source_message_attrs(source, actor))
-
-      set_message_status!(actor, source.message, :done, finished_at: DateTime.utc_now())
-      set_message_status!(actor, invalid_child.message, :done, finished_at: DateTime.utc_now())
-
-      assert_raise RuntimeError, ~r/invalid_background_task_handoff_lifecycle/, fn ->
-        BackgroundTasks.transfer_active_for_handoff!(
-          source.message.id,
-          invalid_child.message.id
-        )
-      end
-
-      assert {:ok, unchanged} = BackgroundTasks.fetch_internal(task.id)
-      assert unchanged.lifecycle_message_id == source.message.id
-      assert unchanged.cancel_requested == false
-    end
-
-    test "task lifecycle follows repeated handoffs and cancels at the final boundary" do
-      %{user: actor} = user_fixture()
-      source = create_source_tool_call!(actor)
-      first_child = create_source_tool_call!(actor)
-      second_child = create_source_tool_call!(actor)
-      task = create_background_task!(actor, source_message_attrs(source, actor))
-
-      set_message_status!(actor, source.message, :done, finished_at: DateTime.utc_now())
-
-      assert [task_id] =
-               BackgroundTasks.transfer_active_for_handoff!(
-                 source.message.id,
-                 first_child.message.id
-               )
-
-      assert task_id == task.id
-      set_message_status!(actor, first_child.message, :done, finished_at: DateTime.utc_now())
-
-      assert [^task_id] =
-               BackgroundTasks.transfer_active_for_handoff!(
-                 first_child.message.id,
-                 second_child.message.id
-               )
-
-      assert {:ok, twice_transferred} = BackgroundTasks.fetch_internal(task.id)
-      assert twice_transferred.lifecycle_message_id == second_child.message.id
-      assert twice_transferred.source_message_id == source.message.id
-
-      set_message_status!(actor, second_child.message, :done, finished_at: DateTime.utc_now())
-
-      assert [^task_id] =
-               BackgroundTasks.request_cancel_for_lifecycle_message!(second_child.message.id)
-
-      assert {:ok, canceling} = BackgroundTasks.fetch_internal(task.id)
-      assert canceling.cancel_requested == true
-    end
   end
 
   describe "execution context and references" do
@@ -491,10 +331,9 @@ defmodule IntellectualClub.BackgroundTasksTest do
   end
 
   describe "live reaper" do
-    test "live reaper keeps a transferred task while its lifecycle generation is active" do
+    test "live reaper keeps a task while its source generation is active" do
       %{user: actor} = user_fixture()
       source = create_source_tool_call!(actor)
-      child = create_source_tool_call!(actor)
 
       task =
         create_background_task!(
@@ -503,13 +342,6 @@ defmodule IntellectualClub.BackgroundTasksTest do
           |> source_message_attrs(actor)
           |> Map.merge(%{status: :running, started_at: DateTime.utc_now()})
         )
-
-      set_message_status!(actor, source.message, :done, finished_at: DateTime.utc_now())
-
-      assert [task_id] =
-               BackgroundTasks.transfer_active_for_handoff!(source.message.id, child.message.id)
-
-      assert task_id == task.id
 
       assert {:ok, _owner} =
                Registry.register(
@@ -522,7 +354,7 @@ defmodule IntellectualClub.BackgroundTasksTest do
       assert {:ok, current} = BackgroundTasks.fetch_internal(task.id)
       assert current.status == :running
       assert current.cancel_requested == false
-      assert current.lifecycle_message_id == child.message.id
+      assert current.lifecycle_message_id == source.message.id
 
       Registry.unregister(IntellectualClub.BackgroundTasks.ProcessRegistry, task.id)
     end

@@ -36,7 +36,6 @@
         :chat-base-title="vm.chatBaseTitle"
         :chat-full-title="vm.chatFullTitle"
         :chat-note="vm.chatNote"
-        :continuation-nav="vm.continuationNav"
         :creating-chat="vm.creatingChat"
         :deleting="vm.deleting"
         :can-edit="vm.canEdit"
@@ -54,7 +53,6 @@
         @update:selectedConfig="(value) => (vm.selectedConfig = value)"
         @change-config="vm.updateConfig"
         @close="vm.backToChats"
-        @open-continuation="handleContinuationNavigate"
         @toggle-menu="vm.toggleMenu"
         @open-new-chat="vm.openNewChatModal"
         @open-config-editor="vm.openConfigEditor"
@@ -232,7 +230,7 @@
                 aria-live="polite"
               >
                 <span class="chat-relation-banner__spinner" aria-hidden="true"></span>
-                <strong>Creating continuation…</strong>
+                <strong>Compacting context in this chat…</strong>
               </div>
             </template>
 
@@ -260,7 +258,7 @@
               aria-live="polite"
             >
               <span class="chat-relation-banner__spinner" aria-hidden="true"></span>
-              <strong>Creating continuation…</strong>
+              <strong>Compacting context in this chat…</strong>
             </div>
           </div>
           <ChatQueuedMessagesPanel
@@ -840,7 +838,7 @@ import {
   watch,
   type ComponentPublicInstance,
 } from 'vue';
-import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
@@ -1021,13 +1019,13 @@ const relationTitle = (relation: ChatRelationSummary) =>
 const parentRelationLabel = (relation: ChatRelationSummary) => {
   if (relation.kind === 'fork') return translate('Fork of');
   if (relation.kind === 'spawn') return translate('Spawned from');
-  return translate('Continuation of');
+  return translate('Parent chat');
 };
 
 const childRelationLabel = (relation: ChatRelationSummary) => {
   if (relation.kind === 'fork') return translate('Forked into');
   if (relation.kind === 'spawn') return translate('Spawned into');
-  return translate('Continued in');
+  return translate('Related chat');
 };
 
 const chatRoute = (chatId: number) => ({
@@ -1042,19 +1040,6 @@ const handleChatRouteClick = (event: MouseEvent, chatId: number) => {
   if (event.defaultPrevented || !isPlainLeftClick(event)) return;
   event.preventDefault();
   void vm.openChat(chatId);
-};
-
-const handleContinuationNavigate = (to: RouteLocationRaw) => {
-  const path = typeof to === 'object' && 'path' in to ? to.path : null;
-  const match = typeof path === 'string' ? path.match(/^\/chats\/(\d+)$/u) : null;
-  const chatId = match ? Number(match[1]) : 0;
-
-  if (Number.isInteger(chatId) && chatId > 0) {
-    void vm.openChat(chatId);
-    return;
-  }
-
-  void router.push(to);
 };
 
 const handleDragEnter = () => {

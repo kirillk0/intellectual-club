@@ -2,7 +2,7 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
   @moduledoc """
   The per-chat FIFO of queued follow-ups and steers: delivery as new turns,
   blocking and reopening at terminal generation boundaries, conversion of late
-  steers, and transfer of the backlog across handoffs.
+  steers, and same-chat reanchoring after manual compaction.
   """
   use IntellectualClub.DataCase, async: false
 
@@ -12,7 +12,7 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
   alias IntellectualClub.BackgroundTasks.BackgroundTask
   alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageStep, QueuedMessages, Threads}
   alias IntellectualClub.Files
-  alias IntellectualClub.Generation.{QueueCoordinator, QueueDispatcher, StepRequests, Worker}
+  alias IntellectualClub.Generation.{QueueCoordinator, QueueDispatcher, Worker}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Notifications.WebPushGenerationEvent
   alias IntellectualClub.Test.GenerationRuntime.Barrier
@@ -874,273 +874,91 @@ defmodule IntellectualClub.Generation.QueueCoordinatorTest do
     end
   end
 
-  describe "handoff" do
-    test "handoff fallback starts the first transferred turn in an idle child chat" do
-      %{user: actor} = user_fixture()
-      {source_chat, _source_root, source_message} = create_chat_with_anchor!(actor)
-      {child_chat, _child_root, _child_anchor} = create_chat_with_anchor!(actor)
-
-      assert {:ok, queued} =
-               QueuedMessages.enqueue_follow_up(
-                 source_chat.id,
-                 %{content: "Transferred follow-up"},
-                 actor
-               )
-
-      :ok = Phoenix.PubSub.subscribe(IntellectualClub.PubSub, "chat:#{child_chat.id}")
-
-      put_app_env(:demo_chunk_delay_ms, 1_000)
-
-      assert {:transferred, %{transferred_count: 1, dispatch: {:advanced, child_generation_id}}} =
-               without_registered_dispatcher(fn ->
-                 QueueDispatcher.handoff(source_message.id, child_chat.id, nil)
-               end)
-
-      assert {:ok, delivered} = QueuedMessages.get(queued.id, actor)
-      assert delivered.chat_id == child_chat.id
-      assert delivered.status == :delivered
-      assert delivered.assistant_message_id == child_generation_id
-      assert_receive {:content_delta, ^child_generation_id, _delta}, 5_000
-      assert {:ok, _poll} = GenerationSupervisor.poll_generation(child_generation_id)
-      stop_generation_worker!(child_generation_id)
-    end
-
-    test "terminal handoff publishes the child step and backlog together without starting a worker" do
-      %{user: actor} = user_fixture()
-      {source, _root, _anchor} = create_chat_with_anchor!(actor)
-      generation = create_generating_assistant!(source, actor)
-
-      assert {:ok, queued} =
-               QueuedMessages.enqueue_follow_up(source.id, %{content: "After handoff"}, actor)
-
-      set_generation_status!(generation, :done, actor)
-
-      child =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create_empty,
-          %{
-            note: "",
-            parent_chat_id: source.id,
-            parent_message_id: generation.id,
-            parent_relation_kind: :handoff
-          },
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      {:ok, summary} = Threads.add_message_to_end(child, :user, "Handoff summary", actor: actor)
-
-      assert {:ok, result} = QueueCoordinator.prepare_terminal_handoff(generation.id, child.id)
-      context = result.prepared_context
-      assert context.parent_message_id == summary.id
-      assert result.child_generation_message_id == context.message_id
-      assert result.transferred_count == 1
-
-      assert StepRequests.request_for_step!(context.step_id, actor: actor) ==
-               context.request_payload
-
-      assert GenerationSupervisor.get_generation_state(context.message_id) == :not_found
-      assert {:ok, moved} = QueuedMessages.get(queued.id, actor)
-      assert moved.chat_id == child.id
-      assert moved.anchor_message_id == context.message_id
-      assert moved.status == :pending
-
-      assert {:ok, resumed} = QueueCoordinator.prepare_terminal_handoff(generation.id, child.id)
-      assert resumed.prepared_context == nil
-      assert resumed.child_generation_message_id == context.message_id
-      assert length(Threads.all_messages(child.id, actor)) == 2
-    end
-
-    test "handoff moves a late steer behind the existing backlog and waits for the child generation" do
+  describe "manual compaction" do
+    test "checkpoint reanchoring preserves FIFO and delivers the backlog in the same chat" do
       %{user: actor} = user_fixture()
       configuration = steering_configuration!(actor, "http://127.0.0.1:9")
-
-      {source_chat, source_generation, source_step} =
-        create_generation!(actor, configuration.id, "Source generation")
+      {chat, generation, step} = create_generation!(actor, configuration.id, "Source generation")
 
       assert {:ok, first} =
-               QueuedMessages.enqueue_follow_up(
-                 source_chat.id,
-                 %{content: "Existing follow-up"},
-                 actor
-               )
+               QueuedMessages.enqueue_follow_up(chat.id, %{content: "Existing follow-up"}, actor)
 
-      assert {:ok, late_steer} =
-               QueuedMessages.enqueue_steer(
-                 source_generation.id,
-                 %{content: "Late handoff steer"},
-                 actor
-               )
+      assert {:ok, steer} = QueuedMessages.enqueue_steer(generation.id, "Late steering", actor)
+      set_step_status!(step, :done, actor)
+      set_generation_status!(generation, :done, actor)
 
-      {child_chat, child_generation, child_step} =
-        create_generation!(actor, configuration.id, "Handoff child",
-          parent_chat_id: source_chat.id,
-          parent_message_id: source_generation.id,
-          parent_relation_kind: :handoff,
-          subagent: true
+      {:ok, checkpoint} =
+        Threads.add_message_to_end(chat, :user, "Compacted context",
+          actor: actor,
+          item_type: :handoff_message
         )
 
-      set_step_status!(source_step, :done, actor)
-      set_generation_status!(source_generation, :done, actor)
+      assert {:ok, %{reanchored_count: 2, chat_id: chat_id, checkpoint_message_id: checkpoint_id}} =
+               QueueCoordinator.reanchor_manual_compaction(generation.id, checkpoint.id)
 
-      assert {:ok, %{transferred_count: 2}} =
-               QueueCoordinator.transfer_to_handoff(
-                 source_generation.id,
-                 child_chat.id,
-                 child_generation.id
-               )
+      assert chat_id == chat.id
+      assert checkpoint_id == checkpoint.id
+      assert {:ok, pending} = QueuedMessages.list_for_chat(chat.id, actor)
+      assert Enum.map(pending, & &1.id) == [first.id, steer.id]
 
-      assert {:ok, []} = QueuedMessages.list_for_chat(source_chat.id, actor)
-      assert {:ok, transferred} = QueuedMessages.list_for_chat(child_chat.id, actor)
-      assert Enum.map(transferred, & &1.id) == [first.id, late_steer.id]
+      assert Enum.all?(
+               pending,
+               &(&1.kind == :follow_up and &1.anchor_message_id == checkpoint.id and
+                   is_nil(&1.target_generation_message_id))
+             )
 
-      assert {:ok, transferred_first} = QueuedMessages.get(first.id, actor)
-      assert {:ok, transferred_steer} = QueuedMessages.get(late_steer.id, actor)
+      assert {:ok, %{reanchored_count: 0}} =
+               QueueCoordinator.reanchor_manual_compaction(generation.id, checkpoint.id)
 
-      assert transferred_first.kind == :follow_up
-      assert transferred_first.anchor_message_id == child_generation.id
-      assert transferred_steer.kind == :follow_up
-      assert transferred_steer.status == :pending
-      assert transferred_steer.anchor_message_id == child_generation.id
-      assert transferred_steer.target_generation_message_id == nil
+      assert {:ok, next} = QueueCoordinator.prepare_next(chat.id)
+      assert next.chat_id == chat.id
 
-      assert QueuedMessages.content_specs(transferred_steer) == [
-               %{kind: :text, content_text: "Late handoff steer"}
-             ]
+      assert Ash.get!(ChatMessage, next.parent_message_id, actor: actor).parent_id ==
+               checkpoint.id
 
-      assert :active = QueueCoordinator.prepare_next(child_chat.id)
-
-      set_step_status!(child_step, :done, actor)
-      set_generation_status!(child_generation, :done, actor)
-
-      assert {:ok, %{status: :done}} =
-               QueueCoordinator.settle_generation(child_generation.id, :done)
-
-      assert {:ok, next_context} = QueueCoordinator.prepare_next(child_chat.id)
-      assert {:ok, delivered_first} = QueuedMessages.get(first.id, actor)
-      assert {:ok, pending_steer} = QueuedMessages.get(late_steer.id, actor)
-
-      assert delivered_first.status == :delivered
-      assert delivered_first.assistant_message_id == next_context.message_id
-      assert pending_steer.status == :pending
-      assert pending_steer.anchor_message_id == next_context.message_id
+      assert {:ok, delivered} = QueuedMessages.get(first.id, actor)
+      assert delivered.status == :delivered
+      assert delivered.assistant_message_id == next.message_id
+      assert {:ok, still_pending} = QueuedMessages.get(steer.id, actor)
+      assert still_pending.status == :pending
+      assert still_pending.anchor_message_id == next.message_id
     end
 
-    test "steer submitted after a terminal handoff is queued in the active child chat" do
+    test "a checkpoint in another chat cannot reanchor the source backlog" do
       %{user: actor} = user_fixture()
-      configuration = steering_configuration!(actor, "http://127.0.0.1:9")
+      {chat, _root, source} = create_chat_with_anchor!(actor)
+      {other, _other_root, _other_source} = create_chat_with_anchor!(actor)
 
-      {source_chat, source_generation, source_step} =
-        create_generation!(actor, configuration.id, "Completed handoff source")
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_follow_up(chat.id, %{content: "Keep here"}, actor)
 
-      {child_chat, child_generation, _child_step} =
-        create_generation!(actor, configuration.id, "Active handoff child",
-          parent_chat_id: source_chat.id,
-          parent_message_id: source_generation.id,
-          parent_relation_kind: :handoff,
-          subagent: true
+      {:ok, checkpoint} =
+        Threads.add_message_to_end(other, :user, "Unrelated checkpoint",
+          actor: actor,
+          item_type: :handoff_message
         )
 
-      set_step_status!(source_step, :done, actor)
-      set_generation_status!(source_generation, :done, actor)
-      create_handoff_result!(actor, source_generation, child_chat, child_generation)
+      assert {:error, :invalid_compaction_checkpoint} =
+               QueueCoordinator.reanchor_manual_compaction(source.id, checkpoint.id)
 
-      assert {:ok, queued_message} =
-               QueuedMessages.enqueue_steer(
-                 source_generation.id,
-                 %{content: "Continue in the handoff child"},
-                 actor
-               )
-
-      assert queued_message.chat_id == child_chat.id
-      assert queued_message.kind == :follow_up
-      assert queued_message.status == :pending
-      assert queued_message.anchor_message_id == child_generation.id
-      assert queued_message.target_generation_message_id == nil
-
-      assert {:ok, []} = QueuedMessages.list_for_chat(source_chat.id, actor)
-      assert {:ok, [listed]} = QueuedMessages.list_for_chat(child_chat.id, actor)
-      assert listed.id == queued_message.id
-      assert :active = QueueCoordinator.prepare_next(child_chat.id)
+      assert {:ok, unchanged} = QueuedMessages.get(queued.id, actor)
+      assert unchanged.chat_id == chat.id
+      assert unchanged.anchor_message_id == source.id
+      assert unchanged.status == :pending
     end
 
-    test "steer submitted after a committed manual handoff is queued in its child chat" do
+    test "late steering stays in its source chat despite obsolete continuation payloads" do
       %{user: actor} = user_fixture()
-      configuration = steering_configuration!(actor, "http://127.0.0.1:9")
+      {chat, _root, source} = create_chat_with_anchor!(actor)
+      {unrelated, _other_root, other_source} = create_chat_with_anchor!(actor)
+      create_step!(actor, source, sequence: 2)
+      create_handoff_result!(actor, source, unrelated, other_source)
 
-      {source_chat, source_generation, source_step} =
-        create_generation!(actor, configuration.id, "Completed manual handoff source")
-
-      {child_chat, child_generation, _child_step} =
-        create_generation!(actor, configuration.id, "Manual handoff child",
-          parent_chat_id: source_chat.id,
-          parent_message_id: source_generation.id,
-          parent_relation_kind: :handoff,
-          subagent: true
-        )
-
-      set_step_status!(source_step, :done, actor)
-      set_generation_status!(source_generation, :done, actor)
-
-      assert {:ok, queued_message} =
-               QueuedMessages.enqueue_steer(
-                 source_generation.id,
-                 %{content: "Continue after manual handoff"},
-                 actor
-               )
-
-      assert queued_message.chat_id == child_chat.id
-      assert queued_message.kind == :follow_up
-      assert queued_message.status == :pending
-      assert queued_message.anchor_message_id == child_generation.id
-      assert {:ok, []} = QueuedMessages.list_for_chat(source_chat.id, actor)
-    end
-
-    test "late steer after canceled uncommitted handoff stays blocked in the source chat" do
-      %{user: actor} = user_fixture()
-      configuration = steering_configuration!(actor, "http://127.0.0.1:9")
-
-      {source_chat, source_generation, source_step} =
-        create_generation!(actor, configuration.id, "Canceled handoff source")
-
-      child_chat =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create,
-          %{
-            note: "",
-            llm_configuration_id: configuration.id,
-            parent_chat_id: source_chat.id,
-            parent_message_id: source_generation.id,
-            parent_relation_kind: :handoff,
-            subagent: true
-          },
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      {:ok, _child_root} =
-        Threads.add_message_to_end(child_chat, :user, "Uncommitted handoff", actor: actor)
-
-      set_step_status!(source_step, :canceled, actor)
-      set_generation_status!(source_generation, :canceled, actor)
-
-      assert {:ok, queued_message} =
-               QueuedMessages.enqueue_steer(
-                 source_generation.id,
-                 %{content: "Must remain paused after cancel"},
-                 actor
-               )
-
-      assert queued_message.chat_id == source_chat.id
-      assert queued_message.kind == :follow_up
-      assert queued_message.status == :blocked
-      assert queued_message.blocked_reason == "generation_canceled"
-      assert queued_message.anchor_message_id == source_generation.id
-
-      assert {:ok, []} = QueuedMessages.list_for_chat(child_chat.id, actor)
-      assert {:blocked, "generation_canceled"} = QueueCoordinator.prepare_next(source_chat.id)
+      assert {:ok, queued} = QueuedMessages.enqueue_steer(source.id, "Continue here", actor)
+      assert queued.chat_id == chat.id
+      assert queued.kind == :follow_up
+      assert queued.anchor_message_id == source.id
+      assert {:ok, []} = QueuedMessages.list_for_chat(unrelated.id, actor)
     end
   end
 

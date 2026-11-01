@@ -429,13 +429,11 @@ defmodule IntellectualClub.Chat.QueuedMessages do
          {:ok, generation} <-
            fetch_owned_generation(preliminary.target_generation_message_id, actor),
          :ok <- validate_steering_target_state(generation) do
-      destination = late_follow_up_destination(generation, actor)
-
       transact(fn ->
-        with {:ok, chats} <- lock_owned_chats([preliminary.chat_id, destination.chat_id], actor),
+        with {:ok, chat} <- lock_owned_chat(preliminary.chat_id, actor),
              {:ok, message} <- lock_owned_generation(generation.id, actor),
-             :ok <- ensure_message_chat(message, Map.fetch!(chats, preliminary.chat_id)),
-             {:ok, attrs} <- steering_retry_attrs(message, chats, actor),
+             :ok <- ensure_message_chat(message, chat),
+             {:ok, attrs} <- steering_retry_attrs(message, chat, actor),
              {:ok, requested} <- lock_one(preliminary.id, actor),
              :ok <- ensure_quarantined_steer(requested),
              :ok <- ensure_steering_retry_target(requested, message) do
@@ -502,47 +500,29 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
-  defp lock_owned_chats(ids, actor) do
-    ids
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.reduce_while({:ok, %{}}, fn id, {:ok, chats} ->
-      case lock_owned_chat(id, actor) do
-        {:ok, chat} -> {:cont, {:ok, Map.put(chats, id, chat)}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp steering_retry_attrs(%ChatMessage{role: :assistant, status: :generating}, _chats, _actor) do
+  defp steering_retry_attrs(%ChatMessage{role: :assistant, status: :generating}, _chat, _actor) do
     {:ok, %{status: :pending, blocked_reason: nil, finished_at: nil}}
   end
 
   defp steering_retry_attrs(
          %ChatMessage{role: :assistant, status: status} = message,
-         chats,
+         chat,
          actor
        )
        when status in [:done, :error, :canceled] do
     destination = late_follow_up_destination(message, actor)
 
-    # A handoff committed while acquiring the source lock must be retried with
-    # both chat locks, never by acquiring another chat lock after message locks.
-    with %Chat{} = chat <- Map.get(chats, destination.chat_id),
-         :ok <- lock_retry_anchor(destination.anchor_message_id, message, chat, actor) do
+    with :ok <- lock_retry_anchor(destination.anchor_message_id, message, chat, actor) do
       {:ok,
        Map.merge(destination, %{
          kind: :follow_up,
          target_generation_message_id: nil,
          finished_at: nil
        })}
-    else
-      nil -> {:error, :queued_steering_changed}
-      {:error, _reason} = error -> error
     end
   end
 
-  defp steering_retry_attrs(%ChatMessage{}, _chats, _actor),
+  defp steering_retry_attrs(%ChatMessage{}, _chat, _actor),
     do: {:error, :generation_not_active}
 
   defp lock_retry_anchor(nil, _message, _chat, _actor), do: :ok
@@ -892,66 +872,22 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     do: {:error, :generation_not_active}
 
   defp late_follow_up_destination(%ChatMessage{status: :done} = message, actor) do
-    case committed_handoff_child(message, actor) do
-      %Chat{} = child ->
-        destination_for_anchor(child.id, child.last_message_id, :done, actor)
+    checkpoint =
+      ChatMessage
+      |> Ash.Query.filter(
+        chat_id == ^message.chat_id and parent_id == ^message.id and role == :user and
+          exists(steps.items, type == :handoff_message)
+      )
+      |> Ash.Query.sort(id: :asc)
+      |> Ash.Query.limit(1)
+      |> Ash.read_one!(actor: actor)
 
-      nil ->
-        destination_for_anchor(message.chat_id, message.id, message.status, actor)
-    end
+    anchor_id = if checkpoint, do: checkpoint.id, else: message.id
+    destination_for_anchor(message.chat_id, anchor_id, message.status, actor)
   end
 
   defp late_follow_up_destination(%ChatMessage{} = message, actor) do
     destination_for_anchor(message.chat_id, message.id, message.status, actor)
-  end
-
-  defp committed_handoff_child(%ChatMessage{} = message, actor) do
-    case committed_handoff_child_id(message, actor) do
-      child_chat_id when is_integer(child_chat_id) ->
-        handoff_child_query(message)
-        |> Ash.Query.filter(id == ^child_chat_id)
-        |> Ash.Query.limit(1)
-        |> Ash.read_one!(actor: actor)
-
-      _other ->
-        handoff_child_query(message)
-        |> Ash.Query.filter(is_nil(parent_tool_call_item_id))
-        |> Ash.Query.sort(id: :desc)
-        |> Ash.Query.limit(1)
-        |> Ash.read_one!(actor: actor)
-    end
-  end
-
-  defp handoff_child_query(%ChatMessage{} = message) do
-    Chat
-    |> Ash.Query.filter(
-      parent_chat_id == ^message.chat_id and parent_message_id == ^message.id and
-        parent_relation_kind == :handoff
-    )
-  end
-
-  defp committed_handoff_child_id(%ChatMessage{} = message, actor) do
-    message
-    |> Ash.load!([steps: [items: [:contents]]], actor: actor)
-    |> Map.get(:steps, [])
-    |> Enum.flat_map(&List.wrap(&1.items))
-    |> Enum.filter(&(&1.type == :tool_result))
-    |> Enum.flat_map(&List.wrap(&1.contents))
-    |> Enum.find_value(fn
-      %{kind: :opaque, content_json: %{"raw" => %{"handoff" => handoff}}}
-      when is_map(handoff) ->
-        case handoff do
-          %{"chat_id" => chat_id, "generation_message_id" => generation_message_id}
-          when is_integer(chat_id) and is_integer(generation_message_id) ->
-            chat_id
-
-          _other ->
-            nil
-        end
-
-      _other ->
-        nil
-    end)
   end
 
   defp destination_for_anchor(chat_id, anchor_message_id, fallback_status, actor) do

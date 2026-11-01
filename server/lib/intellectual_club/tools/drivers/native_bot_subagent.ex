@@ -80,7 +80,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
           "type" => "boolean",
           "default" => false,
           "title" => "Allow handoff in subchats",
-          "description" => "Allow subagents to continue work through handoff chats."
+          "description" => "Allow subagents to compact context and continue work."
         }
       },
       "required" => ["bot_id"],

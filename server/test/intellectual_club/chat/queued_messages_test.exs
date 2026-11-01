@@ -6,6 +6,39 @@ defmodule IntellectualClub.Chat.QueuedMessagesTest do
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
 
+  test "late steering after manual compaction targets its checkpoint in the same chat" do
+    %{user: actor} = user_fixture()
+    chat = create_chat!(actor)
+    {:ok, _input} = Threads.add_message_to_end(chat, :user, "Original work", actor: actor)
+
+    {:ok, _request} =
+      Threads.add_message_to_end(chat, :user, "Summarize",
+        actor: actor,
+        item_type: :handoff_request
+      )
+
+    {:ok, summary} =
+      Threads.add_message_to_end(chat, :assistant, "Current state",
+        actor: actor,
+        item_type: :handoff_summary
+      )
+
+    assert {:ok, %{message: checkpoint}} =
+             IntellectualClub.Chat.Handoff.complete_manual_generation(summary.id, actor)
+
+    assert {:ok, queued} = QueuedMessages.enqueue_steer(summary.id, "One more instruction", actor)
+    assert queued.chat_id == chat.id
+    assert queued.kind == :follow_up
+    assert queued.status == :pending
+    assert queued.anchor_message_id == checkpoint.id
+    assert queued.target_generation_message_id == nil
+
+    assert {:ok, context} = IntellectualClub.Generation.QueueCoordinator.prepare_next(chat.id)
+    follow_up = Ash.get!(ChatMessage, context.parent_message_id, actor: actor)
+    assert follow_up.parent_id == checkpoint.id
+    assert context.chat_id == chat.id
+  end
+
   test "follow-ups are listed FIFO and can be edited" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor)

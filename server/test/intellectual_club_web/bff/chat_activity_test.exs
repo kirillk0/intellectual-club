@@ -7,7 +7,6 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
 
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
-  alias IntellectualClub.Chat.SubchatCostCache
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
@@ -358,50 +357,6 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
       assert payload["chat_generations"] == [%{"chat_id" => chat.id, "message_id" => message.id}]
       assert payload["active_message_ids"] == [message.id]
     end
-
-    test "keeps the original subchat active as generation moves through handoffs", %{conn: conn} do
-      %{user: actor} = fixture = user_fixture()
-      conn = sign_in_conn(conn, fixture)
-      parent = create_chat!(actor)
-      child = create_subchat!(actor, parent, :spawn)
-      source = create_generating_message!(actor, child, step: :waiting_provider)
-      continuation = create_subchat!(actor, child, :handoff)
-      continued = create_generating_message!(actor, continuation, step: :waiting_provider)
-      create_handoff_result!(actor, source, continuation, continued)
-      set_message_status!(actor, source, :done)
-
-      params = %{"chat_ids" => "#{child.id}", "message_ids" => "#{source.id}"}
-      payload = conn |> get(~p"/api/bff/chat-list/generation-state", params) |> json_response(200)
-
-      assert payload["chat_generations"] == [
-               %{"chat_id" => child.id, "message_id" => continued.id}
-             ]
-
-      terminal = create_subchat!(actor, continuation, :handoff)
-      terminal_message = create_generating_message!(actor, terminal)
-      create_handoff_result!(actor, continued, terminal, terminal_message)
-      set_message_status!(actor, continued, :done)
-
-      payload = conn |> get(~p"/api/bff/chat-list/generation-state", params) |> json_response(200)
-
-      assert payload["chat_generations"] == [
-               %{"chat_id" => child.id, "message_id" => terminal_message.id}
-             ]
-
-      foreign_conn = sign_in_conn(build_conn(), user_fixture())
-
-      assert foreign_conn
-             |> get(~p"/api/bff/chat-list/generation-state", params)
-             |> json_response(200)
-             |> Map.fetch!("chat_generations") == []
-
-      set_message_status!(actor, terminal_message, :done)
-
-      assert conn
-             |> get(~p"/api/bff/chat-list/generation-state", params)
-             |> json_response(200)
-             |> Map.fetch!("chat_generations") == []
-    end
   end
 
   describe "fork child activity" do
@@ -443,72 +398,6 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
       |> Ash.update!(actor: actor)
 
       assert_child_activity(ctx, child, revision, nil, "error")
-    end
-
-    test "a persisted handoff keeps the child active in list, summary, state and idle endpoints",
-         ctx do
-      %{conn: conn, actor: actor, parent: parent} = ctx
-      initial_revision = idle_revision(conn, parent)
-      child = create_fork_child!(ctx)
-      source = create_generating_message!(actor, child, step: :waiting_provider)
-
-      continuation =
-        create_chat!(actor,
-          parent_chat_id: child.id,
-          parent_message_id: source.id,
-          parent_relation_kind: :handoff,
-          subagent: true
-        )
-
-      continued = create_generating_message!(actor, continuation, step: :waiting_provider)
-      create_handoff_result!(actor, source, continuation, continued)
-      set_message_status!(actor, source, :done)
-
-      revision = assert_child_activity(ctx, child, initial_revision, continued.id, "generating")
-      assert list_subchat(conn, parent, child)["active_generation_message_id"] == continued.id
-
-      summary = conn |> get(~p"/api/bff/chat-list/#{child.id}/summary") |> json_response(200)
-      assert summary["chat"]["active_generation_message_id"] == continued.id
-
-      list_idle = conn |> get(~p"/api/bff/chat-list/idle-state") |> json_response(200)
-      assert list_idle["active_generation_message_id"] == continued.id
-
-      terminal = create_subchat!(actor, continuation, :handoff, parent_message_id: continued.id)
-      terminal_message = create_generating_message!(actor, terminal)
-      create_handoff_result!(actor, continued, terminal, terminal_message)
-      set_message_status!(actor, continued, :done)
-
-      revision = assert_child_activity(ctx, child, revision, terminal_message.id, "generating")
-
-      child_state = conn |> get(~p"/api/bff/chat-state/#{child.id}") |> json_response(200)
-      [relation] = child_state["relations"]["children_by_message_id"]["#{source.id}"]
-      assert relation["active_generation_message_id"] == terminal_message.id
-      assert relation["last_message_status"] == "generating"
-
-      set_message_status!(actor, terminal_message, :canceled)
-
-      assert_child_activity(ctx, child, revision, nil, "canceled")
-      assert list_subchat(conn, parent, child)["active_generation_message_id"] == nil
-
-      child_state = conn |> get(~p"/api/bff/chat-state/#{child.id}") |> json_response(200)
-      [relation] = child_state["relations"]["children_by_message_id"]["#{source.id}"]
-      assert relation["active_generation_message_id"] == nil
-      assert relation["last_message_status"] == "canceled"
-
-      settled_list_idle =
-        conn
-        |> get(~p"/api/bff/chat-list/idle-state", revision: list_idle["revision"])
-        |> json_response(200)
-
-      assert settled_list_idle["revision"] != list_idle["revision"]
-      assert settled_list_idle["active_generation_message_id"] == nil
-    end
-  end
-
-  describe "subchat cost snapshots" do
-    setup do
-      if is_nil(Process.whereis(SubchatCostCache)), do: start_supervised!(SubchatCostCache)
-      :ok
     end
 
     test "idle retains a phase snapshot and explicit state reopening refreshes child costs", %{
@@ -652,16 +541,6 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
     assert relation["last_message_status"] == status
     assert state["idle_revision"] == idle["revision"]
     idle["revision"]
-  end
-
-  defp list_subchat(conn, parent, child) do
-    conn
-    |> get(~p"/api/bff/chat-list")
-    |> json_response(200)
-    |> Map.fetch!("chats")
-    |> Enum.find(&(&1["id"] == parent.id))
-    |> Map.fetch!("subchats")
-    |> Enum.find(&(&1["id"] == child.id))
   end
 
   defp branch_message(payload, message_id) do

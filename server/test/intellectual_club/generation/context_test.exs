@@ -140,17 +140,64 @@ defmodule IntellectualClub.Generation.ContextTest do
       assert StepRequests.request_for_step!(step.id, actor: actor) == context.request_payload
     end
 
-    test "routing affinity follows nested spawn, fork and handoff lineage" do
+    test "compaction keeps the original request envelope despite changed runtime tools and parameters" do
+      %{user: actor} = user_fixture()
+
+      for provider_type <- [
+            :responses,
+            :openrouter_chat_completion,
+            :anthropic_messages,
+            :google_interactions
+          ] do
+        configuration =
+          create_typed_configuration!(actor, provider_type,
+            model_name: "pinned-model",
+            web_search_enabled: provider_type == :responses,
+            parameters: %{"temperature" => 0.3}
+          )
+
+        chat =
+          chat_with_input!(actor, %{llm_configuration_id: configuration.id}, "Original history")
+
+        tool = create_tool_instance!(actor, type: "native-agent-management")
+        create_chat_tool_binding!(actor, chat, tool)
+        context = build!(chat, actor)
+        original = context.request_payload
+
+        recovered = %{
+          context
+          | model_name: "changed-model",
+            system_prompt: "Changed runtime prompt",
+            parameters: %{"temperature" => 0.9},
+            tools_payload: [],
+            request_payload: Map.put(original, "tools", [])
+        }
+
+        compacted =
+          Context.build_compaction_request(recovered, [%{role: :user, content: "New summary"}])
+
+        assert Map.drop(compacted.raw_request, ["input", "messages"]) ==
+                 Map.drop(original, ["input", "messages"])
+
+        assert compacted.raw_request["tools"] == original["tools"]
+        assert compacted.raw_request["model"] == "pinned-model"
+        refute Jason.encode!(compacted.request_snapshot.model_input) =~ "Original history"
+        assert Jason.encode!(compacted.request_snapshot.model_input) =~ "New summary"
+        assert StepRequests.request_for_step!(context.step_id, actor: actor) == original
+      end
+    end
+
+    test "routing affinity follows nested spawn and fork lineage" do
       %{user: actor} = user_fixture()
       configuration = create_typed_configuration!(actor, :openrouter_chat_completion)
       root = create_empty_chat!(actor, llm_configuration_id: configuration.id, note: "Root")
 
-      [spawn, fork, handoff] =
-        Enum.scan([:spawn, :fork, :handoff], root, fn kind, parent ->
+      [spawn, fork, nested_spawn] =
+        Enum.scan([:spawn, :fork, :spawn], root, fn kind, parent ->
           create_subchat!(actor, parent, kind, llm_configuration_id: configuration.id)
         end)
 
-      for chat <- [root, spawn, fork, handoff] do
+      for chat <- [root, spawn, fork, nested_spawn] do
         {:ok, _message} = Threads.add_message_to_end(chat, :user, "Continue", actor: actor)
         context = build!(chat, actor)
 

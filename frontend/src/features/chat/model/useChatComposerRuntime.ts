@@ -187,7 +187,6 @@ export function useChatComposerRuntime(params: Params) {
       const messageByCode: Record<string, string> = {
         empty_steering: 'Steering content must not be empty.',
         generation_not_active: 'Generation is no longer active.',
-        terminal_handoff_in_progress: 'Steering is unavailable during a terminal handoff.',
       };
 
       if (typeof code === 'string' && messageByCode[code]) {

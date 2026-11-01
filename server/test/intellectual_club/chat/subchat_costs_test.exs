@@ -34,20 +34,20 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
         subagent: true
       )
 
-    handoff =
+    nested_fork =
       create_chat!(actor,
         llm_configuration_id: configuration.id,
         parent_chat_id: fork.id,
         parent_message_id: persist_cost!(fork, configuration, actor, 0.01).id,
-        parent_relation_kind: :handoff,
+        parent_relation_kind: :fork,
         subagent: true
       )
 
     nested_spawn =
       create_chat!(actor,
         llm_configuration_id: configuration.id,
-        parent_chat_id: handoff.id,
-        parent_message_id: persist_cost!(handoff, configuration, actor, 0.02).id,
+        parent_chat_id: nested_fork.id,
+        parent_message_id: persist_cost!(nested_fork, configuration, actor, 0.02).id,
         parent_relation_kind: :spawn,
         subagent: true
       )
@@ -74,16 +74,8 @@ defmodule IntellectualClub.Chat.SubchatCostsTest do
         subagent: true
       )
 
-    direct_handoff =
-      create_chat!(actor,
-        llm_configuration_id: configuration.id,
-        parent_chat_id: root.id,
-        parent_message_id: source_one.id,
-        parent_relation_kind: :handoff,
-        subagent: false
-      )
-
-    _excluded_message = persist_cost!(direct_handoff, configuration, actor, 0.5)
+    unrelated = create_chat!(actor, llm_configuration_id: configuration.id)
+    _excluded_message = persist_cost!(unrelated, configuration, actor, 0.5)
 
     before_zero = SubchatCosts.summary(root.id, actor)
     _zero_message = persist_cost!(zero_spawn, configuration, actor, 0.0)

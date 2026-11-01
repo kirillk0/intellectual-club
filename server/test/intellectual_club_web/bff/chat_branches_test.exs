@@ -7,7 +7,6 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.MessageBookmark
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
@@ -236,10 +235,8 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesTest do
       |> Ash.Changeset.for_create(:create, %{chat_message_id: moved_active_leaf.id}, actor: actor)
       |> Ash.create!(actor: actor)
 
-      {:ok, %{chat: handoff_child}} =
-        Handoff.create_handoff_chat(source, actor, "Move summary",
-          source_message_id: moved_active_leaf.id
-        )
+      fork_child =
+        create_subchat!(actor, source, :fork, parent_message_id: moved_active_leaf.id)
 
       moved_before =
         Ash.get!(ChatMessage, moved.id, actor: actor, load: [steps: [items: [:contents]]])
@@ -299,9 +296,9 @@ defmodule IntellectualClubWeb.Bff.ChatBranchesTest do
                |> Ash.Query.filter(chat_message_id == ^moved_active_leaf.id)
                |> Ash.read!(actor: actor)
 
-      handoff_child = Ash.get!(Chat, handoff_child.id, actor: actor)
-      assert handoff_child.parent_chat_id == target_id
-      assert handoff_child.parent_message_id == moved_active_leaf.id
+      fork_child = Ash.get!(Chat, fork_child.id, actor: actor)
+      assert fork_child.parent_chat_id == target_id
+      assert fork_child.parent_message_id == moved_active_leaf.id
     end
 
     test "rejects invalid moves",

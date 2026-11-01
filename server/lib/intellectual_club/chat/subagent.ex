@@ -3,7 +3,7 @@ defmodule IntellectualClub.Chat.Subagent do
   Shared policy and lifecycle helpers for linked subagent chats.
 
   Fork and spawn use different preparation strategies, but they share nesting,
-  handoff, synchronous waiting, and durable reference callback semantics.
+  context compaction, synchronous waiting, and durable reference callback semantics.
   """
 
   alias IntellectualClub.Accounts.User
@@ -25,7 +25,6 @@ defmodule IntellectualClub.Chat.Subagent do
 
   @creation_relation_kinds [:fork, :spawn]
   @creation_functions ["fork", "fork_background", "spawn", "spawn_background"]
-  @max_parent_hops 64
   @max_wait_retry_ms 5_000
   @progress_page_max_bytes 48_000
 
@@ -208,7 +207,7 @@ defmodule IntellectualClub.Chat.Subagent do
   def ensure_handoff_allowed(_tool_instance, _context), do: :ok
 
   @doc """
-  Whether a subagent chat may continue through handoff.
+  Whether a subagent chat may compact its current generation context.
 
   The policy belongs to the tool instance that created the subagent lineage
   (`parent_tool_instance`) while the actor can read it; otherwise the tool
@@ -319,7 +318,7 @@ defmodule IntellectualClub.Chat.Subagent do
   defp do_reconcile_background_wait(reference, actor, snapshot_fun, opts) do
     with {:ok, normalized_reference} <- normalize_reference(reference, actor),
          {:ok, state} <-
-           resolve_wait_chain(normalized_reference.generation_message_id, actor, opts) do
+           resolve_wait_state(normalized_reference.generation_message_id, actor, opts) do
       case state do
         %{status: :running, generation_message_id: message_id, pid: pid}
         when is_integer(message_id) and is_pid(pid) ->
@@ -369,15 +368,15 @@ defmodule IntellectualClub.Chat.Subagent do
   @doc """
   Returns answer progress and completed attachments for a subagent reference.
 
-  Handoff targets are followed without changing creation depth. The cursor is
-  opaque and falls back to a full replacement when the observed answer changes.
+  The cursor is opaque and falls back to a full replacement when the observed
+  answer changes. Progress belongs to the referenced generation message only.
   """
   @spec snapshot(map(), User.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
   def snapshot(reference, actor, cursor \\ nil)
 
   def snapshot(reference, %User{} = actor, cursor) when is_map(reference) do
     with {:ok, reference} <- normalize_reference(reference, actor),
-         {:ok, state} <- resolve_snapshot_chain(reference.generation_message_id, actor) do
+         {:ok, state} <- resolve_snapshot_state(reference.generation_message_id, actor) do
       {progress, next_cursor} = answer_progress(state.answer, cursor, reference)
 
       {:ok,
@@ -395,76 +394,28 @@ defmodule IntellectualClub.Chat.Subagent do
   def snapshot(_reference, _actor, _cursor), do: {:error, :invalid_subagent_reference}
 
   @doc """
-  Resolves the effective generation lifecycle for subchats and their continuations.
-
-  Persisted handoff tool results are followed in batches without resuming orphaned
-  generation workers. The returned map is keyed by the original subchat id.
+  Returns each fork or spawn chat's current generation lifecycle without loading
+  traces or resuming orphaned workers. The result is keyed by subchat id.
   """
   @spec lifecycle_states([Chat.t()], User.t()) :: %{optional(pos_integer()) => map()}
-  def lifecycle_states(chats, %User{} = actor) when is_list(chats) do
-    pending =
-      chats
-      |> Enum.reduce([], fn
-        %Chat{
-          id: chat_id,
-          subagent: true,
-          parent_relation_kind: relation_kind,
-          last_message: %ChatMessage{id: message_id}
-        },
-        acc
-        when is_integer(chat_id) and relation_kind in [:fork, :spawn, :handoff] and
-               is_integer(message_id) ->
-          [
-            %{
-              root_chat_id: chat_id,
-              message_id: message_id,
-              depth: 0,
-              visited: MapSet.new()
-            }
-            | acc
-          ]
+  def lifecycle_states(chats, %User{}) when is_list(chats) do
+    Enum.reduce(chats, %{}, fn
+      %Chat{
+        id: chat_id,
+        subagent: true,
+        parent_relation_kind: kind,
+        last_message: %ChatMessage{} = message
+      },
+      states
+      when kind in [:fork, :spawn] ->
+        Map.put(states, chat_id, lifecycle_state(message))
 
-        _chat, acc ->
-          acc
-      end)
-      |> Enum.reverse()
-
-    resolve_lifecycle_states(pending, actor, %{})
+      _chat, states ->
+        states
+    end)
   end
 
   def lifecycle_states(_chats, _actor), do: %{}
-
-  @doc """
-  Resolves lifecycle states while avoiding trace loads for chats that cannot
-  continue through a handoff.
-  """
-  @spec lifecycle_states([Chat.t()], User.t(), map()) :: %{optional(pos_integer()) => map()}
-  def lifecycle_states(chats, %User{} = actor, child_handoff_counts)
-      when is_list(chats) and is_map(child_handoff_counts) do
-    {direct_chats, chained_chats} =
-      Enum.split_with(chats, fn
-        %Chat{
-          id: chat_id,
-          subagent: true,
-          parent_relation_kind: relation_kind,
-          last_message: %ChatMessage{status: status}
-        }
-        when is_integer(chat_id) and relation_kind in [:fork, :spawn, :handoff] ->
-          status != :done or Map.get(child_handoff_counts, chat_id, 0) == 0
-
-        _chat ->
-          false
-      end)
-
-    direct_states =
-      Map.new(direct_chats, fn %Chat{id: chat_id, last_message: message} ->
-        {chat_id, lifecycle_state(message, message.status)}
-      end)
-
-    Map.merge(direct_states, lifecycle_states(chained_chats, actor))
-  end
-
-  def lifecycle_states(chats, actor, _child_handoff_counts), do: lifecycle_states(chats, actor)
 
   @doc false
   @spec resume_generation_if_needed(pos_integer(), User.t()) :: :ok | {:error, term()}
@@ -635,7 +586,7 @@ defmodule IntellectualClub.Chat.Subagent do
   end
 
   defp do_await_snapshot(reference, normalized_reference, actor, snapshot_fun, retry_attempt) do
-    case resolve_wait_chain(normalized_reference.generation_message_id, actor) do
+    case resolve_wait_state(normalized_reference.generation_message_id, actor) do
       {:ok, %{status: :running, pid: pid} = state} when is_pid(pid) ->
         await_generation_process(
           reference,
@@ -690,7 +641,7 @@ defmodule IntellectualClub.Chat.Subagent do
        ) do
     monitor_ref = Process.monitor(pid)
 
-    case resolve_wait_chain(normalized_reference.generation_message_id, actor) do
+    case resolve_wait_state(normalized_reference.generation_message_id, actor) do
       {:ok, %{status: :running, generation_message_id: ^message_id, pid: ^pid}} ->
         ToolExecution.interruptible(fn ->
           receive do
@@ -746,35 +697,15 @@ defmodule IntellectualClub.Chat.Subagent do
     min(@max_wait_retry_ms, trunc(:math.pow(2, min(attempt, 8))) * 25)
   end
 
-  defp resolve_wait_chain(message_id, actor, opts \\ []) when is_integer(message_id) do
-    do_resolve_wait_chain(message_id, actor, MapSet.new(), 0, opts)
-  end
-
-  defp do_resolve_wait_chain(_message_id, _actor, _visited, depth, _opts)
-       when depth >= @max_parent_hops do
-    {:ok, %{status: :failed, error: "Subagent handoff chain exceeded the supported depth."}}
-  end
-
-  defp do_resolve_wait_chain(message_id, actor, visited, depth, opts)
-       when is_integer(message_id) do
-    if MapSet.member?(visited, message_id) do
-      {:ok, %{status: :failed, error: "Subagent handoff chain contains a cycle."}}
-    else
-      case load_wait_message(message_id, actor) do
-        {:ok, %ChatMessage{} = message} ->
-          resolve_wait_message(message, actor, visited, depth, opts)
-
-        {:error, _reason} = error ->
-          error
-      end
+  defp resolve_wait_state(message_id, actor, opts \\ []) when is_integer(message_id) do
+    with {:ok, %ChatMessage{} = message} <- load_wait_message(message_id, actor) do
+      resolve_wait_message(message, actor, opts)
     end
   end
 
   defp resolve_wait_message(
          %ChatMessage{status: :generating} = message,
          actor,
-         visited,
-         depth,
          opts
        ) do
     case GenerationSupervisor.generation_worker_pid(message.id) do
@@ -794,7 +725,7 @@ defmodule IntellectualClub.Chat.Subagent do
                     {:ok, %{status: :retry, generation_message_id: message.id}}
 
                   {:ok, %ChatMessage{} = refreshed} ->
-                    resolve_wait_message(refreshed, actor, visited, depth, opts)
+                    resolve_wait_message(refreshed, actor, opts)
 
                   {:error, _reason} = error ->
                     error
@@ -807,27 +738,13 @@ defmodule IntellectualClub.Chat.Subagent do
     end
   end
 
-  defp resolve_wait_message(%ChatMessage{status: :done} = message, actor, visited, depth, opts) do
-    case Ash.load(message, lifecycle_message_load(), actor: actor, strict?: true) do
-      {:ok, %ChatMessage{} = loaded} ->
-        case handoff_generation_message_id(loaded) do
-          id when is_integer(id) and id > 0 ->
-            do_resolve_wait_chain(id, actor, MapSet.put(visited, loaded.id), depth + 1, opts)
-
-          _other ->
-            {:ok, %{status: :completed, generation_message_id: loaded.id}}
-        end
-
-      {:error, _reason} = error ->
-        error
-    end
+  defp resolve_wait_message(%ChatMessage{status: :done} = message, _actor, _opts) do
+    {:ok, %{status: :completed, generation_message_id: message.id}}
   end
 
   defp resolve_wait_message(
          %ChatMessage{status: :error} = message,
          _actor,
-         _visited,
-         _depth,
          _opts
        ) do
     {:ok,
@@ -841,14 +758,12 @@ defmodule IntellectualClub.Chat.Subagent do
   defp resolve_wait_message(
          %ChatMessage{status: :canceled} = message,
          _actor,
-         _visited,
-         _depth,
          _opts
        ) do
     {:ok, %{status: :canceled, generation_message_id: message.id}}
   end
 
-  defp resolve_wait_message(%ChatMessage{} = message, _actor, _visited, _depth, _opts) do
+  defp resolve_wait_message(%ChatMessage{} = message, _actor, _opts) do
     {:ok,
      %{
        status: :failed,
@@ -861,213 +776,42 @@ defmodule IntellectualClub.Chat.Subagent do
     Ash.get(ChatMessage, message_id, actor: actor)
   end
 
-  defp resolve_snapshot_chain(message_id, actor) when is_integer(message_id) do
-    do_resolve_snapshot_chain(message_id, actor, MapSet.new(), [], [], [])
-  end
+  defp resolve_snapshot_state(message_id, actor) when is_integer(message_id) do
+    with :ok <- resume_generation_if_needed(message_id, actor) do
+      message = load_final_message!(message_id, actor)
+      answer = message_answer_text(message)
 
-  defp do_resolve_snapshot_chain(_message_id, _actor, _visited, chain, answers, _artifacts)
-       when length(chain) >= @max_parent_hops do
-    {:ok,
-     %{
-       status: :failed,
-       answer: join_answers(answers),
-       final: nil,
-       error: "Subagent handoff chain exceeded the supported depth."
-     }}
-  end
-
-  defp do_resolve_snapshot_chain(message_id, actor, visited, chain, answers, artifacts)
-       when is_integer(message_id) do
-    if MapSet.member?(visited, message_id) do
-      {:ok,
-       %{
-         status: :failed,
-         answer: join_answers(answers),
-         final: nil,
-         error: "Subagent handoff chain contains a cycle."
-       }}
-    else
-      with :ok <- resume_generation_if_needed(message_id, actor) do
-        message = load_final_message!(message_id, actor)
-        message_answer = message_answer_text(message)
-        answers = append_answer(answers, message_answer)
-        artifacts = artifacts ++ message_artifacts(message)
-
-        case lifecycle_transition(message) do
-          {:terminal, :generating} ->
-            {:ok,
-             %{
-               status: :running,
-               answer: join_answers(answers),
-               final: nil,
-               error: nil
-             }}
-
-          {:continue, id} ->
-            chain = chain ++ [chain_entry(message)]
-
-            do_resolve_snapshot_chain(
-              id,
-              actor,
-              MapSet.put(visited, message_id),
-              chain,
-              answers,
-              artifacts
-            )
-
-          {:terminal, :done} ->
-            chain = chain ++ [chain_entry(message)]
-
-            {:ok,
-             %{
-               status: :completed,
-               answer: join_answers(answers),
-               final: %{
-                 chat_id: message.chat_id,
-                 message_id: message.id,
-                 text: message_answer,
-                 artifacts: Enum.uniq_by(artifacts, & &1.file_external_id),
-                 chain: chain
-               },
-               error: nil
-             }}
-
-          {:terminal, :error} ->
-            {:ok,
-             %{
-               status: :failed,
-               answer: join_answers(answers),
-               final: nil,
-               error: message.error_detail || "Subagent generation failed."
-             }}
-
-          {:terminal, :canceled} ->
-            {:ok,
-             %{
-               status: :canceled,
-               answer: join_answers(answers),
-               final: nil,
-               error: "Subagent generation was canceled."
-             }}
-
-          {:terminal, :invalid} ->
-            {:ok,
-             %{
-               status: :failed,
-               answer: join_answers(answers),
-               final: nil,
-               error: "Subagent generation has an invalid status."
-             }}
+      {status, error} =
+        case message.status do
+          :generating -> {:running, nil}
+          :done -> {:completed, nil}
+          :error -> {:failed, message.error_detail || "Subagent generation failed."}
+          :canceled -> {:canceled, "Subagent generation was canceled."}
+          _other -> {:failed, "Subagent generation has an invalid status."}
         end
-      end
-    end
-  end
 
-  defp resolve_lifecycle_states([], _actor, states), do: states
-
-  defp resolve_lifecycle_states(pending, actor, states) when is_list(pending) do
-    messages_by_id = load_lifecycle_messages(pending, actor)
-
-    {next_pending, states} =
-      Enum.reduce(pending, {[], states}, fn entry, {pending_acc, states_acc} ->
-        message = Map.get(messages_by_id, entry.message_id)
-
-        cond do
-          entry.depth >= @max_parent_hops ->
-            {pending_acc, put_invalid_lifecycle_state(states_acc, entry)}
-
-          MapSet.member?(entry.visited, entry.message_id) ->
-            {pending_acc, put_invalid_lifecycle_state(states_acc, entry)}
-
-          not match?(%ChatMessage{}, message) ->
-            {pending_acc, put_invalid_lifecycle_state(states_acc, entry)}
-
-          true ->
-            case lifecycle_transition(message) do
-              {:continue, next_message_id} ->
-                next_entry = %{
-                  entry
-                  | message_id: next_message_id,
-                    depth: entry.depth + 1,
-                    visited: MapSet.put(entry.visited, message.id)
-                }
-
-                {[next_entry | pending_acc], states_acc}
-
-              {:terminal, status} ->
-                {pending_acc,
-                 Map.put(
-                   states_acc,
-                   entry.root_chat_id,
-                   lifecycle_state(message, status)
-                 )}
-            end
+      final =
+        if status == :completed do
+          %{
+            chat_id: message.chat_id,
+            message_id: message.id,
+            text: answer,
+            artifacts: Enum.uniq_by(message_artifacts(message), & &1.file_external_id)
+          }
         end
-      end)
 
-    resolve_lifecycle_states(Enum.reverse(next_pending), actor, states)
-  end
-
-  defp load_lifecycle_messages(pending, actor) do
-    message_ids = pending |> Enum.map(& &1.message_id) |> Enum.uniq()
-
-    ChatMessage
-    |> Ash.Query.filter(id in ^message_ids)
-    |> Ash.Query.load(lifecycle_message_load(), strict?: true)
-    |> Ash.read(actor: actor)
-    |> case do
-      {:ok, messages} -> Map.new(messages, &{&1.id, &1})
-      {:error, _error} -> %{}
+      {:ok, %{status: status, answer: answer, final: final, error: error}}
     end
   end
 
-  defp lifecycle_message_load do
-    [
-      steps: [
-        :sequence,
-        items: [
-          :sequence,
-          :type,
-          contents: [:sequence, :kind, :content_json]
-        ]
-      ]
-    ]
-  end
-
-  defp lifecycle_transition(%ChatMessage{status: :done} = message) do
-    case handoff_generation_message_id(message) do
-      id when is_integer(id) and id > 0 -> {:continue, id}
-      _other -> {:terminal, :done}
-    end
-  end
-
-  defp lifecycle_transition(%ChatMessage{status: status})
-       when status in [:generating, :error, :canceled],
-       do: {:terminal, status}
-
-  defp lifecycle_transition(%ChatMessage{}), do: {:terminal, :invalid}
-
-  defp lifecycle_state(%ChatMessage{} = message, status) do
-    normalized_status = if status == :invalid, do: :error, else: status
-
+  defp lifecycle_state(%ChatMessage{} = message) do
     %{
       message_id: message.id,
       chat_id: message.chat_id,
-      active_generation_message_id:
-        if(normalized_status == :generating, do: message.id, else: nil),
-      last_message_status: normalized_status,
+      active_generation_message_id: if(message.status == :generating, do: message.id, else: nil),
+      last_message_status: message.status,
       updated_at: message.updated_at
     }
-  end
-
-  defp put_invalid_lifecycle_state(states, entry) do
-    Map.put(states, entry.root_chat_id, %{
-      message_id: entry.message_id,
-      chat_id: nil,
-      active_generation_message_id: nil,
-      last_message_status: :error,
-      updated_at: nil
-    })
   end
 
   defp message_answer_text(%ChatMessage{} = message) do
@@ -1165,12 +909,6 @@ defmodule IntellectualClub.Chat.Subagent do
     |> Enum.join("")
   end
 
-  defp append_answer(answers, answer) when is_binary(answer) do
-    if String.trim(answer) == "", do: answers, else: answers ++ [answer]
-  end
-
-  defp join_answers(answers) when is_list(answers), do: Enum.join(answers, "\n\n")
-
   defp answer_progress(answer, cursor, reference) when is_binary(answer) do
     {offset, mode} = cursor_offset(cursor, answer, reference)
     remaining = binary_part(answer, offset, byte_size(answer) - offset)
@@ -1255,7 +993,6 @@ defmodule IntellectualClub.Chat.Subagent do
       "generation_message_id" => reference.generation_message_id,
       "final_chat_id" => final.chat_id,
       "final_message_id" => final.message_id,
-      "chain" => final.chain,
       "url" => reference.url
     }
 
@@ -1296,28 +1033,6 @@ defmodule IntellectualClub.Chat.Subagent do
 
   defp background_execution_result(%{status: :failed, error: error}), do: {:failed, error}
   defp background_execution_result(%{status: :canceled}), do: :canceled
-
-  defp handoff_generation_message_id(%ChatMessage{} = message) do
-    message
-    |> ordered_items()
-    |> Enum.filter(&(&1.type == :tool_result))
-    |> Enum.find_value(fn item ->
-      item
-      |> History.opaque_payloads()
-      |> Enum.find_value(fn
-        %{"raw" => %{"handoff" => %{"generation_message_id" => id}}} when is_integer(id) -> id
-        %{"handoff" => %{"generation_message_id" => id}} when is_integer(id) -> id
-        _other -> nil
-      end)
-    end)
-  end
-
-  defp chain_entry(%ChatMessage{} = message) do
-    %{
-      "chat_id" => message.chat_id,
-      "message_id" => message.id
-    }
-  end
 
   defp final_text(%{text: text} = final) when is_binary(text) do
     case String.trim(text) do

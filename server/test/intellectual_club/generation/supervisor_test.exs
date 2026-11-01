@@ -24,8 +24,8 @@ defmodule IntellectualClub.Generation.SupervisorTest do
       second_grandchild =
         start_blocking_generation!(
           actor,
-          child_chat!(actor, second_child, :handoff),
-          "Second handoff"
+          child_chat!(actor, second_child, :spawn),
+          "Second nested spawn"
         )
 
       second_pid = GenerationSupervisor.generation_worker_pid(second.message.id)
@@ -86,7 +86,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
 
     for {relation, grandchild?} <- [fork: true, spawn: false] do
       @tag relation: relation, grandchild?: grandchild?
-      test "canceling a parent cancels an active #{relation} descendant#{if grandchild?, do: " and its handoff child"}",
+      test "canceling a parent cancels an active #{relation} descendant#{if grandchild?, do: " and its nested spawn"}",
            %{relation: relation, grandchild?: grandchild?} do
         %{user: actor} = user_fixture()
         parent = start_blocking_generation!(actor, create_empty_chat!(actor), "Parent")
@@ -96,7 +96,7 @@ defmodule IntellectualClub.Generation.SupervisorTest do
           if grandchild? do
             [
               child,
-              start_blocking_generation!(actor, child_chat!(actor, child, :handoff), "Handoff")
+              start_blocking_generation!(actor, child_chat!(actor, child, :spawn), "Nested spawn")
             ]
           else
             [child]

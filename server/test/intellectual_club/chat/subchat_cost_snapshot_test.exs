@@ -109,17 +109,17 @@ defmodule IntellectualClub.Chat.SubchatCostSnapshotTest do
     assert {retried, []} == measure(fn -> poll(f) end)
   end
 
-  test "a single message poll sums only its subtree and ignores direct handoffs", f do
+  test "a single message poll sums only its subtree and ignores unrelated chats", f do
     {child_message, _record} = record_cost!(f.child, f.configuration, f.actor, 0.01)
-    nested = child!(f.child, child_message, f.configuration, f.actor, :handoff)
+    nested = child!(f.child, child_message, f.configuration, f.actor, :spawn)
     record_cost!(nested, f.configuration, f.actor, 0.02)
 
     sibling_source = source!(f.root, f.configuration, f.actor)
     sibling = child!(f.root, sibling_source, f.configuration, f.actor)
     record_cost!(sibling, f.configuration, f.actor, 5.0)
 
-    direct_handoff = child!(f.root, f.source, f.configuration, f.actor, :handoff)
-    record_cost!(direct_handoff, f.configuration, f.actor, 7.0)
+    unrelated = create_chat!(f.actor, llm_configuration_id: f.configuration.id)
+    record_cost!(unrelated, f.configuration, f.actor, 7.0)
     record_cost!(f.root, f.configuration, f.actor, 11.0)
 
     {summary, [query]} = measure(fn -> poll(f) end)

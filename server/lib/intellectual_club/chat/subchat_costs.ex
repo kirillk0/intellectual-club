@@ -15,8 +15,7 @@ defmodule IntellectualClub.Chat.SubchatCosts do
 
   require Ash.Query
 
-  @root_relation_kinds [:fork, :spawn]
-  @descendant_relation_kinds [:handoff, :fork, :spawn]
+  @relation_kinds [:fork, :spawn]
   @max_descendant_chats 10_000
   @usage_fields [:input_tokens, :output_tokens, :cached_input_tokens, :reasoning_tokens, :cost]
   # Every chat in a batch contributes one filtered SUM per usage field.
@@ -217,7 +216,7 @@ defmodule IntellectualClub.Chat.SubchatCosts do
     query =
       Chat
       |> Ash.Query.filter(
-        parent_chat_id in ^readable_root_ids and parent_relation_kind in ^@root_relation_kinds
+        parent_chat_id in ^readable_root_ids and parent_relation_kind in ^@relation_kinds
       )
 
     query =
@@ -245,7 +244,7 @@ defmodule IntellectualClub.Chat.SubchatCosts do
     children =
       Chat
       |> Ash.Query.filter(
-        parent_chat_id in ^parent_ids and parent_relation_kind in ^@descendant_relation_kinds
+        parent_chat_id in ^parent_ids and parent_relation_kind in ^@relation_kinds
       )
       |> Ash.Query.select([:id, :parent_chat_id, :parent_message_id])
       |> Ash.Query.sort(id: :asc)

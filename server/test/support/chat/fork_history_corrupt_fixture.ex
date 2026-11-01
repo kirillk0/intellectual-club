@@ -24,7 +24,7 @@ defmodule IntellectualClub.Chat.ForkHistoryCorruptFixture do
     attribute(:parent_chat_id, :integer)
     attribute(:parent_message_id, :integer)
     attribute(:parent_tool_call_item_id, :integer)
-    attribute(:parent_relation_kind, :atom, constraints: [one_of: [:fork, :handoff, :spawn]])
+    attribute(:parent_relation_kind, :atom, constraints: [one_of: [:fork, :spawn]])
     attribute(:subagent, :boolean)
   end
 

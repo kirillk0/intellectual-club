@@ -57,15 +57,6 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     {:ok, _grandchild_message} =
       Threads.add_message_to_end(grandchild, :assistant, "Child answer", actor: actor)
 
-    handoff =
-      create_empty_chat!(actor,
-        parent_chat_id: root.id,
-        parent_message_id: active.id,
-        parent_relation_kind: :handoff,
-        subagent: true,
-        note: "Handoff"
-      )
-
     inactive_child =
       create_empty_chat!(actor,
         parent_chat_id: root.id,
@@ -92,7 +83,6 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     assert Enum.map(payload["chats"], & &1["id"]) == [
              root.id,
              child.id,
-             handoff.id,
              grandchild.id
            ]
 
@@ -116,9 +106,6 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     assert grandchild_payload["relation"]["kind"] == "spawn"
     assert grandchild_payload["relation"]["parent_chat_id"] == child.id
 
-    handoff_payload = Enum.find(payload["chats"], &(&1["id"] == handoff.id))
-    assert handoff_payload["relation"]["kind"] == "handoff"
-
     inactive_payload =
       build_conn()
       |> sign_in_conn(actor.username, password)
@@ -127,6 +114,73 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
 
     assert inactive_payload["root_chat_id"] == inactive_child.id
     assert Enum.map(inactive_payload["chats"], & &1["id"]) == [inactive_child.id]
+  end
+
+  test "export keeps repeated assistant checkpoints and their archives in timeline order", %{
+    conn: conn
+  } do
+    %{user: actor} = fixture = user_fixture()
+    chat = create_empty_chat!(actor)
+    {:ok, message} = Threads.add_message_to_end(chat, :assistant, "Answer 1", actor: actor)
+    {:ok, file} = Files.create_from_binary("history.md", "text/markdown", "ARCHIVE_BODY")
+    long_history = String.duplicate("History line\n", 10) <> "FULL_EXPORT_TAIL"
+
+    for sequence <- [1, 2] do
+      step =
+        if sequence == 1,
+          do: first_step!(actor, message.id),
+          else: create_step!(actor, message, sequence: sequence)
+
+      if sequence == 2, do: create_text_item!(actor, step, "Answer 2", sequence: 1)
+      history = create_item!(actor, step, type: :handoff_history, sequence: 2)
+
+      create_content!(actor, history,
+        content_text: long_history,
+        content_json: %{
+          "entry_kind" => "message",
+          "role" => "user",
+          "private" => "PRIVATE_HISTORY"
+        }
+      )
+
+      create_content!(actor, history, sequence: 2, kind: :media, file_id: file.id)
+
+      summary =
+        create_text_item!(actor, step, "Summary #{sequence}", type: :handoff_message, sequence: 3)
+
+      create_content!(actor, summary, sequence: 2, kind: :media, file_id: file.id)
+    end
+
+    step = create_step!(actor, message, sequence: 3)
+    create_text_item!(actor, step, "Final answer")
+
+    payload =
+      conn
+      |> sign_in_conn(fixture)
+      |> get(~p"/api/bff/chat-state/#{chat.id}/export")
+      |> json_response(200)
+
+    [chat_payload] = payload["chats"]
+    [message_payload] = chat_payload["messages"]
+    content = message_payload["content"]
+
+    assert Enum.map(content, &{&1["step_sequence"], &1["type"]}) == [
+             {1, "answer"},
+             {1, "handoff_history"},
+             {1, "handoff_message"},
+             {2, "answer"},
+             {2, "handoff_history"},
+             {2, "handoff_message"},
+             {3, "answer"}
+           ]
+
+    histories = Enum.filter(content, &(&1["type"] == "handoff_history"))
+    assert Enum.all?(histories, &(hd(&1["parts"])["text"] == long_history))
+    assert Enum.all?(histories, &(hd(&1["parts"])["handoff_entry"]["role"] == "user"))
+    checkpoints = Enum.filter(content, &(&1["type"] in ["handoff_history", "handoff_message"]))
+    assert Enum.all?(checkpoints, &(hd(&1["attachments"])["name"] == "history.md"))
+    refute Jason.encode!(payload) =~ "PRIVATE_HISTORY"
+    refute Jason.encode!(payload) =~ "ARCHIVE_BODY"
   end
 
   test "export projects working steps, resources, and attachments without private data", %{
@@ -429,7 +483,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     second =
       create_empty_chat!(actor,
         parent_chat_id: first.id,
-        parent_relation_kind: :handoff,
+        parent_relation_kind: :spawn,
         note: "Second"
       )
 

@@ -33,6 +33,14 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
       end
     end
 
+    test "independent chats serialize absent relation kinds as null" do
+      chat = %Chat{id: 10, parent_relation_kind: nil}
+
+      assert Serializer.chat_summary(chat).parent_relation_kind == nil
+      assert Serializer.chat_detail(chat).parent_relation_kind == nil
+      assert Serializer.chat_relation_summary(chat).kind == nil
+    end
+
     test "chat_relation_summary serializes spawn kind and the loaded last message status" do
       serialized =
         Serializer.chat_relation_summary(%Chat{
@@ -232,6 +240,16 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
              }
 
       assert Serializer.content(content, "handoff_history").content_json == nil
+
+      legacy_content = %{
+        content
+        | content_text: "Archived context note",
+          content_json: %{"entry_kind" => "continuation"}
+      }
+
+      legacy_snapshot = Serializer.message_content_snapshot(legacy_content, item, step)
+      assert legacy_snapshot.text == "Archived context note"
+      assert legacy_snapshot.handoff_entry.entry_kind == nil
     end
   end
 
@@ -500,6 +518,107 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   end
 
   describe "runtime message content" do
+    test "assistant checkpoints keep sanitized metadata, previews and media through runtime normalization" do
+      long_text = String.duplicate("History line\n", 10) <> "HISTORY_TAIL"
+      metadata = %{"entry_kind" => "message", "role" => "assistant", "internal" => "PRIVATE"}
+      media = %{external_id: "archive", filename: "history.md", mime_type: "text/markdown"}
+
+      step = %{
+        id: 2,
+        sequence: 2,
+        created_at: "2026-07-22T10:30:00Z",
+        items: [
+          %{
+            id: 23,
+            sequence: 3,
+            type: "handoff_message",
+            contents: [
+              %{id: 231, sequence: 1, kind: "text", content_text: "Continue here"},
+              %{id: 232, sequence: 2, kind: "media", media: media}
+            ]
+          },
+          %{
+            id: 22,
+            sequence: 2,
+            type: "handoff_history",
+            contents: [
+              %{
+                id: 221,
+                sequence: 1,
+                kind: "text",
+                content_text: String.slice(long_text, 0, 80),
+                content_text_truncated: true,
+                content_json: metadata
+              },
+              %{id: 222, sequence: 2, kind: "media", media: media}
+            ]
+          },
+          %{
+            id: 21,
+            sequence: 1,
+            type: "answer",
+            contents: [%{id: 211, sequence: 1, kind: "text", content_text: "Before checkpoint"}]
+          }
+        ]
+      }
+
+      normalized = Serializer.normalize_runtime_step_for_client(step)
+      assert Serializer.normalize_runtime_step_for_client(normalized) == normalized
+      refute Jason.encode!(normalized) =~ "PRIVATE"
+      content = Serializer.runtime_message_content(normalized, :assistant)
+
+      assert Enum.map(content.items, & &1.item_type) == [
+               "answer",
+               "handoff_history",
+               "handoff_message"
+             ]
+
+      assert Enum.map(content.parts, & &1.item_type) == [
+               "answer",
+               "handoff_history",
+               "handoff_message"
+             ]
+
+      assert Enum.map(content.media, &{&1.item_type, &1.item_id}) == [
+               {"handoff_history", 22},
+               {"handoff_message", 23}
+             ]
+
+      assert Enum.all?(content.media, &(&1.media.filename == "history.md"))
+
+      history = Enum.at(content.parts, 1)
+      assert history.content_id == 221
+      assert history.content_text_truncated
+      refute history.text =~ "HISTORY_TAIL"
+      assert history.handoff_entry.role == "assistant"
+      assert history.handoff_entry.entry_kind == "message"
+
+      previous = %{
+        items: [%{step_sequence: 1, item_sequence: 3, item_type: "handoff_message"}],
+        parts: [%{step_sequence: 1, item_sequence: 3, sequence: 1, text: "Earlier checkpoint"}],
+        media: []
+      }
+
+      merged = Serializer.merge_runtime_message_content(previous, normalized, :assistant)
+      assert hd(merged.parts).text == "Earlier checkpoint"
+      assert Enum.map(merged.parts, & &1.step_sequence) == [1, 2, 2, 2]
+      assert merged.media == content.media
+    end
+
+    test "persisted checkpoint text stays complete for readable message text" do
+      text = String.duplicate("Readable history ", 100) <> "FULL_TAIL"
+      step = %ChatMessageStep{id: 101, sequence: 1}
+
+      for type <- [:handoff_history, :handoff_message] do
+        item = %ChatMessageItem{id: 202, sequence: 2, type: type}
+        content = %ChatMessageContent{id: 303, sequence: 1, kind: :text, content_text: text}
+        snapshot = Serializer.message_content_snapshot(content, item, step)
+        assert snapshot.content_id == 303
+        refute snapshot.content_text_truncated
+        assert snapshot.text == text
+      end
+    end
+
     test "merging replaces only the runtime step and ignores a runtime step without content" do
       completed = %{step_id: 1, step_sequence: 1, item_id: 11, item_sequence: 1, sequence: 1}
       stale = %{step_id: 2, step_sequence: 2, item_id: 21, item_sequence: 1, sequence: 1}

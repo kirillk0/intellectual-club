@@ -225,107 +225,26 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp persist_terminal_generation!(message_id, :error, opts),
     do: Persistence.fail_generating_message!(message_id, opts)
 
-  @doc "Atomically prepares a tool-handoff child generation and moves the source backlog."
-  @spec prepare_terminal_handoff(integer(), integer()) ::
-          {:ok, map()} | {:error, term()}
-  def prepare_terminal_handoff(source_message_id, child_chat_id)
-      when is_integer(source_message_id) and is_integer(child_chat_id) do
-    with {:ok, %{chat_id: source_chat_id, owner_id: owner_id}} <-
-           message_chat_owner(source_message_id) do
+  @doc "Reanchors a manual compaction's backlog to its checkpoint in the same chat."
+  def reanchor_manual_compaction(source_message_id, checkpoint_message_id)
+      when is_integer(source_message_id) and is_integer(checkpoint_message_id) do
+    with {:ok, %{chat_id: chat_id, owner_id: owner_id}} <- message_chat_owner(source_message_id) do
       transact(fn ->
-        chats = lock_chats!([source_chat_id, child_chat_id])
-        source_chat = Map.fetch!(chats, source_chat_id)
-        child_chat = Map.fetch!(chats, child_chat_id)
-        source_message = lock_message!(source_message_id)
+        chat = lock_chat!(chat_id)
+        messages = lock_messages!([source_message_id, checkpoint_message_id])
+        source = Map.fetch!(messages, source_message_id)
+        checkpoint = Map.fetch!(messages, checkpoint_message_id)
 
-        cond do
-          source_chat.owner_id != owner_id or child_chat.owner_id != owner_id or
-              source_message.chat_id != source_chat.id ->
-            {:error, :handoff_owner_mismatch}
-
-          true ->
-            actor = %User{id: owner_id}
-
-            {generation_message_id, queue_anchor_message_id, prepared_context, child_anchor} =
-              ensure_handoff_generation!(child_chat, actor)
-
-            source_chat
-            |> move_handoff_queue!(
-              child_chat,
-              source_message,
-              child_anchor,
-              queue_anchor_message_id,
-              actor
-            )
-            |> Map.merge(%{
-              child_generation_message_id: generation_message_id,
-              child_queue_anchor_message_id: queue_anchor_message_id,
-              prepared_context: prepared_context
-            })
+        if source.chat_id == chat.id and checkpoint.chat_id == chat.id and
+             checkpoint.parent_id == source.id and checkpoint.role == :user do
+          reanchor_checkpoint_queue!(chat, source, checkpoint, %User{id: owner_id})
+        else
+          {:error, :invalid_compaction_checkpoint}
         end
       end)
       |> unwrap_result()
     end
-  rescue
-    exception -> {:error, exception}
-  catch
-    kind, reason -> {:error, {kind, reason}}
   end
-
-  def prepare_terminal_handoff(_source_message_id, _child_chat_id),
-    do: {:error, :invalid_handoff}
-
-  @doc "Moves a source backlog into a terminal handoff child without changing FIFO ids."
-  @spec transfer_to_handoff(integer(), integer(), integer() | nil) ::
-          {:ok, map()} | {:error, term()}
-  def transfer_to_handoff(source_message_id, child_chat_id, child_generation_message_id)
-      when is_integer(source_message_id) and is_integer(child_chat_id) do
-    with {:ok, %{chat_id: source_chat_id, owner_id: owner_id}} <-
-           message_chat_owner(source_message_id) do
-      transact(fn ->
-        chats = lock_chats!([source_chat_id, child_chat_id])
-        source_chat = Map.fetch!(chats, source_chat_id)
-        child_chat = Map.fetch!(chats, child_chat_id)
-        anchor_message_id = child_generation_message_id || child_chat.last_message_id
-
-        messages = lock_messages!([source_message_id, anchor_message_id])
-        source_message = Map.get(messages, source_message_id)
-        child_anchor = Map.get(messages, anchor_message_id)
-
-        cond do
-          source_chat.owner_id != owner_id or child_chat.owner_id != owner_id or
-            is_nil(source_message) or source_message.chat_id != source_chat.id ->
-            {:error, :handoff_owner_mismatch}
-
-          is_integer(child_generation_message_id) and
-              (is_nil(child_anchor) or child_anchor.chat_id != child_chat.id or
-                 child_anchor.role != :assistant) ->
-            {:error, :invalid_child_generation}
-
-          true ->
-            actor = %User{id: owner_id}
-
-            move_handoff_queue!(
-              source_chat,
-              child_chat,
-              source_message,
-              child_anchor,
-              anchor_message_id,
-              actor,
-              child_generation_message_id
-            )
-        end
-      end)
-      |> unwrap_result()
-    end
-  rescue
-    exception -> {:error, exception}
-  catch
-    kind, reason -> {:error, {kind, reason}}
-  end
-
-  def transfer_to_handoff(_source_message_id, _child_chat_id, _child_generation_message_id),
-    do: {:error, :invalid_handoff}
 
   @doc "Returns chats which may have an automatically dispatchable follow-up."
   @spec ready_chat_ids() :: [integer()]
@@ -765,82 +684,25 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
   defp terminal_block_reason(:error), do: "generation_error"
   defp terminal_block_reason(:canceled), do: "generation_canceled"
 
-  defp handoff_destination_state(%ChatMessage{role: :assistant, status: :error}),
-    do: {:blocked, "generation_error"}
+  defp reanchor_checkpoint_queue!(chat, source, checkpoint, actor) do
+    queue = lock_active_queue!(chat.id)
 
-  defp handoff_destination_state(%ChatMessage{role: :assistant, status: :canceled}),
-    do: {:blocked, "generation_canceled"}
-
-  defp handoff_destination_state(_anchor), do: {:pending, nil}
-
-  defp ensure_handoff_generation!(%Chat{} = child_chat, actor) do
-    first_generation =
-      ChatMessage
-      |> Ash.Query.filter(chat_id == ^child_chat.id and role == :assistant)
-      |> Ash.Query.sort(id: :asc)
-      |> Ash.Query.limit(1)
-      |> Ash.Query.lock("FOR NO KEY UPDATE")
-      |> Ash.read_one!(authorize?: false)
-
-    case first_generation do
-      nil ->
-        context = Context.build!(child_chat.id, actor: actor)
-        child_anchor = lock_message!(context.message_id)
-        {context.message_id, context.message_id, context, child_anchor}
-
-      %ChatMessage{} = generation ->
-        last_message =
-          if child_chat.last_message_id == generation.id do
-            generation
-          else
-            lock_optional_message!(child_chat.last_message_id)
-          end
-
-        child_anchor =
-          case last_message do
-            %ChatMessage{chat_id: chat_id, role: :assistant} = message
-            when chat_id == child_chat.id ->
-              message
-
-            _other ->
-              generation
-          end
-
-        {generation.id, child_anchor.id, nil, child_anchor}
-    end
-  end
-
-  defp move_handoff_queue!(
-         %Chat{} = source_chat,
-         %Chat{} = child_chat,
-         %ChatMessage{} = source_message,
-         child_anchor,
-         anchor_message_id,
-         actor,
-         child_generation_message_id \\ nil
-       ) do
-    queue = lock_active_queue!(source_chat.id)
-
-    transferable =
+    reanchored =
       Enum.filter(queue, fn queued_message ->
-        (queued_message.kind == :follow_up and
-           queued_message.anchor_message_id == source_message.id) or
+        (queued_message.kind == :follow_up and queued_message.anchor_message_id == source.id) or
           (queued_message.kind == :steer and
              queued_message.blocked_reason != "steering_failed" and
-             queued_message.target_generation_message_id == source_message.id)
+             queued_message.target_generation_message_id == source.id)
       end)
 
-    {destination_status, blocked_reason} = handoff_destination_state(child_anchor)
-
-    Enum.each(transferable, fn queued_message ->
+    Enum.each(reanchored, fn queued_message ->
       update_queue!(
         queued_message,
         %{
-          chat_id: child_chat.id,
           kind: :follow_up,
-          status: destination_status,
-          blocked_reason: blocked_reason,
-          anchor_message_id: anchor_message_id,
+          status: :pending,
+          blocked_reason: nil,
+          anchor_message_id: checkpoint.id,
           target_generation_message_id: nil,
           finished_at: nil
         },
@@ -849,11 +711,9 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     end)
 
     %{
-      source_chat_id: source_chat.id,
-      child_chat_id: child_chat.id,
-      child_generation_message_id: child_generation_message_id,
-      child_generation_status: child_anchor && child_anchor.status,
-      transferred_count: length(transferable)
+      chat_id: chat.id,
+      checkpoint_message_id: checkpoint.id,
+      reanchored_count: length(reanchored)
     }
   end
 
@@ -928,23 +788,6 @@ defmodule IntellectualClub.Generation.QueueCoordinator do
     |> case do
       %Chat{} = chat -> chat
       nil -> raise ArgumentError, "Chat not found"
-    end
-  end
-
-  defp lock_chats!(chat_ids) do
-    ids = chat_ids |> Enum.filter(&is_integer/1) |> Enum.uniq() |> Enum.sort()
-
-    chats =
-      Chat
-      |> Ash.Query.filter(id in ^ids)
-      |> Ash.Query.sort(id: :asc)
-      |> Ash.Query.lock("FOR NO KEY UPDATE")
-      |> Ash.read!(authorize?: false)
-
-    if length(chats) == length(ids) do
-      Map.new(chats, &{&1.id, &1})
-    else
-      raise ArgumentError, "Handoff chat not found"
     end
   end
 

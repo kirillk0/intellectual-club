@@ -280,81 +280,44 @@ defmodule IntellectualClub.Chat.QueuedSteeringQuarantineTest do
     assert {:error, :queue_not_empty} = QueueCoordinator.ensure_direct_start_allowed(chat.id)
   end
 
-  test "handoff transfers ordinary backlog but leaves quarantined steering in the source", %{
+  test "manual compaction reanchors ordinary backlog without retrying quarantined steering", %{
     actor: actor,
     chat: chat,
     generation: generation
   } do
     queued = quarantine!(generation, actor)
-    {:ok, follow_up} = QueuedMessages.enqueue_follow_up(chat.id, %{content: "Transfer"}, actor)
+    {:ok, follow_up} = QueuedMessages.enqueue_follow_up(chat.id, %{content: "Next turn"}, actor)
     {:ok, pending_steer} = QueuedMessages.enqueue_steer(generation.id, "Late steer", actor)
-    {child, child_generation} = create_handoff!(chat, generation, actor)
     set_status!(generation, :done, actor)
 
-    assert {:ok, %{transferred_count: 2}} =
-             QueueCoordinator.transfer_to_handoff(generation.id, child.id, child_generation.id)
+    {:ok, checkpoint} =
+      IntellectualClub.Chat.Threads.add_message_to_end(chat, :user, "Checkpoint",
+        actor: actor,
+        item_type: :handoff_message
+      )
 
-    assert {:ok, %{transferred_count: 0}} =
-             QueueCoordinator.prepare_terminal_handoff(generation.id, child.id)
+    assert {:ok, %{reanchored_count: 2}} =
+             QueueCoordinator.reanchor_manual_compaction(generation.id, checkpoint.id)
 
-    assert {:ok, [remaining]} = QueuedMessages.list_for_chat(chat.id, actor)
-    assert remaining.id == queued.id
+    assert {:ok, %{reanchored_count: 0}} =
+             QueueCoordinator.reanchor_manual_compaction(generation.id, checkpoint.id)
+
     assert_quarantined!(queued.id, actor)
-    assert {:ok, transferred} = QueuedMessages.list_for_chat(child.id, actor)
-    assert Enum.map(transferred, & &1.id) == [follow_up.id, pending_steer.id]
-    assert Enum.all?(transferred, &(&1.kind == :follow_up and &1.status == :pending))
-  end
+    assert {:ok, entries} = QueuedMessages.list_for_chat(chat.id, actor)
+    assert Enum.map(entries, & &1.id) == [queued.id, follow_up.id, pending_steer.id]
 
-  for {child_status, retry_status, retry_reason} <- [
-        {:generating, :pending, nil},
-        {:done, :pending, nil},
-        {:error, :blocked, "generation_error"},
-        {:canceled, :blocked, "generation_canceled"}
-      ] do
-    @child_status child_status
-    @child_retry_status retry_status
-    @child_retry_reason retry_reason
-
-    test "explicit retry routes to the #{@child_status} handoff child with terminal semantics", %{
-      actor: actor,
-      chat: chat,
-      generation: generation
-    } do
-      queued = quarantine!(generation, actor)
-      {child, child_generation} = create_handoff!(chat, generation, actor)
-      set_status!(generation, :done, actor)
-      set_status!(child_generation, @child_status, actor)
-
-      assert {:ok, retried} = QueuedMessages.send_next(queued.id, actor)
-      assert retried.id == queued.id
-      assert retried.chat_id == child.id
-      assert retried.kind == :follow_up
-      assert retried.status == @child_retry_status
-      assert retried.blocked_reason == @child_retry_reason
-      assert retried.anchor_message_id == child_generation.id
-      assert retried.target_generation_message_id == nil
-      assert {:ok, []} = QueuedMessages.list_for_chat(chat.id, actor)
-      assert {:ok, [listed]} = QueuedMessages.list_for_chat(child.id, actor)
-      assert listed.id == queued.id
-    end
-  end
-
-  test "retry after an uncommitted canceled handoff stays blocked in the source", %{
-    actor: actor,
-    chat: chat,
-    generation: generation
-  } do
-    queued = quarantine!(generation, actor)
-    {child, _child_generation} = create_handoff!(chat, generation, actor)
-    set_status!(generation, :canceled, actor)
+    assert Enum.all?(
+             tl(entries),
+             &(&1.kind == :follow_up and &1.status == :pending and
+                 &1.anchor_message_id == checkpoint.id)
+           )
 
     assert {:ok, retried} = QueuedMessages.send_next(queued.id, actor)
-    assert retried.id == queued.id
     assert retried.chat_id == chat.id
     assert retried.kind == :follow_up
-    assert retried.status == :blocked
-    assert retried.blocked_reason == "generation_canceled"
-    assert {:ok, []} = QueuedMessages.list_for_chat(child.id, actor)
+    assert retried.status == :pending
+    assert retried.anchor_message_id == checkpoint.id
+    assert retried.target_generation_message_id == nil
   end
 
   defp snapshot(queued) do
@@ -381,15 +344,6 @@ defmodule IntellectualClub.Chat.QueuedSteeringQuarantineTest do
     assert queued.contents != []
     assert queued.steering_item_id == nil
     queued
-  end
-
-  defp create_handoff!(chat, generation, actor) do
-    create_generation!(actor, %{
-      parent_chat_id: chat.id,
-      parent_message_id: generation.id,
-      parent_relation_kind: :handoff,
-      subagent: true
-    })
   end
 
   defp create_generation!(actor, attrs \\ %{}) do

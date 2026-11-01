@@ -4,10 +4,10 @@ import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import { setPreferredLocale } from '@/i18n';
 import type { ChatBranchMessage, ChatRelationSummary } from '@/types/api';
 
-const handoffMessage = (
+const messageWithItem = (
   id: number,
   role: 'user' | 'assistant',
-  itemType: 'handoff_request' | 'handoff_summary' | 'handoff_context',
+  itemType: 'handoff_request' | 'handoff_summary' | 'input',
   text: string,
   status: ChatBranchMessage['status'] = 'done'
 ): ChatBranchMessage => ({
@@ -349,17 +349,17 @@ describe('ChatMessageBubble fork timeline', () => {
 
   it('renders request and summary as two independently collapsed system events', async () => {
     const request = mount(ChatMessageBubble, {
-      props: { message: handoffMessage(20, 'user', 'handoff_request', 'Internal request'), index: 0 },
+      props: { message: messageWithItem(20, 'user', 'handoff_request', 'Internal request'), index: 0 },
     });
     const summary = mount(ChatMessageBubble, {
-      props: { message: handoffMessage(21, 'assistant', 'handoff_summary', 'Transfer summary'), index: 1 },
+      props: { message: messageWithItem(21, 'assistant', 'handoff_summary', 'Transfer summary'), index: 1 },
     });
 
     const requestToggle = request.get('.handoff-system-event__toggle');
     const summaryToggle = summary.get('.handoff-system-event__toggle');
 
-    expect(requestToggle.text()).toContain('Handoff to a new chat requested');
-    expect(summaryToggle.text()).toContain('Handoff summary prepared');
+    expect(requestToggle.text()).toContain('Context compaction requested');
+    expect(summaryToggle.text()).toContain('Context summary prepared');
     expect(requestToggle.attributes('aria-expanded')).toBe('false');
     expect(summaryToggle.attributes('aria-expanded')).toBe('false');
     expect(request.get('.message-expanded-body').attributes('style')).toContain('display: none');
@@ -374,11 +374,11 @@ describe('ChatMessageBubble fork timeline', () => {
   });
 
   it.each([
-    ['generating', 'Preparing handoff summary…'],
-    ['error', 'Handoff failed'],
-    ['canceled', 'Handoff canceled'],
+    ['generating', 'Preparing context summary…'],
+    ['error', 'Context compaction failed'],
+    ['canceled', 'Context compaction canceled'],
   ] as const)('shows the %s summary status in the compact row', (status, label) => {
-    const message = handoffMessage(22, 'assistant', 'handoff_summary', '', status);
+    const message = messageWithItem(22, 'assistant', 'handoff_summary', '', status);
     if (status === 'error') message.error_detail = 'Provider error';
 
     const wrapper = mount(ChatMessageBubble, {
@@ -401,13 +401,13 @@ describe('ChatMessageBubble fork timeline', () => {
       props: { message, index: 0, expectedHandoffEventKind: 'handoff_summary' },
     });
 
-    expect(wrapper.get('.handoff-system-event__toggle').text()).toContain('Preparing handoff summary…');
+    expect(wrapper.get('.handoff-system-event__toggle').text()).toContain('Preparing context summary…');
   });
 
-  it('renders handoff context as an ordinary editable user message', () => {
+  it('renders plain context as an ordinary editable user message', () => {
     const wrapper = mount(ChatMessageBubble, {
       props: {
-        message: handoffMessage(24, 'user', 'handoff_context', 'Continue from this context'),
+        message: messageWithItem(24, 'user', 'input', 'Continue from this context'),
         index: 0,
       },
     });
@@ -461,14 +461,14 @@ describe('ChatMessageBubble fork timeline', () => {
           {
             content_id: 2,
             sequence: 2,
-            text: '<continued in new chat>',
+            text: 'Archived context note',
             item_type: 'handoff_history',
             step_id: 1,
             step_sequence: 1,
             item_id: 10,
             item_sequence: 1,
             handoff_entry: {
-              entry_kind: 'continuation',
+              entry_kind: null,
               role: null,
               created_at: '2026-07-22T10:31:00Z',
               omitted_count: null,
@@ -514,11 +514,11 @@ describe('ChatMessageBubble fork timeline', () => {
 
     expect(sections).toHaveLength(2);
     expect(sections[0]?.get('summary').text()).toBe('История');
-    expect(sections[1]?.get('summary').text()).toBe('Сообщение для передачи');
+    expect(sections[1]?.get('summary').text()).toBe('Сводка контекста');
     expect(sections[0]?.attributes('open')).toBeUndefined();
     expect(sections[1]?.attributes('open')).toBeUndefined();
     expect(sections[0]?.text()).toContain('Ассистент');
-    expect(sections[0]?.text()).toContain('Продолжено в новом чате');
+    expect(sections[0]?.text()).toContain('Archived context note');
     expect(sections[0]?.text()).toContain('full_conversation.md');
     expect(sections[1]?.text()).toContain('Transfer summary');
     expect(wrapper.find('.message-answer-part').exists()).toBe(false);
@@ -527,6 +527,117 @@ describe('ChatMessageBubble fork timeline', () => {
 
     expect(sections[0]?.attributes('open')).toBe('');
     expect(sections[1]?.attributes('open')).toBeUndefined();
+  });
+
+  it('keeps assistant checkpoints at their timeline positions with lazy text and inline archives', async () => {
+    const rows: Array<[number, number, string, string]> = [
+      [1, 1, 'answer', 'Before compaction'],
+      [1, 2, 'handoff_history', 'First history preview...'],
+      [1, 3, 'handoff_message', 'First summary'],
+      [2, 1, 'answer', 'Between compactions'],
+      [2, 2, 'handoff_history', 'Second history'],
+      [2, 3, 'handoff_message', 'Second summary'],
+      [3, 1, 'answer', 'After compaction'],
+    ];
+    const items = rows.map(([step, sequence, type]) => ({
+      step_id: step * 10, step_sequence: step, item_id: step * 100 + sequence,
+      item_sequence: sequence, item_type: type,
+    }));
+    const archive = (itemIndex: number, id: number, filename: string) => ({
+      ...items[itemIndex], id, sequence: 2, kind: 'media',
+      media: { external_id: `file-${id}`, filename, mime_type: 'text/markdown', size_bytes: 128, sha256: '', is_image: false },
+    });
+    const historyArchive = archive(1, 801, 'first-history.md');
+    const summaryArchive = archive(5, 802, 'second-summary.md');
+    const ordinaryAttachment = { ...archive(6, 803, 'report.md'), item_type: 'artifact' };
+    const message: ChatBranchMessage = {
+      id: 28, role: 'assistant', status: 'done', content: {
+        items: [...items].reverse(),
+        parts: rows.map((row, index) => ({
+          ...items[index], content_id: index + 1, sequence: 1, text: row[3],
+          content_text_truncated: index === 1,
+        })).reverse(),
+        media: [historyArchive, summaryArchive, ordinaryAttachment],
+      },
+    };
+    const wrapper = mount(ChatMessageBubble, { props: { message, index: 0 } });
+    const checkpoints = wrapper.findAll('.handoff-context');
+    const timeline = wrapper.findAll('.message-content > .message-answer-part, .message-content > .handoff-context');
+
+    expect(checkpoints).toHaveLength(2);
+    expect(timeline).toHaveLength(5);
+    expect(timeline.map((entry) => entry.text())).toEqual([
+      expect.stringContaining('Before compaction'), expect.stringContaining('First history'),
+      expect.stringContaining('Between compactions'), expect.stringContaining('Second history'),
+      expect.stringContaining('After compaction'),
+    ]);
+    expect(checkpoints.map((entry) => entry.attributes('data-step-sequence'))).toEqual(['1', '2']);
+    expect(wrapper.findAll('.handoff-context__section')).toHaveLength(4);
+    expect(wrapper.findAll('.handoff-context details[open]')).toHaveLength(0);
+    expect(checkpoints[0]!.text()).not.toContain('Second history');
+    expect(checkpoints[0]!.text()).toContain('first-history.md');
+    expect(checkpoints[1]!.text()).toContain('second-summary.md');
+    expect(wrapper.get('.message-expanded-body > .chat-media-list').text()).toContain('report.md');
+    expect(wrapper.get('.message-expanded-body > .chat-media-list').text()).not.toContain('history.md');
+    expect(wrapper.get('.message-expanded-body > .chat-media-list').text()).not.toContain('summary.md');
+    expect(wrapper.findAll('.chat-media-item')).toHaveLength(3);
+    expect(wrapper.emitted('content-open')).toBeUndefined();
+
+    await checkpoints[0]!.get('summary').trigger('click');
+    expect(checkpoints[0]!.get('details').attributes('open')).toBe('');
+    expect(checkpoints[1]!.get('details').attributes('open')).toBeUndefined();
+    expect(wrapper.emitted('content-open')).toBeUndefined();
+    await checkpoints[0]!.get('.handoff-context__full-text').trigger('click');
+    expect(wrapper.emitted('content-open')).toEqual([[{ messageId: 28, contentId: 2, title: 'History' }]]);
+    await checkpoints[0]!.get('.chat-media-item').trigger('click');
+    expect(wrapper.emitted('attachment-open')).toEqual([[{
+      messageId: 28, content: historyArchive, contents: message.content!.media,
+    }]]);
+    wrapper.unmount();
+  });
+
+  it('omits empty history sections and blank entries of migrated legacy checkpoints', () => {
+    const item = (item_id: number, item_sequence: number, item_type: string) => ({
+      step_id: 1, step_sequence: 1, item_id, item_sequence, item_type,
+    });
+    const message: ChatBranchMessage = {
+      id: 30,
+      role: 'user',
+      status: 'done',
+      content: {
+        items: [item(10, 1, 'handoff_history'), item(11, 2, 'handoff_message')],
+        parts: [
+          {
+            content_id: 1, sequence: 1, text: '<stripped as a tag>', ...item(10, 1, 'handoff_history'),
+            handoff_entry: { entry_kind: 'message', role: 'assistant', created_at: null, omitted_count: null },
+          },
+          { content_id: 2, sequence: 1, text: 'Summary only', ...item(11, 2, 'handoff_message') },
+        ],
+        media: [],
+      },
+    };
+    const wrapper = mount(ChatMessageBubble, { props: { index: 0, message } });
+    expect(wrapper.findAll('.handoff-context').length).toBe(1);
+    expect(wrapper.find('.handoff-context__history').exists()).toBe(false);
+    expect(wrapper.get('.handoff-context__message').text()).toContain('Summary only');
+    expect(wrapper.findAll('.handoff-context__entry').length).toBe(1);
+    wrapper.unmount();
+  });
+
+  it('keeps media-only checkpoint items visible without adding bottom attachments', () => {
+    const wrapper = mount(ChatMessageBubble, { props: {
+      index: 0,
+      message: { id: 29, role: 'assistant', status: 'generating', content: {
+        items: [], parts: [], media: [{
+          id: 9, sequence: 1, kind: 'media', item_type: 'handoff_history', step_sequence: 2, item_sequence: 3,
+          media: { external_id: 'file-9', filename: 'archive.md', mime_type: 'text/markdown', size_bytes: 42, sha256: '', is_image: false },
+        }],
+      } },
+    } });
+    expect(wrapper.get('.handoff-context__history').attributes('open')).toBeUndefined();
+    expect(wrapper.get('.handoff-context__history').text()).toContain('archive.md');
+    expect(wrapper.find('.message-expanded-body > .chat-media-list').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('groups handoff items inline inside mixed messages without changing ordinary items', () => {
@@ -582,7 +693,7 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(wrapper.find('.handoff-system-event__toggle').exists()).toBe(false);
     expect(wrapper.get('.message-answer-part').text()).toContain('Ordinary content');
     expect(wrapper.get('.handoff-inline-event').attributes('open')).toBeUndefined();
-    expect(wrapper.get('.handoff-inline-event > summary').text()).toBe('Handoff request');
+    expect(wrapper.get('.handoff-inline-event > summary').text()).toBe('Compaction request');
     expect(wrapper.get('.handoff-inline-event__content').text()).toContain('Internal request');
   });
 
@@ -607,7 +718,7 @@ describe('ChatMessageBubble fork timeline', () => {
   });
 
   it('keeps only read-only actions for messages containing handoff events', async () => {
-    const message = handoffMessage(26, 'assistant', 'handoff_summary', 'Transfer summary', 'error');
+    const message = messageWithItem(26, 'assistant', 'handoff_summary', 'Transfer summary', 'error');
     message.working = { step_count: 1, completed_step_duration_ms: 0 };
     message.usage = { total: { input_tokens: 10 } };
 

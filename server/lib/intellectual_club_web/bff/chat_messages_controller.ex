@@ -524,13 +524,13 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
   end
 
   defp wanted_item_types(:user),
-    do: [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
+    do: [:input, :handoff_request, :handoff_history, :handoff_message]
 
   defp wanted_item_types(:assistant), do: [:answer, :handoff_summary]
   defp wanted_item_types(_other), do: [:other]
 
   defp media_item_types(:user),
-    do: [:input, :handoff_request, :handoff_context, :handoff_history, :handoff_message]
+    do: [:input, :handoff_request, :handoff_history, :handoff_message]
 
   defp media_item_types(:assistant), do: [:artifact, :handoff_summary]
   defp media_item_types(_other), do: [:other]
@@ -1060,7 +1060,4 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
 
   defp steering_error_message(:empty_steering), do: "Steering content must not be empty."
   defp steering_error_message(:generation_not_active), do: "Generation is not active."
-
-  defp steering_error_message(:terminal_handoff_in_progress),
-    do: "Steering is unavailable while handoff is in progress."
 end

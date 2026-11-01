@@ -38,7 +38,7 @@ defmodule IntellectualClub.Chat.Previews do
   end
 
   @doc false
-  def regular_item_types(:user), do: [:input, :handoff_request, :handoff_context]
+  def regular_item_types(:user), do: [:input, :handoff_request]
   def regular_item_types(:assistant), do: [:answer, :handoff_summary]
   def regular_item_types(_role), do: []
 

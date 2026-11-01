@@ -3,9 +3,6 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
-  alias IntellectualClub.Chat.ChatMessageContent
-  alias IntellectualClub.Chat.ChatMessageItem
-  alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Generation.Worker, as: GenerationWorker
   alias IntellectualClub.Tools.ExecutionContext
@@ -147,7 +144,7 @@ defmodule IntellectualClub.Chat.SubagentTest do
   end
 
   describe "creation policy" do
-    test "nested limit counts mixed spawn-fork and spawn-handoff-spawn creation edges" do
+    test "nested limit counts mixed spawn and fork creation edges" do
       %{user: actor} = user_fixture()
       root = create_empty_chat!(actor, subagent: false)
 
@@ -157,22 +154,16 @@ defmodule IntellectualClub.Chat.SubagentTest do
       spawn_child =
         create_subchat!(actor, root, :spawn)
 
-      handoff_after_fork =
-        create_subchat!(actor, fork_child, :handoff)
-
       fork_after_spawn =
         create_subchat!(actor, spawn_child, :fork)
 
-      handoff_after_spawn =
-        create_subchat!(actor, spawn_child, :handoff)
-
-      spawn_after_handoff =
-        create_subchat!(actor, handoff_after_spawn, :spawn)
+      spawn_after_fork =
+        create_subchat!(actor, fork_child, :spawn)
 
       disabled =
         create_agent_tool!(actor, %{"nested_subchats_limit" => 0})
 
-      for source <- [fork_child, spawn_child, handoff_after_fork] do
+      for source <- [fork_child, spawn_child] do
         assert {:error, message} = Subagent.ensure_creation_allowed(disabled, source, actor)
 
         assert message ==
@@ -183,11 +174,11 @@ defmodule IntellectualClub.Chat.SubagentTest do
       one_level =
         create_agent_tool!(actor, %{"nested_subchats_limit" => 1})
 
-      for source <- [fork_child, spawn_child, handoff_after_fork] do
+      for source <- [fork_child, spawn_child] do
         assert :ok = Subagent.ensure_creation_allowed(one_level, source, actor)
       end
 
-      for source <- [fork_after_spawn, spawn_after_handoff] do
+      for source <- [fork_after_spawn, spawn_after_fork] do
         assert {:error, message} = Subagent.ensure_creation_allowed(one_level, source, actor)
 
         assert message ==
@@ -198,7 +189,7 @@ defmodule IntellectualClub.Chat.SubagentTest do
       two_levels =
         create_agent_tool!(actor, %{"nested_subchats_limit" => 2})
 
-      for source <- [fork_after_spawn, spawn_after_handoff] do
+      for source <- [fork_after_spawn, spawn_after_fork] do
         assert :ok = Subagent.ensure_creation_allowed(two_levels, source, actor)
       end
     end
@@ -278,15 +269,10 @@ defmodule IntellectualClub.Chat.SubagentTest do
       restricted_child =
         create_subchat!(actor, root, :spawn, parent_tool_instance_id: restrictive_creator.id)
 
-      restricted_handoff =
-        create_subchat!(actor, restricted_child, :handoff,
-          parent_tool_instance_id: restrictive_creator.id
-        )
-
       assert :ok = Subagent.ensure_handoff_allowed(disabled, context(permitted_child, actor))
       refute "handoff" in Subagent.unavailable_functions(disabled, permitted_child, actor)
 
-      for chat <- [restricted_child, restricted_handoff] do
+      for chat <- [restricted_child] do
         assert {:error, "Handoff is disabled inside subagent chats."} =
                  Subagent.ensure_handoff_allowed(enabled, context(chat, actor))
 
@@ -313,9 +299,6 @@ defmodule IntellectualClub.Chat.SubagentTest do
       spawn_child =
         create_subchat!(actor, root, :spawn)
 
-      handoff_child =
-        create_subchat!(actor, spawn_child, :handoff)
-
       disabled =
         create_agent_tool!(actor, %{"allow_handoff_in_subchats" => false})
 
@@ -324,7 +307,7 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
       assert :ok = Subagent.ensure_handoff_allowed(disabled, context(root, actor))
 
-      for source <- [fork_child, spawn_child, handoff_child] do
+      for source <- [fork_child, spawn_child] do
         assert {:error, "Handoff is disabled inside subagent chats."} =
                  Subagent.ensure_handoff_allowed(disabled, context(source, actor))
 
@@ -374,70 +357,7 @@ defmodule IntellectualClub.Chat.SubagentTest do
       end
     end
 
-    test "lifecycle states follow nested persisted handoffs without resuming generation" do
-      %{user: actor} = user_fixture()
-      parent = create_empty_chat!(actor, subagent: false)
-
-      root =
-        create_subchat!(actor, parent, :fork)
-
-      root_message =
-        create_generating_message!(actor, root, user_text: "Work", step: :waiting_provider)
-
-      child =
-        create_subchat!(actor, root, :handoff)
-
-      child_message =
-        create_generating_message!(actor, child, user_text: "Work", step: :waiting_provider)
-
-      terminal =
-        create_subchat!(actor, child, :handoff)
-
-      terminal_message =
-        create_generating_message!(actor, terminal, user_text: "Work", step: :waiting_provider)
-
-      create_handoff_result!(actor, root_message, child, child_message)
-      set_message_status!(actor, root_message, :done)
-      create_handoff_result!(actor, child_message, terminal, terminal_message)
-      set_message_status!(actor, child_message, :done)
-
-      root = Ash.load!(root, [:last_message], actor: actor)
-      terminal_id = terminal.id
-      terminal_message_id = terminal_message.id
-
-      assert %{
-               active_generation_message_id: ^terminal_message_id,
-               chat_id: ^terminal_id,
-               last_message_status: :generating,
-               message_id: ^terminal_message_id
-             } = Subagent.lifecycle_states([root], actor)[root.id]
-
-      child = Ash.load!(child, [:last_message], actor: actor)
-
-      for states <- [
-            Subagent.lifecycle_states([child], actor),
-            Subagent.lifecycle_states([child], actor, %{child.id => 1})
-          ] do
-        assert %{
-                 active_generation_message_id: ^terminal_message_id,
-                 chat_id: ^terminal_id,
-                 last_message_status: :generating
-               } = states[child.id]
-      end
-
-      assert :not_found ==
-               IntellectualClub.Generation.Supervisor.get_generation_state(terminal_message.id)
-
-      set_message_status!(actor, terminal_message, :error, error_detail: "Failed")
-
-      assert %{
-               active_generation_message_id: nil,
-               last_message_status: :error,
-               message_id: ^terminal_message_id
-             } = Subagent.lifecycle_states([root], actor)[root.id]
-    end
-
-    test "lifecycle states ignore unrelated handoff chats without a persisted tool result" do
+    test "lifecycle and snapshots ignore unrelated generations even with obsolete continuation payloads" do
       %{user: actor} = user_fixture()
       parent = create_empty_chat!(actor, subagent: false)
 
@@ -449,14 +369,26 @@ defmodule IntellectualClub.Chat.SubagentTest do
 
       set_message_status!(actor, root_message, :done)
 
-      manual_child =
-        create_subchat!(actor, root, :handoff)
+      unrelated = create_empty_chat!(actor)
 
-      _manual_message =
-        create_generating_message!(actor, manual_child,
+      unrelated_message =
+        create_generating_message!(actor, unrelated,
           user_text: "Work",
           step: :waiting_provider
         )
+
+      create_handoff_result!(actor, root_message, unrelated, unrelated_message)
+
+      reference = %{primitive: :spawn, chat_id: root.id, generation_message_id: root_message.id}
+      assert {:ok, snapshot} = Subagent.await_snapshot(reference, actor)
+      assert snapshot.status == :completed
+      assert snapshot.result.raw["spawn"]["final_message_id"] == root_message.id
+
+      assert :not_found ==
+               IntellectualClub.Generation.Supervisor.get_generation_state(unrelated_message.id)
+
+      assert {:ok, %{status: :generating}} =
+               Ash.get(ChatMessage, unrelated_message.id, actor: actor)
 
       root = Ash.load!(root, [:last_message], actor: actor)
       root_id = root.id
@@ -469,145 +401,6 @@ defmodule IntellectualClub.Chat.SubagentTest do
                message_id: ^root_message_id
              } = Subagent.lifecycle_states([root], actor)[root.id]
     end
-
-    test "lifecycle states fail closed for cycles and beyond the supported handoff depth" do
-      %{user: actor} = user_fixture()
-      parent = create_empty_chat!(actor, subagent: false)
-      cycle_root = create_subchat!(actor, parent, :fork)
-
-      cycle_root_message =
-        create_generating_message!(actor, cycle_root, user_text: "Work", step: :waiting_provider)
-
-      cycle_child = create_subchat!(actor, cycle_root, :handoff)
-
-      cycle_child_message =
-        create_generating_message!(actor, cycle_child, user_text: "Work", step: :waiting_provider)
-
-      create_handoff_result!(actor, cycle_root_message, cycle_child, cycle_child_message)
-      set_message_status!(actor, cycle_root_message, :done)
-      create_handoff_result!(actor, cycle_child_message, cycle_root, cycle_root_message)
-      set_message_status!(actor, cycle_child_message, :done)
-
-      # One handoff chain shared by two roots: from `over_limit_root` it takes
-      # 64 hops to reach the generating message, from `at_limit_root` 63.
-      over_limit_root = create_subchat!(actor, parent, :spawn)
-      at_limit_root = create_subchat!(actor, parent, :spawn)
-      handoff_chat = create_subchat!(actor, at_limit_root, :handoff)
-
-      chain_chat_ids = [
-        over_limit_root.id,
-        at_limit_root.id | List.duplicate(handoff_chat.id, 63)
-      ]
-
-      [_root_message | _rest] = chain = create_handoff_chain!(actor, chain_chat_ids)
-      final_message_id = List.last(chain).id
-
-      states =
-        [cycle_root, over_limit_root, at_limit_root]
-        |> Ash.load!([:last_message], actor: actor)
-        |> Subagent.lifecycle_states(actor)
-
-      for chat <- [cycle_root, over_limit_root] do
-        assert %{active_generation_message_id: nil, last_message_status: :error} =
-                 states[chat.id]
-      end
-
-      assert %{
-               active_generation_message_id: ^final_message_id,
-               last_message_status: :generating,
-               message_id: ^final_message_id
-             } = states[at_limit_root.id]
-    end
-  end
-
-  # Creates one assistant message per chat id (in order) with bulk actions: all
-  # but the last are done and hand off to the next one through a persisted
-  # handoff tool result; the last one is still generating.
-  defp create_handoff_chain!(actor, chat_ids) do
-    last_index = length(chat_ids) - 1
-
-    messages =
-      bulk_create!(
-        ChatMessage,
-        :add_message,
-        chat_ids
-        |> Enum.with_index()
-        |> Enum.map(fn {chat_id, index} ->
-          %{
-            chat_id: chat_id,
-            role: :assistant,
-            status: if(index == last_index, do: :generating, else: :done)
-          }
-        end),
-        actor
-      )
-
-    sources = Enum.drop(messages, -1)
-    targets = Enum.drop(messages, 1)
-
-    steps =
-      bulk_create!(
-        ChatMessageStep,
-        :create,
-        Enum.map(sources, &%{chat_message_id: &1.id, sequence: 1, status: :done}),
-        actor
-      )
-
-    calls =
-      bulk_create!(
-        ChatMessageItem,
-        :create,
-        Enum.map(steps, &%{chat_message_step_id: &1.id, sequence: 1, type: :tool_call}),
-        actor
-      )
-
-    results =
-      bulk_create!(
-        ChatMessageItem,
-        :create,
-        Enum.zip_with(steps, calls, fn step, call ->
-          %{
-            chat_message_step_id: step.id,
-            sequence: 2,
-            type: :tool_result,
-            tool_call_item_id: call.id
-          }
-        end),
-        actor
-      )
-
-    bulk_create!(
-      ChatMessageContent,
-      :create,
-      Enum.zip_with(results, targets, fn result, target ->
-        %{
-          chat_message_item_id: result.id,
-          sequence: 1,
-          kind: :opaque,
-          content_text: "",
-          content_json: %{
-            "raw" => %{
-              "handoff" => %{"chat_id" => target.chat_id, "generation_message_id" => target.id}
-            }
-          }
-        }
-      end),
-      actor
-    )
-
-    messages
-  end
-
-  defp bulk_create!(resource, action, inputs, actor) do
-    %Ash.BulkResult{status: :success, records: records} =
-      Ash.bulk_create(inputs, resource, action,
-        actor: actor,
-        return_records?: true,
-        return_errors?: true,
-        sorted?: true
-      )
-
-    records
   end
 
   defp context(chat, actor) do

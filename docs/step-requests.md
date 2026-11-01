@@ -114,6 +114,12 @@ ChatMessageStep
 
 Hashes are lowercase hexadecimal SHA-256 of UTF-8 compact JSON with object keys sorted lexicographically and decimal numbers normalized (`Decimal.normalize/1`, scientific output, zero without a sign). Numerically equal integer/float/exponent forms hash equally, so PostgreSQL JSONB reserialization cannot invalidate a hash. Array order is retained; this canonical serialization does not modify the stored input map. The applied diff must be semantically equal to the normalized target; otherwise the writer falls back to full. One meaningful apply/equality roundtrip is retained to catch the dependency's overlapping JSON Pointer escape bugs. Equality follows the same decimal canonicalization as hashes, not strict BEAM equality or conversion of all numbers to floats: `1`/`1.0` permit an empty patch, while `10^80 + 1` and `1.0e80` remain distinct. Already materialized large integers retain their exact values. RFC `test` operations, physical rewrites and backfill use the same numeric semantics.
 
+Context compaction atomically appends `handoff_history` and `handoff_message` to
+the completed tool step and publishes a fresh request in its immediate successor.
+The archive file is created in that same transaction. The successor forces full
+encoding; retries and lost-ack reconciliation reuse the committed transition.
+Steering arriving during the old response is retained verbatim in the new step.
+
 Full is mandatory at sequence 1, forced boundaries, absent/unsafe previous state and the distance limit. `max_chain` is a per-call integer `1..32`, default 32: at most 32 patches between full rows. Patch JSON must be **strictly less than 50% of full JSON bytes**; equality at 50% falls back to full. This compares payload bytes, not PostgreSQL page size or metadata overhead.
 
 Creation validates shape, same-message base, distance and both hashes, with authorized Ash reads and message/step row locks for patches. jsonpatch 2.3.1 is pinned; the adapter enforces strict RFC pointer escapes and array indices rather than the dependency's permissive numeric-prefix parsing.

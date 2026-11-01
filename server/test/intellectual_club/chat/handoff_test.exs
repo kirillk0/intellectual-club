@@ -1,10 +1,9 @@
 defmodule IntellectualClub.Chat.HandoffTest do
   @moduledoc """
-  Handoff service (`IntellectualClub.Chat.Handoff`): creating the continuation
-  chat, the manual summary generation and the rendered history of the
-  continuation's first message, including truncation under the token budget.
+  Same-chat compaction service (`IntellectualClub.Chat.Handoff`): manual
+  completion, checkpoint publication and rendered history under the token budget.
 
-  The BFF contract (endpoint, relations, continuation navigation) is covered by
+  The BFF contract (endpoint and fork/spawn relations) is covered by
   `IntellectualClubWeb.Bff.ChatHandoffTest`.
   """
 
@@ -14,48 +13,48 @@ defmodule IntellectualClub.Chat.HandoffTest do
 
   require Ash.Query
 
-  alias IntellectualClub.Chat.{ChatMessageContent, Handoff, Previews}
+  alias IntellectualClub.Chat.{Chat, ChatMessage, ChatMessageContent, Handoff, Previews}
   alias IntellectualClub.Chat.{Search, Threads}
   alias IntellectualClub.Files
   alias IntellectualClub.TokenCounter
+  alias IntellectualClub.SqlCapture
 
-  describe "create_handoff_chat/4 and manual completion" do
+  describe "manual completion" do
     setup do
       put_app_env(:missed_notifications, :raise, :ash)
       :ok
     end
 
-    test "a subagent continuation keeps the tool instance that created its lineage" do
+    test "compaction keeps subagent lineage and root chats unchanged" do
       %{user: actor} = user_fixture()
       root = create_empty_chat!(actor)
       creator = create_tool_instance!(actor, type: "native-agent-management")
-
       source = create_subchat!(actor, root, :spawn, parent_tool_instance_id: creator.id)
 
-      {:ok, source_message} =
-        Threads.add_message_to_end(source, :user, "Subagent work", actor: actor)
+      for chat <- [root, source] do
+        {:ok, _input} = Threads.add_message_to_end(chat, :user, "Current work", actor: actor)
+        {:ok, prompt} = Handoff.prepare_manual_handoff_message(chat.id, actor)
 
-      assert {:ok, %{chat: target}} =
-               Handoff.create_handoff_chat(source, actor, "Continue the subagent work.",
-                 source_message_id: source_message.id
-               )
+        {:ok, summary} =
+          Threads.add_message(chat, :assistant, "Continue the work.",
+            actor: actor,
+            parent_id: prompt.id,
+            item_type: :handoff_summary
+          )
 
-      assert target.subagent == true
-      assert target.parent_relation_kind == :handoff
-      assert target.parent_tool_instance_id == creator.id
+        assert {:ok, %{chat: target, message: checkpoint, generation: nil}} =
+                 Handoff.complete_manual_generation(summary.id, actor)
 
-      {:ok, root_message} = Threads.add_message_to_end(root, :user, "Root work", actor: actor)
-
-      assert {:ok, %{chat: root_target}} =
-               Handoff.create_handoff_chat(root, actor, "Continue the root work.",
-                 source_message_id: root_message.id
-               )
-
-      assert root_target.subagent == false
-      assert root_target.parent_tool_instance_id == nil
+        assert target.id == chat.id
+        assert checkpoint.chat_id == chat.id
+        assert target.subagent == chat.subagent
+        assert target.parent_chat_id == chat.parent_chat_id
+        assert target.parent_relation_kind == chat.parent_relation_kind
+        assert target.parent_tool_instance_id == chat.parent_tool_instance_id
+      end
     end
 
-    test "creates the linked continuation chat with the rendered history and the source chat settings" do
+    test "appends a structured checkpoint with searchable history without copying settings" do
       %{user: actor} = user_fixture()
 
       source = create_empty_chat!(actor)
@@ -71,18 +70,27 @@ defmodule IntellectualClub.Chat.HandoffTest do
 
       _tool_binding = create_chat_tool_binding!(actor, source, tool, sequence: 3)
 
+      {:ok, prompt} = Handoff.prepare_manual_handoff_message(source.id, actor)
+
+      {:ok, summary} =
+        Threads.add_message(source, :assistant, "Continue from this summary.",
+          actor: actor,
+          parent_id: prompt.id,
+          item_type: :handoff_summary
+        )
+
       assert {:ok, %{chat: target, message: summary_message, generation: nil}} =
-               Handoff.create_handoff_chat(source, actor, "Continue from this summary.",
-                 source_message_id: source_message.id
-               )
+               Handoff.complete_manual_generation(summary.id, actor)
 
-      assert target.parent_chat_id == source.id
-      assert target.parent_message_id == source_message.id
-      assert target.parent_relation_kind == :handoff
+      assert target.id == source.id
+      assert target.parent_chat_id == nil
       assert target.last_message_id == summary_message.id
+      assert summary_message.parent_id == summary.id
 
-      messages = messages_for_chat!(actor, target.id)
-      assert Enum.map(messages, & &1.id) == [summary_message.id]
+      assert [original, request, answer, checkpoint] = messages_for_chat!(actor, target.id)
+      assert [original.id, request.id, answer.id] == [source_message.id, prompt.id, summary.id]
+      assert checkpoint.id == summary_message.id
+      messages = [checkpoint]
       assert hd(messages).role == :user
       assert message_item_types(hd(messages)) == [:handoff_history, :handoff_message]
 
@@ -120,10 +128,9 @@ defmodule IntellectualClub.Chat.HandoffTest do
         |> Map.get(:child_chats)
         |> Enum.map(& &1.id)
 
-      assert target.id in child_ids
+      assert child_ids == []
 
-      # The binding copy contract (order, flags, several bindings) is owned by
-      # `POST /api/ash/chats/:id/copy`; a handoff only has to carry it over.
+      # Same-chat compaction leaves binding identities and settings untouched.
       assert %{blocks: [{block_id, false, 7}], tools: [{tool_id, true, 3}]} =
                settings = chat_binding_settings!(actor, source)
 
@@ -131,7 +138,7 @@ defmodule IntellectualClub.Chat.HandoffTest do
       assert chat_binding_settings!(actor, target) == settings
     end
 
-    test "manual handoff continuation follows the source chat's current configuration" do
+    test "manual completion keeps the chat selector rather than the summary configuration" do
       %{user: actor} = user_fixture()
       summarizing = create_configuration!(actor)
       selected = create_configuration!(actor)
@@ -147,7 +154,7 @@ defmodule IntellectualClub.Chat.HandoffTest do
           llm_configuration_id: summarizing.id
         )
 
-      # The continuation waits for the user's next message, which uses the selector.
+      # The next user message follows the current chat selector.
       source
       |> Ash.Changeset.for_update(:update, %{llm_configuration_id: selected.id}, actor: actor)
       |> Ash.update!(actor: actor)
@@ -155,6 +162,7 @@ defmodule IntellectualClub.Chat.HandoffTest do
       assert {:ok, %{chat: target, generation: nil}} =
                Handoff.complete_manual_generation(summary.id, actor)
 
+      assert target.id == source.id
       assert target.llm_configuration_id == selected.id
     end
 
@@ -178,58 +186,153 @@ defmodule IntellectualClub.Chat.HandoffTest do
       assert {:ok, %{chat: target}} =
                Handoff.complete_manual_generation(legacy_summary.id, actor)
 
-      assert [context_message] = messages_for_chat!(actor, target.id)
+      assert target.id == source.id
+      assert [_source, _summary, context_message] = messages_for_chat!(actor, target.id)
+      assert context_message.parent_id == legacy_summary.id
       assert message_item_types(context_message) == [:handoff_history, :handoff_message]
       assert String.contains?(message_text(context_message), "Legacy handoff summary")
     end
   end
 
-  describe "continuation history" do
-    test "nested handoff expands parent history and skips child summary root" do
+  describe "manual checkpoints" do
+    test "completion is idempotent and does not change a different selected branch" do
       %{user: actor} = user_fixture()
-
       source = create_empty_chat!(actor)
-      {:ok, root} = Threads.add_message_to_end(source, :user, "Root task", actor: actor)
+      {:ok, root} = Threads.add_message_to_end(source, :user, "Original task", actor: actor)
 
-      {:ok, parent_answer} =
-        Threads.add_message_to_end(source, :assistant, "Parent answer",
+      {:ok, summary} =
+        Threads.add_message(source, :assistant, "Compacted summary",
+          actor: actor,
+          parent_id: root.id,
+          item_type: :handoff_summary
+        )
+
+      {:ok, sibling} =
+        Threads.add_message(source, :assistant, "Selected sibling",
           actor: actor,
           parent_id: root.id
         )
 
-      assert {:ok, %{chat: first_child}} =
-               Handoff.create_handoff_chat(source, actor, "First handoff summary",
-                 source_message_id: parent_answer.id
-               )
+      assert {:ok, first} = Handoff.complete_manual_generation(summary.id, actor)
+      assert {:ok, second} = Handoff.complete_manual_generation(summary.id, actor)
+      assert first.chat.id == source.id
+      assert first.message.id == second.message.id
+      assert first.message.parent_id == summary.id
+      assert second.chat.last_message_id == sibling.id
 
-      {:ok, child_user} =
-        Threads.add_message_to_end(first_child, :user, "Child follow-up", actor: actor)
+      checkpoints =
+        messages_for_chat!(actor, source.id)
+        |> Enum.filter(&(:handoff_message in message_item_types(&1)))
 
-      {:ok, child_answer} =
-        Threads.add_message_to_end(first_child, :assistant, "Child answer",
-          actor: actor,
-          parent_id: child_user.id
-        )
+      assert Enum.map(checkpoints, & &1.id) == [first.message.id]
+    end
+  end
 
-      assert {:ok, %{chat: second_child, message: first_message}} =
-               Handoff.create_handoff_chat(first_child, actor, "Second handoff summary",
-                 source_message_id: child_answer.id
-               )
+  describe "prepare_compaction/3" do
+    test "reads the owned generating message branch without publishing a checkpoint" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      {:ok, root} = Threads.add_message_to_end(chat, :user, "Original task", actor: actor)
+      message = create_message!(actor, chat, parent_id: root.id, status: :generating)
+      step = create_step!(actor, message, status: :waiting_tools)
+      create_text_item!(actor, step, "Persisted answer")
 
-      [message] = messages_for_chat!(actor, second_child.id)
-      assert message.id == first_message.id
+      {:ok, sibling} =
+        Threads.add_message(chat, :assistant, "OTHER BRANCH", actor: actor, parent_id: root.id)
 
-      text = message_text(message)
-      assert String.contains?(text, "Root task")
-      assert String.contains?(text, "<continued in new chat>")
-      assert String.contains?(text, "Child follow-up")
-      assert String.contains?(text, "Child answer")
-      assert String.contains?(text, "Second handoff summary")
-      refute String.contains?(text, "First handoff summary")
-      refute String.contains?(text, "Parent answer")
+      before = messages_for_chat!(actor, chat.id)
+
+      assert {:ok, rolloff} = Handoff.prepare_compaction(message.id, actor, "  Full summary  ")
+      assert rolloff.handoff_message == "Full summary"
+      assert Enum.map(rolloff.history, & &1.text) == ["Original task", "Persisted answer"]
+      refute rolloff.artifact.payload =~ "OTHER BRANCH"
+      assert messages_for_chat!(actor, chat.id) == before
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == sibling.id
     end
 
-    test "handoff re-expands a copied structured root with its original roles" do
+    test "requires an owned assistant message and a nonempty string summary" do
+      %{user: actor} = user_fixture()
+      %{user: other} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [actor, other]})
+
+      chat =
+        create_empty_chat!(actor,
+          bot_id: create_bot!(actor).id,
+          llm_configuration_id: create_configuration!(actor).id
+        )
+
+      {:ok, root} = Threads.add_message_to_end(chat, :user, "Original task", actor: actor)
+      message = create_message!(actor, chat, parent_id: root.id)
+      share_chat!(actor, chat, group)
+      assert Ash.get!(ChatMessage, message.id, actor: other).id == message.id
+
+      assert {:error, :not_found} = Handoff.prepare_compaction(message.id, other, "Summary")
+      assert {:error, :forbidden} = Handoff.prepare_compaction(message.id, nil, "Summary")
+      assert {:error, :not_found} = Handoff.prepare_compaction(root.id, actor, "Summary")
+      assert {:error, :not_found} = Handoff.prepare_compaction(-1, actor, "Summary")
+      assert {:error, :invalid_message_id} = Handoff.prepare_compaction(nil, actor, "Summary")
+      assert {:error, :empty_summary} = Handoff.prepare_compaction(message.id, actor, " ")
+      assert {:error, :invalid_summary} = Handoff.prepare_compaction(message.id, actor, nil)
+    end
+
+    @tag :whitebox
+    test "resolves the source chat from message ids before reading the branch trace" do
+      %{user: actor} = user_fixture()
+      chat = create_empty_chat!(actor)
+      message = create_message!(actor, chat)
+      step = create_step!(actor, message)
+      create_text_item!(actor, step, "Original answer")
+
+      assert {{:ok, _rolloff}, capture} =
+               SqlCapture.measure(fn ->
+                 Handoff.prepare_compaction(message.id, actor, "Summary")
+               end)
+
+      [source_lookup | _] = SqlCapture.selects_from(capture.queries, "chat_messages")
+      assert Enum.sort(source_lookup.columns) == ["chat_id", "id"]
+
+      before_chat = Enum.take_while(capture.queries, &(&1.source != "chats"))
+
+      for table <- ["chat_message_steps", "chat_message_items", "chat_message_contents"] do
+        assert SqlCapture.selects_from(before_chat, table) == []
+      end
+    end
+  end
+
+  describe "checkpoint history" do
+    test "successive checkpoints archive originals rather than checkpoint copies" do
+      %{user: actor} = user_fixture()
+      source = create_empty_chat!(actor)
+      {:ok, _root} = Threads.add_message_to_end(source, :user, "Root task", actor: actor)
+
+      {:ok, answer} =
+        Threads.add_message_to_end(source, :assistant, "Original answer", actor: actor)
+
+      %{message: first} = append_checkpoint!(actor, source, answer, "First summary")
+      {:ok, followup} = Threads.add_message_to_end(source, :user, "Follow-up", actor: actor)
+      assert followup.parent_id == first.id
+
+      {:ok, next_answer} =
+        Threads.add_message_to_end(source, :assistant, "Next answer", actor: actor)
+
+      %{message: second} = append_checkpoint!(actor, source, next_answer, "Second summary")
+      message = List.last(messages_for_chat!(actor, source.id))
+      assert message.id == second.id
+      text = message_text(message)
+
+      for original <- ["Root task", "Original answer", "Follow-up", "Next answer"] do
+        assert length(String.split(text, original)) == 2
+      end
+
+      assert text =~ "Second summary"
+      refute text =~ "First summary"
+      [artifact] = media_contents_for_message!(message.id, actor)
+      assert {:ok, {_file, archive}} = Files.load_payload(artifact.file_id)
+      refute archive =~ "summary"
+      refute archive =~ "full_conversation.md"
+    end
+
+    test "a standalone checkpoint seed retains its original roles" do
       %{user: actor} = user_fixture()
       source = create_empty_chat!(actor)
 
@@ -271,12 +374,11 @@ defmodule IntellectualClub.Chat.HandoffTest do
           status: :done
         )
 
-      assert {:ok, %{chat: target}} =
-               Handoff.create_handoff_chat(source, actor, "Next transfer summary",
-                 source_message_id: source_message.id
-               )
+      %{message: checkpoint} =
+        append_checkpoint!(actor, source, source_message, "Next transfer summary")
 
-      [target_message] = messages_for_chat!(actor, target.id)
+      target_message = List.last(messages_for_chat!(actor, source.id))
+      assert target_message.id == checkpoint.id
       history_contents = text_contents_for_item_type(target_message, :handoff_history)
 
       assert Enum.map(history_contents, & &1.content_text) == [
@@ -307,12 +409,8 @@ defmodule IntellectualClub.Chat.HandoffTest do
           ]
         )
 
-      assert {:ok, %{chat: target}} =
-               Handoff.create_handoff_chat(source, actor, "Continue with the report.",
-                 source_message_id: source_message.id
-               )
-
-      [message] = messages_for_chat!(actor, target.id)
+      append_checkpoint!(actor, source, source_message, "Continue with the report.")
+      message = List.last(messages_for_chat!(actor, source.id))
       text = message_text(message)
 
       assert String.contains?(text, "See attached report.")
@@ -334,12 +432,8 @@ defmodule IntellectualClub.Chat.HandoffTest do
       {:ok, assistant_message} =
         Threads.add_message_to_end(source, :assistant, long_answer, actor: actor)
 
-      assert {:ok, %{chat: target}} =
-               Handoff.create_handoff_chat(source, actor, "Continue after long answer.",
-                 source_message_id: assistant_message.id
-               )
-
-      [message] = messages_for_chat!(actor, target.id)
+      append_checkpoint!(actor, source, assistant_message, "Continue after long answer.")
+      message = List.last(messages_for_chat!(actor, source.id))
       text = message_text(message)
 
       assert String.contains?(text, "[truncated to 200 tokens]")
@@ -370,19 +464,18 @@ defmodule IntellectualClub.Chat.HandoffTest do
         )
 
       step = first_step!(actor, assistant_message.id)
-      create_steering_item!(step.id, 2, "Focus on the final result.", actor)
+      create_text_item!(actor, step, "Focus on the final result.", type: :steering, sequence: 2)
       long_final = String.duplicate("long-final-output ", 6_000)
-      create_answer_item!(step.id, 3, long_final, actor)
+      create_text_item!(actor, step, long_final, type: :answer, sequence: 3)
 
-      assert {:ok, %{chat: target}} =
-               Handoff.create_handoff_chat(
-                 source,
-                 actor,
-                 "Continue after mixed assistant output.",
-                 source_message_id: assistant_message.id
-               )
+      append_checkpoint!(
+        actor,
+        source,
+        assistant_message,
+        "Continue after mixed assistant output."
+      )
 
-      [message] = messages_for_chat!(actor, target.id)
+      message = List.last(messages_for_chat!(actor, source.id))
       text = message_text(message)
 
       assert Regex.scan(~r/\*\*assistant\*\* \(/, text) |> length() == 2
@@ -433,12 +526,10 @@ defmodule IntellectualClub.Chat.HandoffTest do
       {:ok, last_message} =
         Threads.add_message_to_end(source, :user, wide_text.("130"), actor: actor)
 
-      assert {:ok, %{chat: target, message: target_message}} =
-               Handoff.create_handoff_chat(source, actor, "Continue massive work.",
-                 source_message_id: last_message.id
-               )
+      %{chat: target, message: target_message} =
+        append_checkpoint!(actor, source, last_message, "Continue massive work.")
 
-      [loaded_target_message] = messages_for_chat!(actor, target.id)
+      loaded_target_message = List.last(messages_for_chat!(actor, source.id))
       text = message_text(loaded_target_message)
 
       assert TokenCounter.estimate(text) <= 20_000
@@ -467,14 +558,6 @@ defmodule IntellectualClub.Chat.HandoffTest do
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.load([:file, :chat_message_item])
     |> Ash.read!(actor: actor)
-  end
-
-  defp create_answer_item!(step_id, sequence, text, actor) do
-    create_text_item!(actor, step_id, text, sequence: sequence, type: :answer)
-  end
-
-  defp create_steering_item!(step_id, sequence, text, actor) do
-    create_text_item!(actor, step_id, text, sequence: sequence, type: :steering)
   end
 
   defp timestamp_minute_text(%DateTime{} = value) do

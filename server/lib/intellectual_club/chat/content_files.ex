@@ -13,8 +13,6 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   require Ash.Query
 
-  @max_handoff_depth 32
-
   @spec load_payload_for_content(ChatMessageContent.t()) ::
           {:ok, {ChatMessageContent.t(), StoredFile.t(), binary()}} | {:error, term()}
   def load_payload_for_content(%ChatMessageContent{} = content) do
@@ -69,25 +67,6 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   def load_path_for_execution(_file_external_id, _context), do: {:error, :invalid_request}
 
-  @doc """
-  Returns up to 32 chats in the current owned handoff chain whose canonical files
-  are visible from that chat. Linked fork parents are deliberately excluded: their
-  files are visible only when present in the projected inherited prefix.
-  """
-  @spec handoff_chat_scope_ids(integer(), integer()) :: [integer()]
-  def handoff_chat_scope_ids(chat_id, owner_id)
-      when is_integer(chat_id) and is_integer(owner_id) do
-    chat_id
-    |> collect_handoff_chat_scope_ids(owner_id, MapSet.new(), [])
-    |> case do
-      [] -> [chat_id]
-      ids -> ids
-    end
-  end
-
-  def handoff_chat_scope_ids(chat_id, _owner_id) when is_integer(chat_id), do: [chat_id]
-  def handoff_chat_scope_ids(_chat_id, _owner_id), do: []
-
   defp load_chat_content_payload(normalized_external_id, %ExecutionContext{} = context) do
     with {:ok, %ChatMessageContent{} = content} <-
            find_content_for_file(normalized_external_id, context),
@@ -133,8 +112,9 @@ defmodule IntellectualClub.Chat.ContentFiles do
   end
 
   defp find_content_for_file(normalized_external_id, %ExecutionContext{} = context)
-       when is_binary(normalized_external_id) do
-    chat_ids = handoff_chat_scope_ids(context)
+       when is_binary(normalized_external_id) and is_integer(context.chat_id) and
+              is_integer(context.owner_id) do
+    chat_ids = List.wrap(context.chat_id)
 
     ChatMessageContent
     |> Ash.Query.filter(
@@ -160,12 +140,14 @@ defmodule IntellectualClub.Chat.ContentFiles do
     end
   end
 
+  defp find_content_for_file(_external_id, _context), do: {:error, :not_found}
+
   defp find_inherited_content_for_file(normalized_external_id, chat_ids, owner_id)
        when is_integer(owner_id) do
     actor = %{id: owner_id}
 
-    # Handoff descendants retain their ancestor's file scope, but a fork never
-    # grants access to an entire source chat or its request-file bindings.
+    # A fork grants access only to its projected prefix, never to an entire
+    # source chat or its request-file bindings.
     with {:ok, forks} <-
            Chat
            |> Ash.Query.filter(
@@ -191,9 +173,6 @@ defmodule IntellectualClub.Chat.ContentFiles do
     end
   end
 
-  defp find_inherited_content_for_file(_normalized_external_id, _chat_ids, _owner_id),
-    do: {:error, :not_found}
-
   defp inherited_content(messages, normalized_external_id, owner_id) do
     # File tools remain owner-scoped even if a history reader can see shared chats.
     # Synthetic boundary results contain no media, so only actual prefix contents
@@ -216,49 +195,6 @@ defmodule IntellectualClub.Chat.ContentFiles do
       end)
     end
   end
-
-  defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id, owner_id: owner_id})
-       when is_integer(chat_id) and is_integer(owner_id) do
-    handoff_chat_scope_ids(chat_id, owner_id)
-  end
-
-  defp handoff_chat_scope_ids(%ExecutionContext{chat_id: chat_id}) when is_integer(chat_id),
-    do: [chat_id]
-
-  defp handoff_chat_scope_ids(_context), do: []
-
-  defp collect_handoff_chat_scope_ids(chat_id, owner_id, seen, acc)
-       when is_integer(chat_id) and is_integer(owner_id) do
-    if MapSet.member?(seen, chat_id) or MapSet.size(seen) >= @max_handoff_depth do
-      Enum.reverse(acc)
-    else
-      seen = MapSet.put(seen, chat_id)
-
-      case load_owned_chat_for_scope(chat_id, owner_id) do
-        {:ok, %Chat{} = chat} ->
-          acc = [chat.id | acc]
-
-          if handoff_child?(chat) and is_integer(chat.parent_chat_id) do
-            collect_handoff_chat_scope_ids(chat.parent_chat_id, owner_id, seen, acc)
-          else
-            Enum.reverse(acc)
-          end
-
-        _other ->
-          Enum.reverse(acc)
-      end
-    end
-  end
-
-  defp load_owned_chat_for_scope(chat_id, owner_id) do
-    Chat
-    |> Ash.Query.filter(id == ^chat_id and owner_id == ^owner_id)
-    |> Ash.Query.select([:id, :owner_id, :parent_chat_id, :parent_relation_kind])
-    |> Ash.read_one(authorize?: false)
-  end
-
-  defp handoff_child?(%Chat{parent_relation_kind: :handoff}), do: true
-  defp handoff_child?(%Chat{}), do: false
 
   defp normalize_external_id(value) when is_binary(value) do
     value = String.trim(value)

@@ -56,8 +56,8 @@ until a write succeeds) and missing local recovery.
 ## Chat list and events
 
 The list has a first, independently paginated **Drafts** section, filtered before
-pagination and sorted by draft update time. It can include nested chats and older
-continuation chats that ordinary sections group or hide. A chat may also remain
+pagination and sorted by draft update time. It can include nested chats that
+ordinary sections omit. A chat may also remain
 in Unread, Working or Other; a draft does not replace those classifications.
 Search still searches canonical chat metadata/messages, not private draft text.
 

@@ -461,6 +461,54 @@ defmodule IntellectualClub.Generation.Persistence do
     )
   end
 
+  @doc "Atomically publishes a context checkpoint and its fresh receiving provider step."
+  def complete_step_and_start_next_with_compaction!(
+        message_id,
+        step_id,
+        next_sequence,
+        raw_request,
+        checkpoint_items,
+        queued_specs,
+        opts \\ []
+      ) do
+    unless Enum.map(checkpoint_items, & &1.type) == [:handoff_history, :handoff_message] do
+      raise ArgumentError, "A context checkpoint requires history and summary items"
+    end
+
+    opts = opts |> Keyword.put(:next_sequence, next_sequence) |> Keyword.put(:force_full, true)
+
+    transition_request!(
+      message_id,
+      step_id,
+      raw_request,
+      if(queued_specs == [], do: :followup, else: :queued_followup),
+      queued_specs,
+      opts,
+      fn step, actor ->
+        first_sequence =
+          step |> ordered_items() |> Enum.map(& &1.sequence) |> Enum.max(fn -> 0 end)
+
+        checkpoint_items
+        |> Enum.with_index(first_sequence + 1)
+        |> Enum.each(fn {spec, sequence} ->
+          item =
+            create_item!(
+              %{chat_message_step_id: step.id, sequence: sequence, type: spec.type},
+              actor
+            )
+
+          create_contents!(item, spec.contents, actor)
+        end)
+
+        complete_transition_step!(step, actor)
+      end
+    )
+    |> case do
+      %{} = result -> Map.put(result, :compacted?, true)
+      other -> other
+    end
+  end
+
   defp transition_request!(message_id, step_id, raw_request, kind, specs, opts, finish_previous!) do
     require_generation_lease!(message_id, opts)
     actor = actor_for_message!(message_id)
@@ -608,7 +656,9 @@ defmodule IntellectualClub.Generation.Persistence do
       case {successor, step.status} do
         {%ChatMessageStep{} = next_step, ^terminal_status} ->
           request = StepRequests.request_for_step!(next_step.id, actor: actor)
-          {:applied, transition_result(next_step, request, actor)}
+          result = transition_result(next_step, request, actor)
+          compacted? = Enum.any?(ordered_items(step), &(&1.type == :handoff_message))
+          {:applied, Map.put(result, :compacted?, compacted?)}
 
         {nil, ^source_status} ->
           :not_applied
@@ -686,52 +736,50 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  @doc false
-  def enrich_handoff_tool_results!(step_id, child_chat_id, handoff_payload)
-      when is_integer(step_id) and is_integer(child_chat_id) and is_map(handoff_payload) do
-    actor = actor_for_step!(step_id)
-    handoff_payload = normalize_json_map(handoff_payload)
+  @doc "Replaces an unpublished compaction receipt with a durable preparation refusal."
+  def refuse_compaction_tool_result!(message_id, step_id, tool_call_item_id, refusal) do
+    actor = actor_for_message!(message_id)
 
     transaction!(fn ->
-      updated_count =
-        step_id
-        |> load_step_with_items!(actor)
-        |> ordered_items()
-        |> Enum.filter(&(&1.type == :tool_result))
-        |> Enum.flat_map(&List.wrap(&1.contents))
-        |> Enum.filter(&(&1.kind == :opaque and is_map(&1.content_json)))
-        |> Enum.count(fn content ->
-          opaque = normalize_json_map(content.content_json)
-          raw = normalize_json_map(Map.get(opaque, "raw", %{}))
-          current_handoff = normalize_json_map(Map.get(raw, "handoff", %{}))
+      message = lock_message!(message_id, actor)
+      step = load_step_with_items!(step_id, actor)
+      ensure_step_belongs_to_message!(step, message_id)
 
-          if Map.get(current_handoff, "chat_id") == child_chat_id do
-            content_json =
-              Map.put(
-                opaque,
-                "raw",
-                Map.put(raw, "handoff", Map.merge(current_handoff, handoff_payload))
-              )
-
-            content
-            |> Ash.Changeset.for_update(
-              :update,
-              %{content_json: content_json},
-              actor: actor
-            )
-            |> Ash.update!(actor: actor)
-
-            true
-          else
-            false
-          end
-        end)
-
-      if updated_count == 0 do
-        raise ArgumentError, "Handoff tool result not found"
+      unless message.status == :generating and step.status in [:waiting_tools, :done] and
+               is_nil(get_step_by_sequence(message_id, step.sequence + 1, actor)) and
+               not Enum.any?(step.items, &(&1.type in [:handoff_history, :handoff_message])) do
+        raise ArgumentError, "Cannot refuse compaction after its step transition"
       end
 
-      updated_count
+      calls = persisted_tool_calls_by_item_id(step)
+      call = Map.fetch!(calls, tool_call_item_id)
+      item = existing_tool_result_item(step, tool_call_item_id)
+      persisted = tool_result_from_item(item, calls)
+      replacement = normalize_tool_execution_result(call, refusal)
+
+      cond do
+        persisted.text == replacement.text and persisted.result_raw == replacement.result_raw ->
+          persisted
+
+        match?(%{"compaction" => %{"summary" => _}}, persisted.result_raw) ->
+          # Keep the call/result identity and order, but replace both text and
+          # provider-specific output so recovery cannot replay a success receipt.
+          Enum.each(item.contents, &Ash.destroy!(&1, actor: actor))
+
+          responses_item =
+            %{replacement | responses_item: persisted.responses_item}
+            |> responses_item_for_result()
+            |> Map.put("output", replacement.text)
+
+          create_tool_result_contents!(item, replacement, responses_item, actor)
+
+          item
+          |> load_item_with_contents!(actor)
+          |> tool_result_from_item(calls)
+
+        true ->
+          raise ArgumentError, "Tool result is not a pending compaction receipt"
+      end
     end)
   end
 

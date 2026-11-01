@@ -151,7 +151,7 @@ describe('chat message copy action', () => {
     });
     expect(copyTextWithFallback).toHaveBeenNthCalledWith(
       2,
-      'History\n\nOriginal request\n\nHandoff message\n\nTransfer summary',
+      'History\n\nOriginal request\n\nContext summary\n\nTransfer summary',
       { promptLabel: 'Copy the message text manually:' }
     );
 

@@ -22,6 +22,7 @@ import { publishChatChange } from '@/features/chat/chatEvents';
 import {
   fullChatMessageText,
   isSteeringContentPart,
+  isHandoffContextItemType,
   primaryChatMessageText,
   sortedChatMessageContentParts,
 } from '@/features/chat/model/chatMessageContent';
@@ -607,7 +608,7 @@ export function useChatMessageActions(params: Params) {
     const targets: Array<{ id: number; sequence: number; text: string }> = [];
 
     for (const part of sortedChatMessageContentParts(msg)) {
-      if (msg.role === 'assistant' && isSteeringContentPart(part)) continue;
+      if (msg.role === 'assistant' && (isSteeringContentPart(part) || isHandoffContextItemType(part.item_type))) continue;
       if (typeof part.content_id !== 'number') continue;
       targets.push({
         id: part.content_id,
@@ -624,6 +625,7 @@ export function useChatMessageActions(params: Params) {
     const attachments: ExistingChatAttachment[] = [];
 
     for (const content of msg.content?.media || []) {
+      if (msg.role === 'assistant' && isHandoffContextItemType(content.item_type)) continue;
       const attachment = mapContentToExistingAttachment(content, msg.id);
       if (attachment) attachments.push(attachment);
     }

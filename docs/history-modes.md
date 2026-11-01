@@ -14,8 +14,11 @@ does not change its identity. Switching A → B → A restores eligibility of re
 from A. Missing or deleted configurations never qualify.
 
 `Generation.History.for_mode/3` filters canonical history before role-boundary
-repair. Chat mode omits tool items and synthetic interruption markers. Existing
-completion and linked-fork boundaries still apply. The selected mode does not
+repair. Chat mode omits tool items and synthetic interruption markers. The last complete context-compaction checkpoint on the selected branch is
+projected as user input before mode and completion filtering. Its history, summary
+and archive replace all earlier model context, including earlier steps of the same
+assistant message. Later items keep their original roles. Existing linked-fork
+boundaries still apply. The selected mode does not
 change the trace stored in the database, ongoing tool rounds, or saved-request retries.
 
 The context panel uses the latest provider usage for agent/full. Chat mode shows

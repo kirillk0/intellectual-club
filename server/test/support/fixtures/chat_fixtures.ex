@@ -57,7 +57,7 @@ defmodule IntellectualClub.ChatFixtures do
 
   @doc """
   Creates a subchat of `parent` (`:create_empty`) with `parent_relation_kind:
-  relation_kind` (`:fork`, `:spawn`, `:handoff`) and `subagent: true`; `attrs`
+  relation_kind` (`:fork`, `:spawn`) and `subagent: true`; `attrs`
   may override them or add e.g. `:parent_message_id`.
   """
   def create_subchat!(actor, parent, relation_kind, attrs \\ %{}) do

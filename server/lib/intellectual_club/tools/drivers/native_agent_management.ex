@@ -14,7 +14,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
   alias IntellectualClub.Accounts.User
   alias IntellectualClub.BackgroundTasks
   alias IntellectualClub.Chat.Fork, as: AgentFork
-  alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.Spawn, as: AgentSpawn
   alias IntellectualClub.Chat.Subagent
   alias IntellectualClub.Tools.Drivers.SubagentArguments
@@ -69,7 +68,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
           "type" => "boolean",
           "default" => false,
           "title" => "Allow handoff in subchats",
-          "description" => "Allow subagents to continue work through handoff chats."
+          "description" => "Allow subagents to compact context and continue work."
         }
       },
       "additionalProperties" => false
@@ -85,11 +84,11 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       %{
         "name" => "handoff",
         "description" =>
-          "Call this tool by itself to continue work in a new chat, especially when context " <>
-            "is approaching its limit. The summary must be sufficient for the new chat to " <>
-            "continue without the old context. Near the beginning, list every active " <>
-            "background_task_id together with its purpose, latest cursor, and current status; " <>
-            "active background tasks are transferred to the new generation.",
+          "Call this tool by itself to compact context and continue work in the same chat and " <>
+            "generation, especially when context is approaching its limit. The summary must " <>
+            "be sufficient to continue without the old context. Near the beginning, list " <>
+            "every active background_task_id together with its purpose, latest cursor, " <>
+            "and current status; active background tasks remain attached to this generation.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
@@ -268,38 +267,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       when is_map(args) do
     with {:ok, summary} <- required_summary(args),
          :ok <- Subagent.ensure_handoff_allowed(tool_instance, context),
-         {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
-         {:ok, chat_id} <- required_integer(context.chat_id, "chat_id"),
-         {:ok, assistant_message_id} <-
+         {:ok, _owner_id} <- required_integer(context.owner_id, "owner_id"),
+         {:ok, _chat_id} <- required_integer(context.chat_id, "chat_id"),
+         {:ok, _message_id} <-
            required_integer(context.assistant_message_id || context.message_id, "message_id"),
-         {:ok, tool_call_item_id} <-
+         {:ok, _tool_call_item_id} <-
            required_integer(context.tool_call_item_id, "tool_call_item_id"),
-         actor = %User{id: owner_id},
          {:ok, result} <-
            Subagent.with_parent_generation_fence(context, fn ->
-             Handoff.create_handoff_chat(chat_id, actor, summary,
-               source_message_id: assistant_message_id,
-               parent_tool_call_item_id: tool_call_item_id,
-               handoff_mode: :tool,
-               start_generation?: false
-             )
+             {:ok,
+              %ExecutionResult{
+                text: "Context compaction requested. Work continues in the same message.",
+                raw: %{"compaction" => %{"summary" => summary}},
+                media: [],
+                artifacts: []
+              }}
            end) do
-      chat = result.chat
-      message = result.message
-
-      payload = %{
-        "chat_id" => chat.id,
-        "message_id" => message.id,
-        "url" => "/chats/#{chat.id}"
-      }
-
-      {:ok,
-       %ExecutionResult{
-         text: "Generation continued in chat /chats/#{chat.id}.",
-         raw: %{"handoff" => payload},
-         media: [],
-         artifacts: []
-       }}
+      {:ok, result}
     else
       {:error, reason} ->
         {:error, error_message(reason)}
