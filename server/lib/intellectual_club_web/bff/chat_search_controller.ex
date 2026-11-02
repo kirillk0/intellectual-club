@@ -6,6 +6,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchController do
   use IntellectualClubWeb, :controller
 
   alias IntellectualClub.Chat.Search, as: ChatSearch
+  alias IntellectualClubWeb.Bff.ChatParams
   alias IntellectualClubWeb.Bff.Helpers
 
   def messages(conn, %{"id" => id} = params) do
@@ -13,7 +14,12 @@ defmodule IntellectualClubWeb.Bff.ChatSearchController do
       chat_id = String.to_integer(id)
       term = params |> Map.get("q", "") |> to_string()
 
-      json(conn, ChatSearch.search_messages_in_chat(chat_id, term, actor))
+      json(
+        conn,
+        ChatSearch.search_messages_in_chat(chat_id, term, actor,
+          exact?: ChatParams.flag?(params, "exact")
+        )
+      )
     end
   end
 end

@@ -26,35 +26,41 @@ const listPayload = (note = 'Old list') => ({
 });
 
 const SECTIONS = ['drafts', 'unread', 'working', 'other'];
-type SectionPageInfo = { number: number; per_page: number; total: number | null; has_next: boolean; next_cursor?: string | null };
+type SectionPageInfo = { number: number; per_page: number; total: number | null; has_next: boolean };
 type SectionResult = { chats: ChatSummary[]; page?: SectionPageInfo };
-const searchCursor = (section: string, page: number) => `opaque:${section}/${page}+=`;
 
-// Mirrors the grouped search contract: unique rows plus ordered IDs and a page per requested section.
-function groupedSearchPayload(
-  path: string,
-  sectionResult: (section: string, page: number, cursor: string | null) => SectionResult,
-  extra: Record<string, unknown> = {},
-  search = true
-) {
+// Mirrors the grouped list contract: unique rows plus ordered IDs and a page per requested section.
+function groupedListPayload(path: string, sectionResult: (section: string, page: number) => SectionResult, extra: Record<string, unknown> = {}) {
   const params = new URL(path, 'http://localhost').searchParams;
   const rows = new Map<number, ChatSummary>();
   const sections = Object.fromEntries((params.get('sections') || '').split(',').map((section) => {
     const number = Number(params.get(`page_${section}`) || 1);
-    const result = sectionResult(section, number, params.get(`after_${section}`));
+    const result = sectionResult(section, number);
     for (const chat of result.chats) if (!rows.has(chat.id)) rows.set(chat.id, chat);
     const page = {
       number, per_page: Number(params.get('per_page') || 20), has_next: false,
-      next_cursor: result.page?.has_next ? searchCursor(section, number + 1) : null,
-      ...result.page, total: search ? null : result.page?.total ?? result.chats.length,
+      ...result.page, total: result.page?.total ?? result.chats.length,
     };
     return [section, { ids: result.chats.map((chat) => chat.id), page }];
   }));
-  return { chats: [...rows.values()], sections, next_read_state_expiry: null, text_search: true, ...extra };
+  return { chats: [...rows.values()], sections, next_read_state_expiry: null, ...extra };
 }
 
-function groupedListPayload(path: string, sectionResult: (section: string, page: number) => SectionResult, extra: Record<string, unknown> = {}) {
-  return groupedSearchPayload(path, sectionResult, extra, false);
+type SearchHit = {
+  message_id: number; chat_id: number; role: 'user' | 'assistant' | null; created_at: string | null; active: boolean; snippet: string | null;
+};
+type SearchPayload = {
+  chats: ChatSummary[]; notes: number[]; hits: SearchHit[]; next_cursor: string | null; text_search: boolean; terms: string[];
+  next_read_state_expiry: string | null;
+};
+
+// Mirrors the search contract: note matches, message hits newest first and a cursor for the next page.
+function searchResults(partial: Partial<SearchPayload> & { chats?: ChatSummary[] } = {}): SearchPayload {
+  return { chats: [], notes: [], hits: [], next_cursor: null, text_search: true, terms: ['needle'], next_read_state_expiry: null, ...partial };
+}
+
+function hit(messageId: number, chatId: number, extra: Partial<SearchHit> = {}): SearchHit {
+  return { message_id: messageId, chat_id: chatId, role: 'user', created_at: '2026-09-06T00:00:00Z', active: true, snippet: `needle ${messageId}`, ...extra };
 }
 
 function groupedListRows(chats: ChatSummary[], extra: Record<string, unknown> = {}) {
@@ -64,11 +70,8 @@ function groupedListRows(chats: ChatSummary[], extra: Record<string, unknown> = 
   }) }), extra);
 }
 
-const searchPayload = (note: string, extra: Record<string, unknown> = {}) => groupedSearchPayload(
-  `/api/bff/chat-list/search?sections=${SECTIONS.join(',')}`,
-  (section) => ({ chats: section === 'other' ? [listPayload(note).chats[0] as ChatSummary] : [] }),
-  extra
-);
+const searchPayload = (note: string, extra: Partial<SearchPayload> = {}) =>
+  searchResults({ chats: [listPayload(note).chats[0] as ChatSummary], notes: [1], ...extra });
 
 const isSearchPath = (path: string) => path.startsWith('/api/bff/chat-list/search?');
 
@@ -321,34 +324,28 @@ describe('chat list refresh after returning from the background', () => {
     };
   }
 
-  function searchSectionPage(section: string, page: number, cursor: string | null) {
-    // Select rows by the opaque cursor, not the displayed page number.
-    const rowPage = cursor == null ? 1 : [2, 3].find((number) => cursor === searchCursor(section, number))!;
-    const result = sectionPage(section, rowPage);
-    return { ...result, page: { ...result.page, number: page } };
-  }
-
-  function sectionButton(section: string, label: 'Next' | 'Previous') {
-    return wrapper.get(`[data-section="${section}"]`).findAll('.pagination button').find((button) => button.text() === label)!;
-  }
-
-  async function turnSearchPage(section: string, label: 'Next' | 'Previous' = 'Next') {
-    await sectionButton(section, label).trigger('click');
-    await flushPromises();
-  }
-
   function sectionPayload(path: string) {
     return groupedListPayload(path, sectionPage);
   }
 
-  it.each(['/chats', '/chats?q=needle'])('hides empty sections in %s', async (path) => {
+  it('hides empty sections', async () => {
     const rows = (section: string | null) => ({ chats: section === 'working' ? [sectionChat(1, 'working')] : [] });
-    apiMocks.get.mockImplementation(async (url: string) => isSearchPath(url)
-      ? groupedSearchPayload(url, rows)
-      : groupedListPayload(url, rows));
-    await mountList(path);
+    apiMocks.get.mockImplementation(async (url: string) => groupedListPayload(url, rows));
+    await mountList('/chats');
     expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['working']);
     expect(wrapper.text()).not.toContain('No chats in this section.');
+  });
+
+  it.each([
+    ['notes', searchResults({ chats: [sectionChat(1, 'other')], notes: [1] })],
+    ['messages', searchResults({ chats: [sectionChat(1, 'other')], hits: [hit(10, 1)] })],
+  ])('shows only the %s search section when the other one is empty', async (section, payload) => {
+    apiMocks.get.mockImplementation(async (url: string) => isSearchPath(url) ? payload : listPayload());
+    await mountList('/chats?q=needle');
+    expect(wrapper.findAll('[data-section]').map((element) => element.attributes('data-section'))).toEqual([section]);
+    expect(wrapper.findAll('.chat-row')).toHaveLength(1);
+    expect(wrapper.find('.pagination').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('No matches found.');
   });
 
   it('keeps the overall empty state without empty section headings', async () => {
@@ -389,65 +386,6 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.get('[data-section="other"]').text()).toContain('Page 1 of 3');
   });
 
-  it('uses independent cursor histories for next and previous without an exact search total', async () => {
-    apiMocks.get.mockImplementation(async (path: string) =>
-      isSearchPath(path) ? groupedSearchPayload(path, searchSectionPage) : sectionPayload(path));
-    await mountList('/chats?q=needle');
-    expect(searchRequests()).toHaveLength(1);
-    expect(wrapper.findAll('.chat-row')).toHaveLength(4);
-    expect(wrapper.findAll('.chat-section__heading .muted')).toHaveLength(0);
-    expect(wrapper.findAll('.pagination .muted').map((label) => label.text())).toEqual(SECTIONS.map(() => 'Page 1'));
-    expect(SECTIONS.map((section) => searchParams(searchRequests()[0]).has(`after_${section}`))).toEqual(SECTIONS.map(() => false));
-
-    await turnSearchPage('working');
-    expect(searchRequests()).toHaveLength(2);
-    expect(SECTIONS.map((section) => searchParams(searchRequests()[1]).get(`page_${section}`))).toEqual(['1', '1', '2', '1']);
-    expect(SECTIONS.map((section) => searchParams(searchRequests()[1]).get(`after_${section}`))).toEqual([null, null, searchCursor('working', 2), null]);
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 2');
-    expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
-    expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 101');
-
-    await turnSearchPage('unread');
-    await turnSearchPage('working');
-    expect(sectionButton('working', 'Next').attributes('disabled')).toBeDefined();
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 3');
-    await turnSearchPage('working', 'Previous');
-    let params = searchParams(searchRequests().at(-1)!);
-    expect(SECTIONS.map((section) => params.get(`page_${section}`))).toEqual(['1', '2', '2', '1']);
-    expect(SECTIONS.map((section) => params.get(`after_${section}`))).toEqual([null, searchCursor('unread', 2), searchCursor('working', 2), null]);
-    expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 102');
-
-    await turnSearchPage('working', 'Previous');
-    params = searchParams(searchRequests().at(-1)!);
-    expect(params.get('page_working')).toBe('1');
-    expect(params.has('after_working')).toBe(false);
-    expect(params.get('after_unread')).toBe(searchCursor('unread', 2));
-    expect(sectionButton('working', 'Previous').attributes('disabled')).toBeDefined();
-    for (const call of searchRequests()) expect(searchParams(call).get('q')).toBe('needle');
-    expect(searchRequests()).toHaveLength(6);
-  });
-
-  it('resets all expired search cursors and retries once from the first pages', async () => {
-    apiMocks.get.mockImplementation(async (path: string) =>
-      isSearchPath(path) ? groupedSearchPayload(path, searchSectionPage) : sectionPayload(path));
-    await mountList('/chats?q=needle');
-    await turnSearchPage('working');
-    await turnSearchPage('unread');
-    const invalid = new HttpError({ status: 422, statusText: 'Unprocessable Entity', bodyText: '', bodyJson: { code: 'invalid_cursor' } });
-    apiMocks.get.mockRejectedValueOnce(invalid);
-    await turnSearchPage('working', 'Previous');
-    expect(searchRequests()).toHaveLength(5);
-    const retry = searchParams(searchRequests().at(-1)!);
-    for (const section of SECTIONS) {
-      expect(retry.get(`page_${section}`)).toBe('1');
-      expect(retry.has(`after_${section}`)).toBe(false);
-      expect(wrapper.get(`[data-section="${section}"] .pagination .muted`).text()).toBe('Page 1');
-    }
-    expect(wrapper.text()).not.toContain('Failed to search chats.');
-    const banner = searchRequests()[3][1].showErrorBanner as (error: unknown) => boolean;
-    expect(banner(invalid)).toBe(false);
-  });
-
   it('does not loop if the first-page retry also reports an invalid cursor', async () => {
     const invalid = new HttpError({ status: 422, statusText: 'Unprocessable Entity', bodyText: '', bodyJson: { code: 'invalid_cursor' } });
     apiMocks.get.mockImplementation(async (path: string) => {
@@ -458,204 +396,6 @@ describe('chat list refresh after returning from the background', () => {
     await mountList('/chats?q=needle');
     expect(searchRequests()).toHaveLength(2);
     expect(wrapper.text()).toContain('Failed to search chats.');
-  });
-
-  it('keeps an emptied current search page navigable after deletion without clamping or refetching page one', async () => {
-    let deleted = false;
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (!isSearchPath(path)) return sectionPayload(path);
-      return groupedSearchPayload(path, (section, page, cursor) => section === 'working' && page === 2 && deleted
-        ? { chats: [], page: { number: 2, per_page: 20, total: null, has_next: false, next_cursor: null } }
-        : searchSectionPage(section, page, cursor));
-    });
-    await mountList('/chats?q=needle');
-    await turnSearchPage('working');
-    deleted = true;
-    publishChatChange({ operation: 'delete', id: 202 });
-    await flushPromises();
-
-    expect(searchRequests()).toHaveLength(3);
-    expect(searchParams(searchRequests()[2]).get('page_working')).toBe('2');
-    expect(searchParams(searchRequests()[2]).get('after_working')).toBe(searchCursor('working', 2));
-    expect(wrapper.get('[data-section="working"]').findAll('.chat-row')).toHaveLength(0);
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 2');
-    expect(sectionButton('working', 'Previous').attributes('disabled')).toBeUndefined();
-    expect(sectionButton('working', 'Next').attributes('disabled')).toBeDefined();
-
-    await turnSearchPage('working', 'Previous');
-    expect(searchRequests()).toHaveLength(4);
-    expect(searchParams(searchRequests()[3]).has('after_working')).toBe(false);
-    expect(wrapper.get('[data-section="working"]').text()).toContain('working 201');
-  });
-
-  it.each(['term', 'bot', 'per_page'])('resets all search cursors and rejects pending results when changing %s', async (filter) => {
-    apiMocks.get.mockImplementation(async (path: string) =>
-      isSearchPath(path) ? groupedSearchPayload(path, searchSectionPage) : sectionPayload(path));
-    await mountList('/chats?q=needle');
-    await turnSearchPage('working');
-    await turnSearchPage('unread');
-    const stale = deferred<ReturnType<typeof groupedSearchPayload>>();
-    apiMocks.get.mockImplementationOnce(() => stale.promise);
-    await turnSearchPage('working');
-    const staleCall = searchRequests().at(-1)!;
-
-    if (filter === 'term') {
-      await wrapper.get('input[type="search"]').setValue('different');
-    } else if (filter === 'bot') {
-      wrapper.findComponent({ name: 'ChatBotFiltersPanel' }).vm.$emit('select-filter', 'none');
-      await nextTick();
-    } else {
-      // The page size is currently internal; exercise the same reactive input as the request builder.
-      (wrapper.findComponent(ChatsIndexView).vm.$ as unknown as { setupState: { perPage: number } }).setupState.perPage = 10;
-      await nextTick();
-    }
-    expect((staleCall[1].signal as AbortSignal).aborted).toBe(true);
-    stale.resolve(groupedSearchPayload(String(staleCall[0]), (section, page, cursor) => {
-      const result = searchSectionPage(section, page, cursor);
-      result.chats.forEach((chat) => { chat.note = 'Obsolete search'; });
-      return result;
-    }));
-    await flushPromises();
-    expect(wrapper.text()).not.toContain('Obsolete search');
-    if (filter === 'term') {
-      expect(searchRequests()).toHaveLength(4);
-      await vi.advanceTimersByTimeAsync(600);
-      await flushPromises();
-    }
-
-    expect(searchRequests()).toHaveLength(5);
-    const params = searchParams(searchRequests().at(-1)!);
-    expect(SECTIONS.map((section) => params.get(`page_${section}`))).toEqual(SECTIONS.map(() => '1'));
-    expect(SECTIONS.map((section) => params.has(`after_${section}`))).toEqual(SECTIONS.map(() => false));
-    expect(params.get('q')).toBe(filter === 'term' ? 'different' : 'needle');
-    expect(params.get('bot')).toBe(filter === 'bot' ? 'none' : null);
-    expect(params.get('per_page')).toBe(filter === 'per_page' ? '10' : '20');
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 1');
-    expect(sectionButton('working', 'Previous').attributes('disabled')).toBeDefined();
-  });
-
-  it.each(['pull', 'idle'])('repeats the current search cursor rather than the next cursor on %s refresh', async (refresh) => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
-      return isSearchPath(path)
-        ? groupedSearchPayload(path, (section, page, cursor) => section === 'other' ? searchSectionPage(section, page, cursor) : { chats: [] })
-        : listPayload();
-    });
-    await mountList('/chats?q=needle');
-    await turnSearchPage('other');
-    if (refresh === 'pull') {
-      await pull();
-      // Let the gesture's click suppression expire before using the pager again.
-      await vi.advanceTimersByTimeAsync(500);
-    } else {
-      await vi.advanceTimersByTimeAsync(30_000);
-      await flushPromises();
-    }
-    expect(searchRequests()).toHaveLength(3);
-    const params = searchParams(searchRequests()[2]);
-    expect(params.get('page_other')).toBe('2');
-    expect(params.get('after_other')).toBe(searchCursor('other', 2));
-    expect(wrapper.get('[data-section="other"] .pagination .muted').text()).toBe('Page 2');
-    await turnSearchPage('other');
-    expect(searchParams(searchRequests()[3]).get('after_other')).toBe(searchCursor('other', 3));
-  });
-
-  it.each(['Next', 'Previous'] as const)('retains the current search page and cursor history when %s fails so it can be retried', async (direction) => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    let fail = false;
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (!isSearchPath(path)) return sectionPayload(path);
-      if (fail) throw new Error('Offline');
-      return groupedSearchPayload(path, searchSectionPage);
-    });
-    await mountList('/chats?q=needle');
-    await turnSearchPage('working');
-    fail = true;
-    await turnSearchPage('working', direction);
-    expect(wrapper.text()).toContain('Failed to search chats.');
-    expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 2');
-    expect(sectionButton('working', direction).attributes('disabled')).toBeUndefined();
-
-    fail = false;
-    await turnSearchPage('working', direction);
-    const page = direction === 'Next' ? 3 : 1;
-    expect(searchParams(searchRequests()[3]).get('after_working')).toBe(page === 1 ? null : searchCursor('working', page));
-    expect(searchRequests()[3][0]).toBe(searchRequests()[2][0]);
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe(`Page ${page}`);
-    expect(wrapper.text()).not.toContain('Failed to search chats.');
-  });
-
-  it('lets a refresh complete a pending cursor transition without applying its stale response', async () => {
-    apiMocks.get.mockImplementation(async (path: string) =>
-      isSearchPath(path) ? groupedSearchPayload(path, searchSectionPage) : sectionPayload(path));
-    await mountList('/chats?q=needle');
-    const stale = deferred<ReturnType<typeof groupedSearchPayload>>();
-    apiMocks.get.mockImplementationOnce(() => stale.promise);
-    await turnSearchPage('working');
-    const pending = searchRequests()[1];
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 1');
-    await pull();
-    expect((pending[1].signal as AbortSignal).aborted).toBe(true);
-    expect(searchRequests()[2][0]).toBe(pending[0]);
-    expect(wrapper.get('[data-section="working"] .pagination .muted').text()).toBe('Page 2');
-    stale.resolve(groupedSearchPayload(String(pending[0]), () => ({ chats: [] })));
-    await flushPromises();
-    expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
-    expect(sectionButton('working', 'Next').attributes('disabled')).toBeUndefined();
-  });
-
-  it('ignores an aborted idle search response and retains the current cursor on wake', async () => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
-      return isSearchPath(path)
-        ? groupedSearchPayload(path, (section, page, cursor) => section === 'other' ? searchSectionPage(section, page, cursor) : { chats: [] })
-        : listPayload();
-    });
-    await mountList('/chats?q=needle');
-    await turnSearchPage('other');
-    const stale = deferred<ReturnType<typeof groupedSearchPayload>>();
-    const respond = apiMocks.get.getMockImplementation()!;
-    apiMocks.get.mockImplementation((path: string) => isSearchPath(path) ? stale.promise : respond(path));
-    await vi.advanceTimersByTimeAsync(30_000);
-    const pending = searchRequests()[2];
-    visibility = 'hidden';
-    document.dispatchEvent(new Event('visibilitychange'));
-    expect((pending[1].signal as AbortSignal).aborted).toBe(true);
-    stale.resolve(groupedSearchPayload(String(pending[0]), () => ({ chats: [] })));
-    await flushPromises();
-    expect(wrapper.get('[data-section="other"]').text()).toContain('other 302');
-    expect(sectionButton('other', 'Next').attributes('disabled')).toBeUndefined();
-    apiMocks.get.mockImplementation(respond);
-    visibility = 'visible';
-    document.dispatchEvent(new Event('visibilitychange'));
-    await flushPromises();
-    expect(searchRequests()[3][0]).toBe(pending[0]);
-  });
-
-  it('searches every section with a single grouped request', async () => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (!isSearchPath(path)) return sectionPayload(path);
-      return groupedSearchPayload(path, (section, page) => {
-        const result = sectionPage(section, page);
-        result.chats.forEach((chat) => { chat.bot_id = 5; });
-        return result;
-      });
-    });
-    await mountList('/chats?q=needle&bot=5');
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    expect(searchRequests()).toHaveLength(1);
-    const params = searchParams(searchRequests()[0]);
-    expect(params.get('q')).toBe('needle');
-    expect(params.get('sections')).toBe('drafts,unread,working,other');
-    expect(params.get('per_page')).toBe('20');
-    expect(params.get('bot')).toBe('5');
-    expect(params.has('section')).toBe(false);
-    expect(params.has('page')).toBe(false);
-    expect(SECTIONS.map((section) => params.get(`page_${section}`))).toEqual(['1', '1', '1', '1']);
-    expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section')))
-      .toEqual(['drafts', 'unread', 'working', 'other']);
   });
 
   it('starts searching from three characters after the debounce', async () => {
@@ -685,7 +425,7 @@ describe('chat list refresh after returning from the background', () => {
       isSearchPath(path) ? searchPayload('Meta match', { text_search: textSearch }) : listPayload());
     await mountList('/chats?q=ab%20cd');
 
-    expect(wrapper.get('.chat-search-hint').text()).toContain('enter at least 3 letters or digits in a row');
+    expect(wrapper.get('.chat-search-hint').text()).toContain('at least 3 letters or digits in a row');
     expect(wrapper.get('.chat-row').text()).toContain('Meta match');
 
     textSearch = true;
@@ -718,7 +458,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(showErrorBanner(new HttpError({ status: 500, statusText: 'Error', bodyText: '', bodyJson: null }))).toBe(true);
   });
 
-  it('refreshes search results with one silent grouped request from the idle probe', async () => {
+  it('refreshes search results with one silent request from the idle probe', async () => {
     apiMocks.get.mockImplementation(async (path: string) => {
       if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
       return isSearchPath(path) ? searchPayload('Old search') : listPayload();
@@ -735,11 +475,195 @@ describe('chat list refresh after returning from the background', () => {
 
     expect(searchRequests()).toHaveLength(2);
     expect(searchRequests()[1][1]).toMatchObject({ showErrorBanner: false });
+    expect(searchParams(searchRequests()[1]).has('after')).toBe(false);
+    expect(searchParams(searchRequests()[1]).get('limit')).toBe('30');
     expect(wrapper.text()).not.toContain('Searching...');
     expect(wrapper.get('.chat-row').text()).toContain('Fresh search');
   });
 
-  it.each(['/chats', '/chats?q=needle'])('keeps drafts first without mixing independent inbox pages in %s', async (route) => {
+  function searchChat(id: number, note: string) {
+    return sectionChat(id, 'other', { note });
+  }
+
+  const hitLinks = () => wrapper.findAll('.chat-search-hit__link').map((link) => link.attributes('href'));
+
+  it('sends the query, exact flag, bot and page size in one request without section parameters', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
+      ? searchResults({ chats: [searchChat(1, 'Alpha')], hits: [hit(10, 1)] })
+      : listPayload());
+    await mountList('/chats?q=needle&bot=5&exact=1');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(searchRequests()).toHaveLength(1);
+    const params = searchParams(searchRequests()[0]);
+    expect(params.get('q')).toBe('needle');
+    expect(params.get('exact')).toBe('1');
+    expect(params.get('bot')).toBe('5');
+    expect(params.get('limit')).toBe('30');
+    for (const key of ['after', 'sections', 'section', 'page', 'per_page', ...SECTIONS.flatMap((section) => [`page_${section}`, `after_${section}`])]) {
+      expect(params.has(key)).toBe(false);
+    }
+    expect(wrapper.get('.chat-search__exact').attributes('aria-pressed')).toBe('true');
+  });
+
+  it('groups adjacent hits under one chat header, highlights terms and links to the focused message', async () => {
+    const alpha = searchChat(1, 'Alpha');
+    const beta = searchChat(2, 'Beta');
+    const gamma = searchChat(3, 'Gamma note');
+    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
+      ? searchResults({
+        chats: [gamma, alpha, beta],
+        notes: [3],
+        terms: ['needle', 'fine'],
+        hits: [
+          hit(10, 1, { snippet: 'A fine NEEDLE in Alpha' }),
+          hit(9, 1, { role: 'assistant', active: false, snippet: 'needle again' }),
+          hit(8, 2, { snippet: 'needle in Beta' }),
+          hit(7, 1, { snippet: 'older needle in Alpha' }),
+        ],
+      })
+      : listPayload());
+    await mountList('/chats?q=needle%20fine');
+
+    expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['notes', 'messages']);
+    expect(wrapper.get('[data-section="notes"]').findAll('.chat-row').map((row) => row.text())).toEqual([expect.stringContaining('Gamma note')]);
+    expect(wrapper.get('[data-section="notes"]').findAll('.chat-search-hit')).toHaveLength(0);
+
+    const groups = wrapper.get('[data-section="messages"]').findAll('.chat-list-entry');
+    expect(groups.map((group) => group.get('.chat-row').text())).toEqual(['Alpha', 'Beta', 'Alpha'].map((note) => expect.stringContaining(note)));
+    expect(groups.map((group) => group.findAll('.chat-search-hit').length)).toEqual([2, 1, 1]);
+
+    const first = groups[0].findAll('.chat-search-hit');
+    expect(first[0].findAll('mark').map((mark) => mark.text())).toEqual(['fine', 'NEEDLE']);
+    expect(first[0].text()).toContain('You');
+    expect(first[0].find('.badge').exists()).toBe(false);
+    expect(first[1].text()).toContain('Assistant');
+    expect(first[1].get('.badge').text()).toBe('Inactive branch');
+
+    expect(hitLinks()).toEqual([
+      '/chats/1?focusMessage=10',
+      '/chats/1?focusMessage=9&focusInactive=1',
+      '/chats/2?focusMessage=8',
+      '/chats/1?focusMessage=7',
+    ]);
+    expect(wrapper.find('.chat-search-more').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('No matches found.');
+  });
+
+  it('loads more hits with the cursor and continues the last group', async () => {
+    const alpha = searchChat(1, 'Alpha');
+    const beta = searchChat(2, 'Beta');
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (!isSearchPath(path)) return listPayload();
+      const after = searchParams([path]).get('after');
+      if (after === 'cursor-1') return searchResults({ chats: [alpha, beta], hits: [hit(8, 1), hit(7, 2)], next_cursor: null });
+      return searchResults({ chats: [alpha], hits: [hit(10, 1), hit(9, 1)], next_cursor: 'cursor-1' });
+    });
+    await mountList('/chats?q=needle');
+    expect(wrapper.get('.chat-search-more button').text()).toBe('Show more');
+
+    await wrapper.get('.chat-search-more button').trigger('click');
+    await flushPromises();
+
+    expect(searchRequests()).toHaveLength(2);
+    expect(searchParams(searchRequests()[1]).get('after')).toBe('cursor-1');
+    expect(searchParams(searchRequests()[1]).get('q')).toBe('needle');
+    const groups = wrapper.get('[data-section="messages"]').findAll('.chat-list-entry');
+    expect(groups.map((group) => group.get('.chat-row').text())).toEqual(['Alpha', 'Beta'].map((note) => expect.stringContaining(note)));
+    expect(groups.map((group) => group.findAll('.chat-search-hit').length)).toEqual([3, 1]);
+    expect(wrapper.find('.chat-search-more').exists()).toBe(false);
+
+    // A silent refresh re-reads every loaded hit at once.
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
+      return isSearchPath(path) ? searchResults({ chats: [alpha], hits: [hit(10, 1)] }) : listPayload();
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushPromises();
+    expect(searchRequests()).toHaveLength(3);
+    expect(searchParams(searchRequests()[2]).has('after')).toBe(false);
+    expect(searchParams(searchRequests()[2]).get('limit')).toBe('30');
+    expect(wrapper.findAll('.chat-search-hit')).toHaveLength(1);
+  });
+
+  it('restarts from the newest hits when a show-more cursor has expired', async () => {
+    const invalid = new HttpError({ status: 422, statusText: 'Unprocessable Entity', bodyText: '', bodyJson: { code: 'invalid_cursor' } });
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (!isSearchPath(path)) return listPayload();
+      if (searchParams([path]).has('after')) throw invalid;
+      return searchResults({ chats: [searchChat(1, 'Alpha')], hits: [hit(10, 1)], next_cursor: 'stale' });
+    });
+    await mountList('/chats?q=needle');
+    await wrapper.get('.chat-search-more button').trigger('click');
+    await flushPromises();
+
+    expect(searchRequests()).toHaveLength(3);
+    expect(searchParams(searchRequests()[1]).get('after')).toBe('stale');
+    expect(searchParams(searchRequests()[2]).has('after')).toBe(false);
+    expect(wrapper.text()).not.toContain('Failed to search chats.');
+    expect(wrapper.findAll('.chat-search-hit')).toHaveLength(1);
+    const banner = searchRequests()[1][1].showErrorBanner as (error: unknown) => boolean;
+    expect(banner(invalid)).toBe(false);
+  });
+
+  it('keeps loaded hits and shows the error inline when show more fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (!isSearchPath(path)) return listPayload();
+      if (searchParams([path]).has('after')) throw new Error('Offline');
+      return searchResults({ chats: [searchChat(1, 'Alpha')], hits: [hit(10, 1)], next_cursor: 'cursor-1' });
+    });
+    await mountList('/chats?q=needle');
+    await wrapper.get('.chat-search-more button').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Failed to search chats.');
+    expect(wrapper.findAll('.chat-search-hit')).toHaveLength(1);
+    expect(wrapper.get('.chat-search-more button').attributes('disabled')).toBeUndefined();
+  });
+
+  it.each(['term', 'bot', 'exact'])('restarts without a cursor and rejects pending results when changing %s', async (filter) => {
+    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
+      ? searchResults({ chats: [searchChat(1, 'Alpha')], hits: [hit(10, 1)], next_cursor: 'cursor-1' })
+      : listPayload());
+    await mountList('/chats?q=needle');
+    const stale = deferred<SearchPayload>();
+    apiMocks.get.mockImplementationOnce(() => stale.promise);
+    await wrapper.get('.chat-search-more button').trigger('click');
+    const staleCall = searchRequests().at(-1)!;
+    expect(searchParams(staleCall).get('after')).toBe('cursor-1');
+
+    if (filter === 'term') {
+      await wrapper.get('input[type="search"]').setValue('different');
+    } else if (filter === 'bot') {
+      wrapper.findComponent({ name: 'ChatBotFiltersPanel' }).vm.$emit('select-filter', 'none');
+      await nextTick();
+    } else {
+      await wrapper.get('.chat-search__exact').trigger('click');
+    }
+    expect((staleCall[1].signal as AbortSignal).aborted).toBe(true);
+    stale.resolve(searchResults({ chats: [searchChat(9, 'Obsolete search')], hits: [hit(1, 9)] }));
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('Obsolete search');
+    if (filter === 'term') {
+      expect(searchRequests()).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(600);
+      await flushPromises();
+    }
+
+    expect(searchRequests()).toHaveLength(3);
+    const params = searchParams(searchRequests().at(-1)!);
+    expect(params.has('after')).toBe(false);
+    expect(params.get('q')).toBe(filter === 'term' ? 'different' : 'needle');
+    expect(params.get('bot')).toBe(filter === 'bot' ? 'none' : null);
+    expect(params.get('exact')).toBe(filter === 'exact' ? '1' : null);
+    if (filter === 'exact') {
+      expect(window.location.search).toContain('exact=1');
+      expect(wrapper.get('.chat-search__exact').attributes('aria-pressed')).toBe('true');
+    }
+  });
+
+  it('keeps drafts first without mixing independent inbox pages', async () => {
     const shared = sectionChat(12, 'unread', { has_draft: true, draft_updated_at: '2026-09-07T00:00:00Z' });
     const draftOnly = sectionChat(13, 'other', { has_draft: true, draft_updated_at: '2026-09-08T00:00:00Z' });
     const ordinary = sectionChat(14, 'other');
@@ -747,10 +671,8 @@ describe('chat list refresh after returning from the background', () => {
       const rows = section === 'drafts' ? [draftOnly, shared] : section === 'unread' ? [shared] : section === 'other' ? [ordinary] : [];
       return { chats: rows, page: { number: 1, per_page: 20, total: rows.length, has_next: false } };
     };
-    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
-      ? groupedSearchPayload(path, sectionRows)
-      : groupedListPayload(path, sectionRows));
-    await mountList(route);
+    apiMocks.get.mockImplementation(async (path: string) => groupedListPayload(path, sectionRows));
+    await mountList('/chats');
     expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['drafts', 'unread', 'other']);
     const drafts = wrapper.get('[data-section="drafts"]');
     expect(drafts.findAll('.chat-row').map((row) => row.text())).toEqual([expect.stringContaining('other 13'), expect.stringContaining('unread 12')]);
@@ -759,7 +681,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.get('[data-section="other"]').text()).not.toContain('other 13');
   });
 
-  it.each(['/chats', '/chats?q=needle'])('preserves section order despite draft overlap and regroups the newest read state in %s', async (route) => {
+  it('preserves section order despite draft overlap and regroups the newest read state', async () => {
     const shared = sectionChat(12, 'unread', { has_draft: true });
     const first = sectionChat(10, 'unread');
     const draftOnly = sectionChat(13, 'other', { has_draft: true });
@@ -767,11 +689,11 @@ describe('chat list refresh after returning from the background', () => {
     const stale = sectionChat(15, 'unread', { has_draft: true });
     const moved = sectionChat(15, 'other', { has_draft: true });
     moved.read_state.state_version = 3;
-    apiMocks.get.mockImplementation(async (path: string) => (isSearchPath(path) ? groupedSearchPayload : groupedListPayload)(path,
+    apiMocks.get.mockImplementation(async (path: string) => groupedListPayload(path,
       (section) => ({ chats: {
         drafts: [shared, moved, draftOnly], unread: [first, shared, stale], other: [ordinary],
       }[section] || [] }), { chats: [shared, stale, draftOnly, first, ordinary, moved] }));
-    await mountList(route);
+    await mountList('/chats');
     const notes = (section: string) => wrapper.get(`[data-section="${section}"]`).findAll('.chat-row').map((row) => row.text());
     expect(notes('drafts')).toEqual(['unread 12', 'other 15', 'other 13'].map((note) => expect.stringContaining(note)));
     expect(notes('unread')).toEqual(['unread 10', 'unread 12'].map((note) => expect.stringContaining(note)));

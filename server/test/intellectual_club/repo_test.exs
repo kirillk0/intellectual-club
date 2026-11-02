@@ -142,18 +142,15 @@ defmodule IntellectualClub.RepoTest do
 
   describe "with_statement_timeout/2" do
     test "returns the result and restores the enclosing transaction's settings" do
-      before = Repo.query!("SELECT current_setting('statement_timeout'), current_setting('jit')")
+      settings =
+        "SELECT current_setting('statement_timeout'), current_setting('jit'), current_setting('plan_cache_mode')"
 
-      assert {:ok, ["5s", "off"]} =
-               Repo.with_statement_timeout(5_000, fn ->
-                 Repo.query!(
-                   "SELECT current_setting('statement_timeout'), current_setting('jit')"
-                 ).rows
-                 |> hd()
-               end)
+      before = Repo.query!(settings)
 
-      assert Repo.query!("SELECT current_setting('statement_timeout'), current_setting('jit')").rows ==
-               before.rows
+      assert {:ok, ["5s", "off", "force_custom_plan"]} =
+               Repo.with_statement_timeout(5_000, fn -> Repo.query!(settings).rows |> hd() end)
+
+      assert Repo.query!(settings).rows == before.rows
     end
 
     test "cancels a statement that runs past the timeout and keeps the connection usable" do

@@ -22,9 +22,6 @@
                 {{ previewText }}
               </div>
             </div>
-            <div v-if="snippet" class="chat-search-snippet">
-              {{ snippet }}
-            </div>
           </div>
         </a>
       </RouterLink>
@@ -74,10 +71,8 @@ interface Props {
   secondaryMeta?: string | null;
   previewText?: string | null;
   previewRole?: 'user' | 'assistant' | null;
-  snippet?: string | null;
   generationState?: GenerationState | null;
   readState?: ChatReadState;
-  rowRole?: 'user' | 'assistant' | null;
   actions?: boolean;
   actionsOpen?: boolean;
 }
@@ -88,9 +83,7 @@ const props = withDefaults(defineProps<Props>(), {
   secondaryMeta: null,
   previewText: null,
   previewRole: null,
-  snippet: null,
   generationState: null,
-  rowRole: null,
   actions: false,
   actionsOpen: false,
 });
@@ -153,8 +146,6 @@ const snoozeLabel = computed(() => t('Snoozed until {date}', { date: props.readS
 
 const rowToneClass = computed(() => ({
   'chat-list-row--unread': Boolean(props.readState?.is_unread),
-  'chat-list-row--user': props.rowRole === 'user',
-  'chat-list-row--assistant': props.rowRole === 'assistant',
 }));
 
 const previewToneClass = computed(() => ({
@@ -268,13 +259,6 @@ const previewToneClass = computed(() => ({
   }
 }
 
-.chat-search-snippet {
-  margin-top: 4px;
-  color: var(--color-text);
-  font-size: 0.9rem;
-  line-height: 1.35;
-}
-
 .chat-first-preview {
   margin-top: 6px;
 }
@@ -301,15 +285,5 @@ const previewToneClass = computed(() => ({
 
 .chat-list-row__primary:hover .chat-first-preview-bubble {
   text-decoration: none;
-}
-
-.chat-list-row--user {
-  background: var(--color-chat-user-bg);
-  border-color: var(--color-chat-user-border);
-}
-
-.chat-list-row--assistant {
-  background: var(--color-chat-assistant-bg);
-  border-color: var(--color-chat-assistant-border);
 }
 </style>

@@ -13,9 +13,13 @@ Ash action: `IntellectualClub.Chat.ChatMessage :search` (read).
 
 Arguments:
 
-- `q`: required non-empty, case-insensitive literal substring.
-  Surrounding whitespace is trimmed. `%` and `_` are literal text,
-  not SQL wildcards. This is not semantic/vector or token-based full-text search.
+- `q`: required non-empty query. Whitespace separates terms (at most 16); a
+  message matches when one of its stored text contents contains **every** term
+  as a case-insensitive literal substring, in any order. Surrounding whitespace
+  is trimmed. `%` and `_` are literal text, not SQL wildcards. This is not
+  semantic/vector or token-based full-text search.
+- `exact`: optional boolean. When true, the whole trimmed query is a single
+  literal substring, spaces included.
 - `chat_id`, `bot_id`: optional integer filters.
 - `role`: optional `user` or `assistant`.
 - Standard JSON:API `sort`, `filter`, `fields`, and `page` parameters work.
@@ -55,9 +59,8 @@ The calculations are opt-in for direct Ash reads so candidate-only consumers do
 not load every candidate's full text. Apply an explicit query sort before
 `for_read` if overriding the default. In-chat BFF search opts out of pagination
 with `page: false` and applies its own limit. Chat-list search uses the internal
-Ash `Chat :search_list` and `ChatMessage :list_search_hit` actions for grouped
-pages; the flat compatibility mode retains its bounded candidate selection and
-ranking.
+owner-only Ash `ChatMessage :list_search` action with the same arguments plus
+an explicit query plan (`strategy`).
 
 ## Read an active conversation
 
@@ -110,10 +113,11 @@ than the returned page.
 
 ## Shared implementation
 
-`MessageText` owns text projection, substring matching and snippets. The Ash
-`:search` action applies the matching predicate before database pagination. BFF
-search reuses the same predicate and keeps only its presentation-specific
-behavior (meta matches, active/inactive grouping and one preferred hit per chat).
+`MessageText` owns query tokenization, text projection, substring matching and
+snippets. The Ash `:search` action applies the matching predicate before
+database pagination. BFF search reuses the same tokenization and predicate and
+keeps only its presentation-specific behavior (note matches, active-branch
+flags, snippets).
 
 Matching uses case-insensitive `ILIKE` against raw
 `chat_message_contents.content_text`. The existing partial trigram GIN index is
@@ -171,114 +175,95 @@ for already-open clients and other existing callers.
 
 ## Chat list search
 
-### Grouped cursor pages
+`GET /api/bff/chat-list/search?q=...&exact=1&bot=...&after=...&limit=30`
 
-`GET /api/bff/chat-list/search?q=...&sections=drafts,unread,working,other`
-returns all requested sections in one response. `sections` is a comma-separated
-subset of `drafts`, `unread`, `working`, and `other`. An empty list or unknown
-section names return `422`. Drafts may overlap another section. The response
-contains unique `chats`, ordered per-section `ids`, a `page` for each section,
-`text_search`, and `next_read_state_expiry`.
+Chat-list search returns message hits, newest first, plus chats whose note
+matches. Bot names are not searched; the bot filter panel covers that. There
+are no list sections in search mode and no per-chat grouping or ranking on the
+server: clients group neighbouring hits of one chat themselves.
 
 Parameters:
 
-- `q`: case-insensitive literal substring, with surrounding whitespace trimmed.
-  `%`, `_`, and backslashes are literal characters, not SQL pattern syntax.
-  A blank term returns empty sections.
-- `bot`: optional bot id or `none` for chats without a bot.
-- `per_page`: shared section page size, default 20, maximum 100.
-- `page_<section>`: positive page number, default 1, used as a display label.
-  It does **not** select an SQL offset or allow arbitrary page jumps.
-- `after_<section>`: the opaque `next_cursor` from the preceding page of that
-  section. A request with `page_<section> > 1` must include a valid cursor.
+- `q`: the query, tokenized exactly like the Ash `:search` action above. A
+  blank query returns empty results.
+- `exact`: `1`/`true` matches the whole query as one literal substring.
+- `bot`: optional bot id or `none` for chats without a bot; applies to notes
+  and hits.
+- `limit`: hits per page, default 30, maximum 100.
+- `after`: the opaque `next_cursor` of the preceding page. Cursors are signed
+  and scoped to the actor, query, `exact` and `bot`; a cursor from another
+  scope, another actor, or older than a day returns `422` with
+  `code: "invalid_cursor"`. Clients then restart from the first page.
 
-For example, a response for `sections=other&per_page=1` has this shape (the chat
-summary is abbreviated):
+Response:
 
 ```json
 {
-  "chats": [{"id": 123, "match_type": "active_message", "message_id": 456}],
-  "sections": {
-    "other": {
-      "ids": [123],
-      "page": {
-        "number": 1,
-        "per_page": 1,
-        "total": null,
-        "has_next": true,
-        "next_cursor": "<opaque-signed-cursor>"
-      }
-    }
-  },
+  "chats": [{"id": 12, "message_count": 7, "...": "chat summary"}],
+  "notes": [12],
+  "hits": [
+    {"message_id": 456, "chat_id": 12, "role": "assistant",
+     "created_at": "2026-01-01T12:00:00.000000Z", "active": true,
+     "snippet": "...text around the earliest term..."}
+  ],
+  "next_cursor": "opaque or null",
   "text_search": true,
+  "terms": ["release", "notes"],
   "next_read_state_expiry": null
 }
 ```
 
-The next request keeps the same filters and page size, and adds
-`page_other=2&after_other=<opaque-signed-cursor>`. Each section advances with its
-own cursor. `total` is always `null`: grouped search does not compute an exact
-count. `has_next` is determined by requesting `per_page + 1` candidate rows;
-`next_cursor` is `null` when there is no next page, including empty results.
-Only the visible `per_page` rows are enriched and returned.
+- `notes` lists chats (ids, `updated_at` descending, at most 20) whose note
+  contains every term; it is only populated on the first page.
+- `hits` are stored messages of the actor's own non-subagent chats whose text
+  contains every term, ordered by `(created_at DESC, id DESC)`. `active` is
+  membership in the chat's local active branch; inactive-branch hits are
+  included. `snippet` is a window of the matching content around the earliest
+  term occurrence, or `null`; `terms` lets clients highlight matches.
+- `chats` carries one summary per chat referenced by `notes` or `hits`, note
+  chats first, then hit chats in order of their first hit. `message_count` is
+  the active-branch length.
+- `text_search` is `false` when no term has three letters or digits in a row.
+  Such queries cannot be narrowed by the trigram index and match notes only.
+  Shorter terms combined with an indexable term only filter its matches.
 
-Cursors are signed with `Phoenix.Token`, expire after 24 hours, and are scoped
-to the actor, trimmed term, bot filter, section, and page size. Missing cursors
-for later pages, invalid signatures, expired tokens, or scope mismatches return
-`422` with `code: "invalid_cursor"`. Reset the cursor chain when filters or page
-size change. Cursors are not a snapshot: concurrent edits, draft changes, and
-read-state changes may alter section membership between requests.
+### Bounded reads and deadlines
 
-Non-draft search sections use `(updated_at DESC, id DESC)` keyset ordering;
-drafts use `(personal_draft_updated_at DESC, id DESC)`. The id breaks timestamp
-ties. Section ordering is independent of the flat endpoint's match ranking.
+The page is read through the Ash `ChatMessage :list_search` action in two
+explicit plans, both ordered by time and limited to `limit + 1` rows:
 
-### Matching, bounded reads, and deadlines
+1. A **probe** first selects the newest `:chat_search_probe_window` candidate
+   messages after the cursor (default 300; a plain ordered read with the chat
+   filters, no text predicate), then checks their contents with the
+   `:correlated` plan in chunks of `:chat_search_probe_chunk` ids (default 50),
+   newest first, inside one statement budget of `:chat_search_probe_timeout_ms`
+   (default 250 ms; 0 disables the probe). It stops as soon as the page fills.
+   After each chunk the hit rate so far projects whether the whole window could
+   fill the page; when it cannot, probing stops early. Common terms finish here
+   after one or two chunks.
+2. The `:indexed` plan is the ordinary nested `EXISTS` predicate, which
+   PostgreSQL serves through the trigram index (all terms narrow the index
+   scan). It covers only the range the probe did not check: everything older
+   than the last inspected candidate, or the whole range after the cursor when
+   the probe timed out. Rare terms finish here cheaply; the cost of
+   medium-frequency terms is proportional to their total number of matches.
 
-Message text is searched only when the term has three letters or digits in a
-row (`text_search: true`). Shorter terms cannot narrow a trigram search and
-match chat notes and bot names only (`text_search: false`). This threshold is
-specific to chat-list search, not the public Ash message-search API.
-
-Grouped candidate reads use the actor-authorized Ash `Chat :search_list` action
-with section, hierarchy, bot, and cursor filters applied before the page limit.
-For indexable terms, a short correlated `EXISTS` probe tries to stop after the
-page fills, rather than collecting all global text matches first. Its budget is
-`:chat_search_probe_timeout_ms` (default 250 ms); setting it to 0 disables the
-probe. A probe statement timeout falls back to the ordinary indexed query over
-raw text, preserving the same filters and order. Both plans return at most
-`per_page + 1` candidates per section and do not count all matches. The indexed
-fallback can inspect more rows inside PostgreSQL, but the application does not
-load a global list of every matching chat or message.
-
-After page selection, metadata matches use their first active-message preview.
-For each other selected chat, Ash `ChatMessage :list_search_hit` reads at most
-one matching message (`LIMIT 1`), preferring active-branch hits, then user hits,
-then newer `(created_at, id)`. Snippets are loaded only for those selected hits,
-not all matching messages or off-page chats. The response retains `match_type`,
-`message_id`, `message_role`, `message_count`, and `snippet`.
+The probe is chunked in the application because PostgreSQL otherwise hashes
+every global text match for the `EXISTS` form, and the authorization joins
+prevent an index-ordered early exit. Search transactions force custom plans
+(`plan_cache_mode`) so cached prepared statements still see the bound
+patterns. Snippets are loaded for the page's hits only, and the application
+never loads a global list of matching messages or counts all matches.
 
 `SearchDeadline.run` bounds the whole search and response enrichment with
-`:chat_search_timeout_ms` (default 5,000 ms), including all requested sections,
-fallback work, snippets, drafts, and summary construction. Exhaustion cancels
-the worker and returns `503` with `code: "search_timeout"` and a localized
-`error`, not partial sections. The existing
+`:chat_search_timeout_ms` (default 5,000 ms), including snippets, drafts and
+summary construction. Exhaustion cancels the worker and returns `503` with
+`code: "search_timeout"` and a localized `error`. The existing
 `:chat_search_statement_timeout_ms` (default 5,000 ms) remains an additional
-per-SQL cap, bounded by the remaining overall budget. A successful fallback
-need not expose the probe timeout to the client; exhausting the overall budget
-or the fallback's SQL timeout does.
+per-SQL cap, bounded by the remaining overall budget.
 
-### Compatibility modes
+## In-chat search
 
-- `GET /api/bff/chat-list/search?q=...&section=other&page=2&per_page=20`
-  preserves the legacy singular `section` contract: offset pagination, `chats`,
-  a top-level `page` with an **exact** `total`, and `next_read_state_expiry`.
-  No cursor is required. The supported section names are the same as above.
-  Exact counting remains subject to the overall deadline; new clients should
-  use grouped cursor pages instead.
-- Without `sections` or `section`, the endpoint keeps its flat response
-  (`chats`) and returns up to `per_page` best matches. It retains the bounded
-  message-candidate cap and ranking of metadata matches, active-message hits,
-  then inactive-message hits; it is not exhaustive grouped pagination.
-- The overall response budget and `503 search_timeout` apply to all three
-  chat-list search modes.
+`GET /api/bff/chat-search/:id/messages?q=...&exact=1` searches one readable
+chat with the same tokenization and returns `active` and `inactive` branch hits
+in conversation order, each with the full `content` and a `snippet`.

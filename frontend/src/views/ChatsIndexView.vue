@@ -51,6 +51,17 @@
                   placeholder="Search chats"
                   aria-label="Search chats"
                 />
+                <button
+                  type="button"
+                  class="chat-search__exact"
+                  :class="{ active: chatSearchExact }"
+                  :aria-pressed="chatSearchExact"
+                  :title="translate('Match the whole phrase exactly, including spaces')"
+                  @click="toggleChatSearchExact"
+                >
+                  <span aria-hidden="true">“ ”</span>
+                  <span>{{ translate('Exact') }}</span>
+                </button>
                 <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
               </div>
             </section>
@@ -65,66 +76,80 @@
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
               <p v-if="chatSearchMetaOnlyHint" class="muted chat-search-hint">
-                {{ translate('To search message text, enter at least 3 letters or digits in a row. Only chat titles, notes and bot names were searched.') }}
+                {{ translate('Message text was not searched: some word must have at least 3 letters or digits in a row. Only chat notes were searched.') }}
               </p>
 
               <InitialRoutePlaceholder
                 v-if="loading && !chats.length && !hasChatSearch"
               />
               <div v-else class="chat-sections">
-                <section v-for="section in visibleSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
-                  <h3 v-if="section.key !== 'other' || visibleSections.length > 1" class="chat-section__heading">{{ section.label }} <span v-if="section.total != null" class="muted">{{ section.total }}</span></h3>
+                <section v-for="section in renderedSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
+                  <h3 v-if="section.showHeading" class="chat-section__heading">{{ section.label }} <span v-if="section.total != null" class="muted">{{ section.total }}</span></h3>
                   <div class="list">
-                    <div v-for="c in section.chats" :key="c.id" class="chat-list-entry">
+                    <div v-for="entry in section.entries" :key="entry.key" class="chat-list-entry">
                       <ChatListRow
-                        :to="chatResultLink(c)"
+                        :to="chatLink(entry.chat)"
                         :stack="true"
-                        :title="chatLabel(c)"
-                        :config-label="c.llm_configuration_label || null"
-                        :meta-text="chatMetaText(c)"
-                        :secondary-meta="relationMeta(c)"
-                        :preview-text="!hasChatSearch && c.first_message_preview ? formatPreview(c.first_message_preview) : null"
-                        :preview-role="!hasChatSearch ? c.first_message_role : null"
-                        :snippet="hasChatSearch && isSearchResult(c) ? c.snippet || null : null"
-                        :generation-state="generationStateForChat(c)"
-                        :row-role="chatResultRole(c)"
-                        :read-state="c.read_state"
+                        :title="chatLabel(entry.chat)"
+                        :config-label="entry.chat.llm_configuration_label || null"
+                        :meta-text="chatMetaText(entry.chat)"
+                        :secondary-meta="relationMeta(entry.chat)"
+                        :preview-text="!hasChatSearch && entry.chat.first_message_preview ? formatPreview(entry.chat.first_message_preview) : null"
+                        :preview-role="!hasChatSearch ? entry.chat.first_message_role : null"
+                        :generation-state="generationStateForChat(entry.chat)"
+                        :read-state="entry.chat.read_state"
                         :actions="true"
-                        :actions-open="chatActionsMenu?.chat.id === c.id"
+                        :actions-open="chatActionsMenu?.chat.id === entry.chat.id"
                         @navigate="openChat"
-                        @open-actions="openChatActions(c, $event)"
+                        @open-actions="openChatActions(entry.chat, $event)"
                       >
                         <template #badges>
                           <span
-                            v-if="c.shared_outgoing"
+                            v-if="entry.chat.shared_outgoing"
                             class="share-indicator"
                             title="Shared with groups"
                             aria-label="Shared with groups"
                           >
                             <SvgIcon name="share-outgoing" />
                           </span>
-                          <span v-if="hasChatSearch && isSearchResult(c)" class="badge" :class="matchBadgeClass(c.match_type)">
-                            {{ matchBadgeLabel(c.match_type) }}
-                          </span>
-                          <span v-if="relationBadgeLabel(c)" class="badge">{{ relationBadgeLabel(c) }}</span>
+                          <span v-if="relationBadgeLabel(entry.chat)" class="badge">{{ relationBadgeLabel(entry.chat) }}</span>
                         </template>
                       </ChatListRow>
-                      <div v-if="subchatCount(c) > 0" class="subchat-toggle-row">
+                      <ul v-if="entry.hits.length" class="chat-search-hits">
+                        <li v-for="hit in entry.hits" :key="hit.message_id" class="chat-search-hit" :class="hitToneClass(hit)">
+                          <RouterLink custom :to="hitLink(hit)" v-slot="{ href }">
+                            <a class="chat-search-hit__link" :href="href" @click="handleHitClick($event, hitLink(hit))">
+                              <div class="chat-search-hit__meta muted">
+                                <span class="chat-search-hit__role">{{ hitRoleLabel(hit) }}</span>
+                                <span>{{ niceDate(hit.created_at) }}</span>
+                                <span v-if="!hit.active" class="badge badge-muted">{{ translate('Inactive branch') }}</span>
+                              </div>
+                              <div class="chat-search-hit__snippet">
+                                <template v-for="(part, index) in highlightSnippet(hit.snippet)" :key="index">
+                                  <mark v-if="part.match">{{ part.text }}</mark>
+                                  <template v-else>{{ part.text }}</template>
+                                </template>
+                              </div>
+                            </a>
+                          </RouterLink>
+                        </li>
+                      </ul>
+                      <div v-if="subchatCount(entry.chat) > 0" class="subchat-toggle-row">
                         <button
                           class="subchat-toggle"
                           type="button"
-                          :aria-expanded="subchatsExpanded(c)"
-                          @click="toggleSubchats(c.id)"
+                          :aria-expanded="subchatsExpanded(entry.chat)"
+                          @click="toggleSubchats(entry.chat.id)"
                         >
-                          <SvgIcon :name="subchatsExpanded(c) ? 'arrow-down' : 'chevron-right'" size="14" />
-                          <span>{{ subchatCountLabel(subchatCount(c)) }}</span>
+                          <SvgIcon :name="subchatsExpanded(entry.chat) ? 'arrow-down' : 'chevron-right'" size="14" />
+                          <span>{{ subchatCountLabel(subchatCount(entry.chat)) }}</span>
                         </button>
                       </div>
-                      <div v-if="subchatsExpanded(c)" class="subchat-list">
+                      <div v-if="subchatsExpanded(entry.chat)" class="subchat-list">
                         <ChatListRow
-                          v-for="subchat in directSubchats(c)"
+                          v-for="subchat in directSubchats(entry.chat)"
                           :key="subchat.id"
-                          :to="chatResultLink(subchat)"
+                          :to="chatLink(subchat)"
                           :stack="true"
                           :title="chatLabel(subchat)"
                           :config-label="subchat.llm_configuration_label || null"
@@ -148,12 +173,18 @@
                     </div>
                   </div>
 
-                  <div v-if="section.showPagination" class="pagination">
-                    <button type="button" :disabled="loading || chatSearchLoading || !section.hasPrevious" @click="changeSectionPage(section.key, -1)">{{ translate('Previous') }}</button>
-                    <span class="muted">{{ hasChatSearch ? translate('Page {page}', { page: section.page }) : translate('Page {page} of {total}', { page: section.page, total: section.totalPages }) }}</span>
-                    <button type="button" :disabled="loading || chatSearchLoading || !section.hasNext" @click="changeSectionPage(section.key, 1)">{{ translate('Next') }}</button>
+                  <div v-if="section.showPagination && section.sectionKey" class="pagination">
+                    <button type="button" :disabled="loading || !section.hasPrevious" @click="changeSectionPage(section.sectionKey, -1)">{{ translate('Previous') }}</button>
+                    <span class="muted">{{ translate('Page {page} of {total}', { page: section.page, total: section.totalPages }) }}</span>
+                    <button type="button" :disabled="loading || !section.hasNext" @click="changeSectionPage(section.sectionKey, 1)">{{ translate('Next') }}</button>
                   </div>
                 </section>
+
+                <div v-if="hasChatSearch && chatSearchNextCursor && !chatSearchLoading" class="chat-search-more">
+                  <button type="button" :disabled="chatSearchLoadingMore" @click="loadMoreChatSearch">
+                    {{ chatSearchLoadingMore ? translate('Loading…') : translate('Show more') }}
+                  </button>
+                </div>
               </div>
 
               <p v-if="chatListEmptyState" class="muted">{{ chatListEmptyState }}</p>
@@ -251,7 +282,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { useRoute, type RouteLocationRaw } from 'vue-router';
+import { RouterLink, useRoute, type RouteLocationRaw } from 'vue-router';
 import { api, isHttpError } from '../api/client';
 import { jsonApiList, toIntId, type JsonApiResource } from '@/api/jsonApi';
 import BotSelectorModal from '@/components/BotSelectorModal.vue';
@@ -284,12 +315,32 @@ import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 
-type ChatSearchResult = ChatSummary & {
-  match_type: 'meta' | 'active_message' | 'inactive_message';
-  snippet?: string | null;
-  message_id?: number | null;
-  message_role?: 'user' | 'assistant' | null;
+type ChatSearchHit = {
+  message_id: number;
+  chat_id: number;
+  role: 'user' | 'assistant' | null;
+  created_at: string | null;
+  active: boolean;
+  snippet: string | null;
 };
+
+type ChatListEntry = { key: string; chat: ChatSummary; hits: ChatSearchHit[] };
+
+type ChatListSection = {
+  key: string;
+  label: string;
+  entries: ChatListEntry[];
+  showHeading: boolean;
+  showPagination: boolean;
+  sectionKey?: ChatSection;
+  page?: number;
+  total?: number | null;
+  totalPages?: number | null;
+  hasNext?: boolean;
+  hasPrevious?: boolean;
+};
+
+type SnippetPart = { text: string; match: boolean };
 
 type BotFilterOption = {
   id: number | '';
@@ -347,12 +398,17 @@ type ChatListPayload = {
 };
 
 type ChatSearchPayload = {
-  chats?: ChatSearchResult[];
-  // Ordered chat IDs per section; a chat may appear in several sections but only once in `chats`.
-  sections?: Partial<Record<ChatSection, { ids?: number[]; page?: Partial<Omit<SearchSectionPage, 'cursors'>> }>>;
+  // Unique summaries for note matches and hit chats.
+  chats?: ChatSummary[];
+  // Chats whose note matched, newest activity first; only on the first page.
+  notes?: number[];
+  // Message hits, newest first.
+  hits?: ChatSearchHit[];
+  next_cursor?: string | null;
   next_read_state_expiry?: string | null;
-  // False when the term is too short for message text search and only chat metadata was matched.
+  // False when no term can use the text index and only chat notes were matched.
   text_search?: boolean;
+  terms?: string[];
 };
 
 type GenerationState = 'generating' | 'reconnecting' | 'error' | 'canceled';
@@ -363,15 +419,6 @@ type SectionPage = { number: number; per_page: number; total: number; has_next: 
 const emptySectionPages = (): Record<ChatSection, SectionPage> => Object.fromEntries(
   SECTION_KEYS.map((key) => [key, { number: 1, per_page: 20, total: 0, has_next: false }])
 ) as Record<ChatSection, SectionPage>;
-type SearchSectionPage = Omit<SectionPage, 'total'> & {
-  total: null;
-  next_cursor: string | null;
-  // Each entry is the cursor leading into that page; page one has no cursor.
-  cursors: Record<number, string | null>;
-};
-const emptySearchSectionPages = (perPage = 20): Record<ChatSection, SearchSectionPage> => Object.fromEntries(
-  SECTION_KEYS.map((key): [ChatSection, SearchSectionPage] => [key, { number: 1, per_page: perPage, total: null, has_next: false, next_cursor: null, cursors: { 1: null } }])
-) as Record<ChatSection, SearchSectionPage>;
 function sectionForChat(chat: ChatSummary): ChatSection {
   if (chat.read_state?.is_unread) return 'unread';
   return chat.active_generation_message_id ? 'working' : 'other';
@@ -390,6 +437,8 @@ const CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS = 30_000;
 const CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
 const CHAT_SEARCH_DEBOUNCE_MS = 600;
 const CHAT_SEARCH_MIN_LENGTH = 3;
+const CHAT_SEARCH_PAGE_SIZE = 30;
+const CHAT_SEARCH_MAX_LIMIT = 100;
 
 const route = useRoute();
 const stackNav = useStackNavigation();
@@ -410,6 +459,10 @@ function readChatListPageQuery(value: unknown) {
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
 
+function readExactQuery(value: unknown) {
+  return ['1', 'true'].includes(getQueryString(value).trim().toLowerCase());
+}
+
 function readBotFilterQuery(value: unknown) {
   const raw = getQueryString(value).trim();
   if (raw === 'none') return raw;
@@ -428,9 +481,6 @@ const error = ref<string | null>(null);
 const chats = ref<ChatSummary[]>([]);
 const sectionPages = ref(emptySectionPages());
 const sectionIds = ref<Record<ChatSection, number[]>>({ drafts: [], unread: [], working: [], other: [] });
-const searchSectionIds = ref<Record<ChatSection, number[]>>({ drafts: [], unread: [], working: [], other: [] });
-const searchSectionPages = ref(emptySearchSectionPages());
-let pendingSearchPages: Record<ChatSection, SearchSectionPage> | null = null;
 sectionPages.value.other.number = readChatListPageQuery(route.query.page);
 sectionPages.value.unread.number = readChatListPageQuery(route.query.unreadPage);
 sectionPages.value.drafts.number = readChatListPageQuery(route.query.draftsPage);
@@ -439,8 +489,15 @@ const pageNumber = computed({ get: () => sectionPages.value.other.number, set: (
 const perPage = ref(20);
 const totalChats = ref(0);
 const chatSearchTerm = ref(getQueryString(route.query.q));
-const chatSearchResults = ref<ChatSearchResult[]>([]);
+const chatSearchExact = ref(readExactQuery(route.query.exact));
+// Chat summaries referenced by note matches and hits.
+const chatSearchResults = ref<ChatSummary[]>([]);
+const chatSearchNoteIds = ref<number[]>([]);
+const chatSearchHits = ref<ChatSearchHit[]>([]);
+const chatSearchNextCursor = ref<string | null>(null);
+const chatSearchTerms = ref<string[]>([]);
 const chatSearchLoading = ref(false);
+const chatSearchLoadingMore = ref(false);
 const chatSearchError = ref('');
 const chatSearchTextSearch = ref(true);
 const chatListIdleRevision = ref<string | null>(null);
@@ -497,6 +554,7 @@ const hasActiveBotFilter = computed(() => String(botFilter.value || '').trim().l
 
 function syncChatListRouteQuery() {
   const q = chatSearchTerm.value.trim();
+  const exact = q && chatSearchExact.value ? '1' : undefined;
   const bot = String(botFilter.value || '').trim();
   const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
   const next = { ...route.query };
@@ -510,6 +568,9 @@ function syncChatListRouteQuery() {
   if (q) next.q = q;
   else delete (next as Record<string, unknown>).q;
 
+  if (exact) next.exact = exact;
+  else delete (next as Record<string, unknown>).exact;
+
   if (bot) next.bot = bot;
   else delete (next as Record<string, unknown>).bot;
 
@@ -518,6 +579,7 @@ function syncChatListRouteQuery() {
 
   if (
     sameQueryValue(route.query.q, q || undefined) &&
+    sameQueryValue(route.query.exact, exact) &&
     sameQueryValue(route.query.bot, bot || undefined) &&
     sameQueryValue(route.query.page, page) &&
     sameQueryValue(route.query.draftsPage, next.draftsPage as string | undefined) &&
@@ -548,9 +610,10 @@ function syncChatListRouteQuery() {
 }
 
 watch(
-  () => [route.query.q, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage, route.query.draftsPage],
-  ([q, bot, page, unreadPage, workingPage, draftsPage]) => {
+  () => [route.query.q, route.query.exact, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage, route.query.draftsPage],
+  ([q, exact, bot, page, unreadPage, workingPage, draftsPage]) => {
     const nextQ = getQueryString(q);
+    const nextExact = readExactQuery(exact);
     const nextBot = readBotFilterQuery(bot);
     const nextPage = readChatListPageQuery(page);
     const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage ||
@@ -562,6 +625,7 @@ watch(
     sectionPages.value.working.number = readChatListPageQuery(workingPage);
 
     if (chatSearchTerm.value !== nextQ) chatSearchTerm.value = nextQ;
+    if (chatSearchExact.value !== nextExact) chatSearchExact.value = nextExact;
     if (botFilter.value !== nextBot) botFilter.value = nextBot;
     if (pageNumber.value !== nextPage) pageNumber.value = nextPage;
 
@@ -572,11 +636,15 @@ watch(
 );
 
 watch(
-  () => [chatSearchTerm.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
+  () => [chatSearchTerm.value, chatSearchExact.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
   () => {
     syncChatListRouteQuery();
   }
 );
+
+function toggleChatSearchExact() {
+  chatSearchExact.value = !chatSearchExact.value;
+}
 
 function openFilter() {
   filterOpen.value = true;
@@ -891,7 +959,7 @@ function queueServerRefresh() {
   serverRefreshTimer = window.setTimeout(() => {
     serverRefreshTimer = null;
     if (unmounted || !layer.active.value || document.visibilityState !== 'visible') return;
-    if (loading.value || chatSearchLoading.value) { queueServerRefresh(); return; }
+    if (loading.value || chatSearchLoading.value || chatSearchLoadingMore.value) { queueServerRefresh(); return; }
     void refreshSections();
   }, 150);
 }
@@ -924,8 +992,8 @@ const allBotsCount = computed(() => {
   return totalChats.value;
 });
 function sectionChats(key: ChatSection) {
-  const ids = (hasChatSearch.value ? searchSectionIds.value : sectionIds.value);
-  const byId = new Map(visibleChats.value.map((chat) => [chat.id, chat]));
+  const ids = sectionIds.value;
+  const byId = new Map(filteredChats.value.map((chat) => [chat.id, chat]));
   if (key === 'drafts') {
     return ids.drafts.flatMap((id) => {
       const chat = byId.get(id);
@@ -942,17 +1010,47 @@ function sectionChats(key: ChatSection) {
   return rows.filter((chat) => inboxIds.has(chat.id) && sectionForChat(chat) === key);
 }
 
-const visibleSections = computed(() => SECTION_KEYS.map((key) => {
-  const page = (hasChatSearch.value ? searchSectionPages.value : sectionPages.value)[key];
-  const totalPages = page.total == null ? null : Math.max(1, Math.ceil(page.total / Math.max(1, page.per_page)));
-  return {
-    key, label: translate(SECTION_LABELS[key]),
-    chats: sectionChats(key),
-    page: page.number, total: page.total, hasNext: page.has_next,
-    hasPrevious: page.number > 1 && (!hasChatSearch.value || searchSectionPages.value[key].cursors[page.number - 1] !== undefined),
-    totalPages, showPagination: hasChatSearch.value || (totalPages != null && totalPages > 1),
-  };
-}).filter((section) => section.chats.length > 0 || (hasChatSearch.value && (section.hasPrevious || section.hasNext))));
+const visibleSections = computed<ChatListSection[]>(() => {
+  const sections = SECTION_KEYS.map((key): ChatListSection => {
+    const page = sectionPages.value[key];
+    const totalPages = Math.max(1, Math.ceil(page.total / Math.max(1, page.per_page)));
+    return {
+      key, sectionKey: key, label: translate(SECTION_LABELS[key]),
+      entries: sectionChats(key).map((chat) => ({ key: String(chat.id), chat, hits: [] })),
+      page: page.number, total: page.total, hasNext: page.has_next, hasPrevious: page.number > 1,
+      totalPages, showPagination: totalPages > 1, showHeading: true,
+    };
+  }).filter((section) => section.entries.length > 0);
+  return sections.map((section) => ({ ...section, showHeading: section.key !== 'other' || sections.length > 1 }));
+});
+
+// Note matches come first; adjacent hits of one chat share a header, a chat
+// that reappears later gets a new one.
+const searchSections = computed<ChatListSection[]>(() => {
+  const byId = new Map(filteredChatSearchResults.value.map((chat) => [chat.id, chat]));
+  const sections: ChatListSection[] = [];
+  const noteEntries = chatSearchNoteIds.value.flatMap((id): ChatListEntry[] => {
+    const chat = byId.get(id);
+    return chat ? [{ key: `note-${id}`, chat, hits: [] }] : [];
+  });
+  if (noteEntries.length) {
+    sections.push({ key: 'notes', label: translate('Chats'), entries: noteEntries, showHeading: true, showPagination: false });
+  }
+  const groups: ChatListEntry[] = [];
+  for (const hit of chatSearchHits.value) {
+    const chat = byId.get(hit.chat_id);
+    if (!chat) continue;
+    const last = groups[groups.length - 1];
+    if (last && last.chat.id === chat.id) last.hits.push(hit);
+    else groups.push({ key: `hits-${chat.id}-${hit.message_id}`, chat, hits: [hit] });
+  }
+  if (groups.length) {
+    sections.push({ key: 'messages', label: translate('Messages'), entries: groups, showHeading: true, showPagination: false });
+  }
+  return sections;
+});
+
+const renderedSections = computed(() => (hasChatSearch.value ? searchSections.value : visibleSections.value));
 
 function resetSectionPageNumbers() {
   for (const key of SECTION_KEYS) {
@@ -961,22 +1059,14 @@ function resetSectionPageNumbers() {
 }
 
 async function changeSectionPage(key: ChatSection, delta: number) {
-  if (hasChatSearch.value) {
-    if (chatSearchLoading.value) return;
-    const page = searchSectionPages.value[key];
-    const number = page.number + delta;
-    const cursor = delta > 0 ? page.next_cursor : page.cursors[number];
-    if (number < 1 || cursor === undefined || (delta > 0 && (!page.has_next || cursor === null))) return;
-    // Commit navigation only on success; refreshes can repeat an in-flight cursor transition.
-    pendingSearchPages = {
-      ...searchSectionPages.value,
-      [key]: { ...page, number, cursors: { ...page.cursors, [number]: cursor } },
-    };
-    await runChatSearch(chatSearchTerm.value.trim());
-  } else {
-    sectionPages.value[key].number = Math.max(1, sectionPages.value[key].number + delta);
-    await loadChats({ scrollToTop: delta > 0 });
-  }
+  if (hasChatSearch.value) return;
+  sectionPages.value[key].number = Math.max(1, sectionPages.value[key].number + delta);
+  await loadChats({ scrollToTop: delta > 0 });
+}
+
+async function loadMoreChatSearch() {
+  if (!hasChatSearch.value || chatSearchLoading.value || chatSearchLoadingMore.value || !chatSearchNextCursor.value) return;
+  await runChatSearch(chatSearchTerm.value.trim(), { append: true });
 }
 
 // A batch can span a concurrent server mutation. Prefer the newest state and render each ID once.
@@ -1023,7 +1113,7 @@ const chatSearchEmptyState = computed(() => {
   if (!hasChatSearch.value) return '';
   if (chatSearchLoading.value) return '';
   if (chatSearchError.value) return '';
-  return filteredChatSearchResults.value.length ? '' : 'No matches found.';
+  return searchSections.value.length ? '' : 'No matches found.';
 });
 
 const chatListEmptyState = computed(() => {
@@ -1090,46 +1180,59 @@ function relationBadgeLabel(chat: ChatSummary) {
   return labelKey ? translate(labelKey) : null;
 }
 
-function isSearchResult(chat: ChatSummary | ChatSearchResult): chat is ChatSearchResult {
-  return hasChatSearch.value && typeof (chat as ChatSearchResult).match_type === 'string';
+function chatLink(chat: ChatSummary): RouteLocationRaw {
+  return { path: `/chats/${chat.id}`, query: {} };
 }
 
-function matchBadgeLabel(matchType: ChatSearchResult['match_type']) {
-  switch (matchType) {
-    case 'meta':
-      return 'Bot/Note';
-    case 'active_message':
-      return 'Active branch';
-    case 'inactive_message':
-      return 'Inactive branch';
-    default:
-      return 'Match';
-  }
+function hitLink(hit: ChatSearchHit): RouteLocationRaw {
+  const query: Record<string, string> = { focusMessage: String(hit.message_id) };
+  if (!hit.active) query.focusInactive = '1';
+  return { path: `/chats/${hit.chat_id}`, query };
 }
 
-function matchBadgeClass(matchType: ChatSearchResult['match_type']) {
+function handleHitClick(event: MouseEvent, to: RouteLocationRaw) {
+  // Modified clicks keep the native link behavior (new tab, etc.).
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return;
+  event.preventDefault();
+  openChat(to);
+}
+
+function hitRoleLabel(hit: ChatSearchHit) {
+  if (hit.role === 'user') return translate('You');
+  if (hit.role === 'assistant') return translate('Assistant');
+  return '';
+}
+
+function hitToneClass(hit: ChatSearchHit) {
   return {
-    'badge-muted': matchType === 'inactive_message',
-    'badge-accent': matchType === 'active_message',
+    'chat-search-hit--user': hit.role === 'user',
+    'chat-search-hit--assistant': hit.role === 'assistant',
+    'chat-search-hit--inactive': !hit.active,
   };
 }
 
-function chatResultRole(chat: ChatSummary | ChatSearchResult) {
-  if (!isSearchResult(chat)) return null;
-  if (chat.match_type === 'meta' || !chat.message_role) return null;
-  return chat.message_role;
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-function chatResultLink(chat: ChatSummary | ChatSearchResult) {
-  const path = `/chats/${chat.id}`;
-  const query: Record<string, string> = {};
-  if (!isSearchResult(chat)) return { path, query };
-  if (!chat.message_id || chat.match_type === 'meta') return { path, query };
-  query.focusMessage = String(chat.message_id);
-  if (chat.match_type === 'inactive_message') {
-    query.focusInactive = '1';
+// Splits a snippet into plain and matched parts so terms can be marked without raw HTML.
+function highlightSnippet(snippet: string | null): SnippetPart[] {
+  const text = String(snippet || '');
+  if (!text) return [];
+  const terms = [...new Set(chatSearchTerms.value.map((term) => term.trim()).filter(Boolean))]
+    .sort((left, right) => right.length - left.length);
+  if (!terms.length) return [{ text, match: false }];
+  const pattern = new RegExp(terms.map(escapeRegExp).join('|'), 'giu');
+  const parts: SnippetPart[] = [];
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index == null || !match[0]) continue;
+    if (match.index > last) parts.push({ text: text.slice(last, match.index), match: false });
+    parts.push({ text: match[0], match: true });
+    last = match.index + match[0].length;
   }
-  return { path, query };
+  if (last < text.length) parts.push({ text: text.slice(last), match: false });
+  return parts;
 }
 
 function openChat(to: RouteLocationRaw) {
@@ -1206,6 +1309,7 @@ async function mutateReadState(chat: ChatSummary, action: ChatReadStateAction, s
   chatSearchSeq += 1;
   abortActiveChatSearch();
   chatSearchLoading.value = false;
+  chatSearchLoadingMore.value = false;
   try {
     const state = chat.read_state ?? (await fetchChatSummary(chat.id)).read_state;
     if (!state) throw new Error('Missing chat read state');
@@ -1430,10 +1534,13 @@ function isAbortError(error: unknown) {
 function resetChatSearch() {
   chatSearchSeq += 1;
   abortActiveChatSearch();
-  pendingSearchPages = null;
-  searchSectionPages.value = emptySearchSectionPages(perPage.value);
   chatSearchResults.value = [];
+  chatSearchNoteIds.value = [];
+  chatSearchHits.value = [];
+  chatSearchNextCursor.value = null;
+  chatSearchTerms.value = [];
   chatSearchLoading.value = false;
+  chatSearchLoadingMore.value = false;
   chatSearchError.value = '';
   chatSearchTextSearch.value = true;
 }
@@ -1450,11 +1557,14 @@ function isInvalidSearchCursor(error: unknown) {
 
 async function runChatSearch(
   term: string,
-  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean; cursorRetried?: boolean } = {}
+  opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean; cursorRetried?: boolean; append?: boolean } = {}
 ) {
   const seq = ++chatSearchSeq;
   abortActiveChatSearch();
-  const pages = pendingSearchPages ?? searchSectionPages.value;
+  // "Show more" continues from the last page; everything else restarts from the newest hits.
+  const append = Boolean(opts.append) && chatSearchNextCursor.value != null;
+  const cursor = append ? chatSearchNextCursor.value : null;
+  const loadedHits = chatSearchHits.value.length;
 
   const controller = new AbortController();
   chatSearchAbortController = controller;
@@ -1469,7 +1579,10 @@ async function runChatSearch(
   }
 
   const silent = Boolean(opts.silent);
-  if (!silent) {
+  if (append) {
+    chatSearchLoadingMore.value = true;
+    chatSearchError.value = '';
+  } else if (!silent) {
     chatSearchLoading.value = true;
     chatSearchError.value = '';
   }
@@ -1477,14 +1590,13 @@ async function runChatSearch(
   try {
     const params = new URLSearchParams();
     params.set('q', term);
-    params.set('sections', SECTION_KEYS.join(','));
-    params.set('per_page', String(perPage.value));
-    for (const section of SECTION_KEYS) {
-      const page = pages[section];
-      params.set(`page_${section}`, String(page.number));
-      const cursor = page.cursors[page.number];
-      if (cursor != null) params.set(`after_${section}`, cursor);
-    }
+    if (chatSearchExact.value) params.set('exact', '1');
+    // A silent refresh re-reads every hit already shown in one request.
+    const limit = append || !silent
+      ? CHAT_SEARCH_PAGE_SIZE
+      : Math.min(CHAT_SEARCH_MAX_LIMIT, Math.max(CHAT_SEARCH_PAGE_SIZE, loadedHits));
+    params.set('limit', String(limit));
+    if (cursor) params.set('after', cursor);
     if (botFilter.value) params.set('bot', botFilter.value);
     const errorBanner = opts.showErrorBanner ?? true;
     const payload = await api.get<ChatSearchPayload | undefined>(`/api/bff/chat-list/search?${params.toString()}`, {
@@ -1493,31 +1605,31 @@ async function runChatSearch(
       signal: controller.signal,
     });
     if (controller.signal.aborted || seq !== chatSearchSeq || unmounted) return;
-    const ids = Object.fromEntries(
-      SECTION_KEYS.map((key) => [key, payload?.sections?.[key]?.ids ?? []])
-    ) as Record<ChatSection, number[]>;
-    searchSectionPages.value = Object.fromEntries(SECTION_KEYS.map((key) => [key, {
-      ...pages[key],
-      per_page: payload?.sections?.[key]?.page?.per_page ?? pages[key].per_page,
-      total: null,
-      has_next: Boolean(payload?.sections?.[key]?.page?.has_next),
-      next_cursor: payload?.sections?.[key]?.page?.next_cursor ?? null,
-    }])) as Record<ChatSection, SearchSectionPage>;
-    searchSectionIds.value = ids;
-    chatSearchResults.value = uniqueChatRows(payload?.chats || []);
+    const chats = uniqueChatRows(payload?.chats || []);
+    const hits = payload?.hits || [];
+    if (append) {
+      chatSearchResults.value = uniqueChatRows([...chatSearchResults.value, ...chats]);
+      chatSearchHits.value = [...chatSearchHits.value, ...hits];
+    } else {
+      chatSearchResults.value = chats;
+      chatSearchNoteIds.value = payload?.notes || [];
+      chatSearchHits.value = hits;
+      chatSearchTerms.value = payload?.terms || [];
+      chatSearchTextSearch.value = payload?.text_search !== false;
+    }
+    chatSearchNextCursor.value = payload?.next_cursor ?? null;
     chatSearchError.value = '';
-    chatSearchTextSearch.value = payload?.text_search !== false;
     if (payload && 'next_read_state_expiry' in payload) nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
   } catch (e) {
     if (controller.signal.aborted || isAbortError(e)) return;
     if (seq !== chatSearchSeq || unmounted) return;
     if (isInvalidSearchCursor(e) && !opts.cursorRetried) {
-      // All sections travel in one request; one expired cursor invalidates it.
+      // An expired cursor restarts from the newest hits.
       resetChatSearch();
-      await runChatSearch(term, { ...opts, cursorRetried: true });
+      await runChatSearch(term, { ...opts, append: false, cursorRetried: true });
       return;
     }
-    if (!silent) {
+    if (!silent || append) {
       if (isChatSearchTimeout(e)) {
         chatSearchError.value = 'Search took too long. Try a more specific query.';
       } else {
@@ -1536,8 +1648,8 @@ async function runChatSearch(
       chatSearchAbortController = null;
     }
     if (seq === chatSearchSeq) {
-      pendingSearchPages = null;
       chatSearchLoading.value = false;
+      chatSearchLoadingMore.value = false;
     }
   }
 }
@@ -1730,13 +1842,14 @@ function canRunChatListIdleProbe() {
     layer.active.value &&
     document.visibilityState === 'visible' &&
     !loading.value &&
-    !chatSearchLoading.value
+    !chatSearchLoading.value &&
+    !chatSearchLoadingMore.value
   );
 }
 
 async function runChatListIdleProbe(signal: AbortSignal, forceRefresh = false) {
   if (!forceRefresh && !canRunChatListIdleProbe()) return;
-  if (forceRefresh && (!layer.active.value || document.visibilityState !== 'visible' || loading.value || chatSearchLoading.value)) return;
+  if (forceRefresh && (!layer.active.value || document.visibilityState !== 'visible' || loading.value || chatSearchLoading.value || chatSearchLoadingMore.value)) return;
 
   const seq = chatListLoadSeq;
   const payload = await api.get<ChatListIdleStatePayload | undefined>(
@@ -1971,7 +2084,7 @@ watch(
 );
 
 watch(
-  () => [botFilter.value, perPage.value],
+  () => [botFilter.value, chatSearchExact.value],
   () => {
     chatListIdleRevision.value = null;
     resetChatSearch();
@@ -2112,6 +2225,93 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.chat-search__exact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.chat-search__exact.active {
+  color: var(--color-link);
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
+}
+
+.chat-search-hits {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: none;
+  border-left: 2px solid var(--color-border-muted);
+}
+
+.chat-search-hit__link {
+  display: block;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  background: var(--color-surface-muted);
+}
+
+.chat-search-hit--user .chat-search-hit__link {
+  background: var(--color-chat-user-bg);
+  border-color: var(--color-chat-user-border);
+}
+
+.chat-search-hit--assistant .chat-search-hit__link {
+  background: var(--color-chat-assistant-bg);
+  border-color: var(--color-chat-assistant-border);
+}
+
+.chat-search-hit--inactive .chat-search-hit__link {
+  opacity: 0.8;
+}
+
+.chat-search-hit__link:hover {
+  border-color: var(--color-border-strong);
+}
+
+.chat-search-hit__link:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.chat-search-hit__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.chat-search-hit__role {
+  font-weight: 600;
+}
+
+.chat-search-hit__snippet {
+  margin-top: 2px;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.chat-search-hit__snippet mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-warning-border) 55%, transparent);
+  color: inherit;
+}
+
+.chat-search-more {
+  display: flex;
+  justify-content: center;
+}
+
 .chat-list-entry {
   display: grid;
   gap: 6px;
@@ -2149,12 +2349,6 @@ onBeforeUnmount(() => {
   border-color: var(--color-danger-border);
   color: var(--color-danger-text);
   background: var(--color-danger-bg);
-}
-
-.badge-accent {
-  border-color: var(--color-info-border);
-  background: var(--color-info-bg);
-  color: var(--color-link);
 }
 
 .share-indicator {

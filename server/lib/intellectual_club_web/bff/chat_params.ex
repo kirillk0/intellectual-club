@@ -170,10 +170,15 @@ defmodule IntellectualClubWeb.Bff.ChatParams do
     end
   end
 
-  def match_type(:meta), do: "meta"
-  def match_type(:active_message), do: "active_message"
-  def match_type(:inactive_message), do: "inactive_message"
-  def match_type(_other), do: nil
+  @doc "Whether a boolean query flag such as `exact=1` is set."
+  def flag?(params, key) when is_map(params) and is_binary(key) do
+    value = params |> Map.get(key) |> to_string() |> String.trim() |> String.downcase()
+    value in ["1", "true"]
+  end
+
+  @doc "Chat-list search page size: `limit`, default 30, at most 100."
+  def search_limit(params) when is_map(params),
+    do: parse_positive_integer(Map.get(params, "limit"), 30, 100)
 
   def branch_user_replacement_contents(params, file_ids) do
     content = params |> Map.get("content", "") |> to_string()

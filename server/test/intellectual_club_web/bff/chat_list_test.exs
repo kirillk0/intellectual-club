@@ -292,23 +292,30 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         assert response["draft"]["revision"] == 1
       end
 
-      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
-        params = %{section: "drafts", q: "draft-match", per_page: 1, bot: "none"}
-        page = section_page(conn, path, params)
-        assert page["page"]["total"] == 2
-        assert page["page"]["has_next"]
+      params = %{section: "drafts", per_page: 1, bot: "none"}
+      page = section_page(conn, "/api/bff/chat-list", params)
+      assert page["page"]["total"] == 2
+      assert page["page"]["has_next"]
 
-        assert [%{"id" => id, "has_draft" => true, "draft_updated_at" => saved_at}] =
-                 page["chats"]
+      assert [%{"id" => id, "has_draft" => true, "draft_updated_at" => saved_at}] =
+               page["chats"]
 
-        assert id == first.id
-        assert is_binary(saved_at)
-        refute Jason.encode!(page) =~ "private unfinished text"
-        next = section_page(conn, path, Map.put(params, :page, 2))
-        assert [%{"id" => second_id}] = next["chats"]
-        assert second_id == second.id
-        refute next["page"]["has_next"]
-      end
+      assert id == first.id
+      assert is_binary(saved_at)
+      refute Jason.encode!(page) =~ "private unfinished text"
+      next = section_page(conn, "/api/bff/chat-list", Map.put(params, :page, 2))
+      assert [%{"id" => second_id}] = next["chats"]
+      assert second_id == second.id
+      refute next["page"]["has_next"]
+
+      # Search summaries carry the same private draft markers.
+      search = section_page(conn, "/api/bff/chat-list/search", %{q: "draft-match", bot: "none"})
+      assert length(search["notes"]) == 3
+      refute Jason.encode!(search) =~ "private unfinished text"
+
+      assert Map.new(search["chats"], &{&1["id"], &1["has_draft"]})
+             |> Map.take([first.id, second.id]) ==
+               %{first.id => true, second.id => true}
 
       ordinary = conn |> get("/api/bff/chat-list", %{section: "other"}) |> json_response(200)
       assert Enum.any?(ordinary["chats"], &(&1["id"] == first.id and &1["has_draft"]))
@@ -402,15 +409,10 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert [%{"id" => id}] = list["chats"]
       assert id == child.id
 
-      search =
-        section_page(conn, "/api/bff/chat-list/search", %{
-          section: "drafts",
-          q: "nested-draft-match"
-        })
-
-      assert [%{"id" => search_id}] = search["chats"]
-      assert search_id == child.id
-      assert search["page"]["total"] == 1
+      # Search covers independent chats only; subchats stay nested under their parent.
+      search = section_page(conn, "/api/bff/chat-list/search", %{q: "nested-draft-match"})
+      assert search["notes"] == []
+      assert search["chats"] == []
       other_conn = sign_in_conn(build_conn(), other_fixture)
 
       other_list =
@@ -500,16 +502,15 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       create_generating_message!(actor, chat, parent_id: root.id)
       assert {:ok, _} = Threads.activate_branch(chat.id, completed.id, actor)
 
-      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
-        working =
-          section_page(conn, path, %{section: "working", q: "branch-working"})
+      working = section_page(conn, "/api/bff/chat-list", %{section: "working"})
+      assert working["chats"] == []
+      assert working["page"]["total"] == 0
+      other = section_page(conn, "/api/bff/chat-list", %{section: "other"})
+      assert [%{"id" => id, "active_generation_message_id" => nil}] = other["chats"]
+      assert id == chat.id
 
-        assert working["chats"] == []
-        assert working["page"]["total"] == 0
-        other = section_page(conn, path, %{section: "other", q: "branch-working"})
-        assert [%{"id" => id, "active_generation_message_id" => nil}] = other["chats"]
-        assert id == chat.id
-      end
+      search = section_page(conn, "/api/bff/chat-list/search", %{q: "branch-working"})
+      assert [%{"id" => ^id, "active_generation_message_id" => nil}] = search["chats"]
     end
 
     test "generation completion and observed reads move chats between sections", %{conn: conn} do
@@ -582,11 +583,14 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
                  actor
                )
 
-      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/search"] do
-        first = section_page(conn, path, %{section: "unread", per_page: 2, q: "section-match"})
+      search = section_page(conn, "/api/bff/chat-list/search", %{q: "section-match"})
+      assert length(search["notes"]) == 6
+      assert chat_payload(search, working.id)["last_message_status"] == "generating"
+      assert Enum.all?(search["chats"], &is_map(&1["read_state"]))
 
-        second =
-          section_page(conn, path, %{section: "unread", per_page: 2, page: 2, q: "section-match"})
+      for path <- ["/api/bff/chat-list"] do
+        first = section_page(conn, path, %{section: "unread", per_page: 2})
+        second = section_page(conn, path, %{section: "unread", per_page: 2, page: 2})
 
         assert first["page"]["total"] == 3
         assert first["page"]["has_next"]
@@ -595,12 +599,12 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         assert Enum.sort(Enum.map(first["chats"] ++ second["chats"], & &1["id"])) ==
                  Enum.sort(Enum.map(unread, & &1.id))
 
-        active = section_page(conn, path, %{section: "working", q: "section-match"})
+        active = section_page(conn, path, %{section: "working"})
 
         assert Enum.map(active["chats"], & &1["id"]) == [working.id]
         assert hd(active["chats"])["last_message_status"] == "generating"
 
-        inactive = section_page(conn, path, %{section: "other", q: "section-match"})
+        inactive = section_page(conn, path, %{section: "other"})
 
         assert Enum.sort(Enum.map(inactive["chats"], & &1["id"])) ==
                  Enum.sort([other.id, snoozed.id])
@@ -1468,9 +1472,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       for {path, params} <- [
             {"/api/bff/chat-list", %{}},
-            {"/api/bff/chat-list/search", %{q: "Independent"}},
-            {"/api/bff/chat-list/search", %{q: "Independent", section: "other"}},
-            {"/api/bff/chat-list/search", %{q: "Independent", sections: "unread,other"}}
+            {"/api/bff/chat-list/search", %{q: "Independent"}}
           ] do
         payload = conn |> get(path, params) |> json_response(200)
         assert Enum.sort(chat_ids(payload)) == Enum.sort([first.id, second.id])

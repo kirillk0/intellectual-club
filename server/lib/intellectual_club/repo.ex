@@ -82,13 +82,18 @@ defmodule IntellectualClub.Repo do
 
     try do
       transaction(fn ->
-        %{rows: [[previous_timeout, previous_jit]]} =
-          query!("SELECT current_setting('statement_timeout'), current_setting('jit')", [])
+        %{rows: [[previous_timeout, previous_jit, previous_plan_cache_mode]]} =
+          query!(
+            "SELECT current_setting('statement_timeout'), current_setting('jit'), current_setting('plan_cache_mode')",
+            []
+          )
 
-        put_local_settings(Integer.to_string(timeout_ms), "off")
+        # Search plans depend on the bound ILIKE patterns; a generic plan for a
+        # cached prepared statement cannot see them and may stop using indexes.
+        put_local_settings(Integer.to_string(timeout_ms), "off", "force_custom_plan")
         result = fun.()
         if recorded_statement_timeout?(), do: rollback(:statement_timeout)
-        put_local_settings(previous_timeout, previous_jit)
+        put_local_settings(previous_timeout, previous_jit, previous_plan_cache_mode)
         result
       end)
       |> case do
@@ -130,10 +135,10 @@ defmodule IntellectualClub.Repo do
 
   defp recorded_statement_timeout?, do: Process.get(@statement_timeout_key) == :canceled
 
-  defp put_local_settings(statement_timeout, jit) do
+  defp put_local_settings(statement_timeout, jit, plan_cache_mode) do
     query!(
-      "SELECT set_config('statement_timeout', $1, true), set_config('jit', $2, true)",
-      [statement_timeout, jit]
+      "SELECT set_config('statement_timeout', $1, true), set_config('jit', $2, true), set_config('plan_cache_mode', $3, true)",
+      [statement_timeout, jit, plan_cache_mode]
     )
   end
 

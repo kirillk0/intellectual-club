@@ -1259,6 +1259,7 @@ export function useChatViewModel() {
     isAgentHistoryMode: contextPanel.isAgentHistoryMode,
     agentContextTokenCount: contextPanel.agentContextTokenCount,
     branchSearchTerm: contextPanel.branchSearchTerm,
+    branchSearchExact: contextPanel.branchSearchExact,
     hasBranchSearch: contextPanel.hasBranchSearch,
     branchSearchLoading: contextPanel.branchSearchLoading,
     branchSearchError: contextPanel.branchSearchError,

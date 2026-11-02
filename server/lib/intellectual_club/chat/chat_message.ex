@@ -89,6 +89,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       index([:chat_id, :created_at, :id], name: "chat_messages_chat_created_id_index")
       index([:chat_id, :parent_id], name: "chat_messages_chat_parent_id_index")
       index([:owner_id, :chat_id], name: "chat_messages_owner_chat_id_index")
+      index([:owner_id, :created_at, :id], name: "chat_messages_owner_created_id_index")
 
       index([:chat_id, :id],
         name: "chat_messages_active_generation_index",
@@ -202,22 +203,32 @@ defmodule IntellectualClub.Chat.ChatMessage do
   actions do
     defaults([:read])
 
-    read :list_search_hit do
-      description("One preferred matching message in an owned chat, without loading all hits.")
+    read :list_search do
+      description("Owner-only chat-list text search; callers add order, cursor and limit.")
       argument :q, :string, allow_nil?: false
-      argument :chat_id, :integer, allow_nil?: false
-      argument :active_ids, {:array, :integer}, allow_nil?: false
-      prepare {IntellectualClub.Chat.Preparations.SearchChatList, message?: true}
+      argument :exact, :boolean, default: false
+
+      argument :strategy, :atom do
+        constraints(one_of: [:correlated, :indexed])
+        default(:indexed)
+      end
+
+      prepare IntellectualClub.Chat.Preparations.ListSearch
     end
 
     read :search do
       description(
-        "Search user-facing message text by case-insensitive literal substring. Returns every matching stored message, including inactive branches, without UI ranking or grouping."
+        "Search user-facing message text. Whitespace separates case-insensitive literal substrings that must all occur in one stored text; `exact` matches the whole query as one substring. Returns every matching stored message, including inactive branches, without UI ranking or grouping."
       )
 
       argument :q, :string do
         allow_nil?(false)
         constraints(min_length: 1)
+      end
+
+      argument :exact, :boolean do
+        default(false)
+        description("Match the whole query as one literal substring instead of every word.")
       end
 
       argument :chat_id, :integer

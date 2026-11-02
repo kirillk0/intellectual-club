@@ -2,7 +2,11 @@ defmodule IntellectualClub.Chat.MessageText do
   @moduledoc """
   Actor-authorized user-facing message text and substring matching shared by
   Ash actions and the UI search. Tool calls, reasoning and opaque contents are
-  deliberately excluded. Matching is within individual stored text contents.
+  deliberately excluded.
+
+  A search is a non-empty list of literal terms. A stored text content matches
+  when it contains every term as a case-insensitive substring; terms are not
+  matched across different contents of the same message.
   """
 
   alias IntellectualClub.Chat.{ChatMessageContent, ChatMessageItem, ChatMessageStep}
@@ -11,6 +15,7 @@ defmodule IntellectualClub.Chat.MessageText do
 
   @snippet_radius 240
   @trace_read_chunk_size 200
+  @max_terms 16
   @searchable_trace_item_types [
     :input,
     :handoff_request,
@@ -20,19 +25,51 @@ defmodule IntellectualClub.Chat.MessageText do
     :handoff_summary
   ]
 
+  @type search :: {:terms, nonempty_list(String.t())}
+
+  @doc "Item types whose text contents are searchable, as strings for raw SQL fragments."
+  def searchable_trace_item_type_strings, do: Enum.map(@searchable_trace_item_types, &to_string/1)
+
   @doc """
-  Filters `ChatMessage` queries to messages whose user-facing text contains
-  `term` (case-insensitive literal substring).
+  Splits a raw query into search terms.
+
+  With `exact?` the whole trimmed query is one literal term, spaces included.
+  Otherwise whitespace separates terms and every term must match. Returns `[]`
+  for a blank query.
+  """
+  @spec terms(String.t() | nil, boolean()) :: [String.t()]
+  def terms(query, exact?) do
+    query = query |> to_string() |> String.trim()
+
+    cond do
+      query == "" -> []
+      exact? -> [query]
+      true -> query |> String.split() |> Enum.uniq() |> Enum.take(@max_terms)
+    end
+  end
+
+  @doc "Wraps terms as a search, or returns `:empty`."
+  @spec search(String.t() | nil, boolean()) :: search() | :empty
+  def search(query, exact?) do
+    case terms(query, exact?) do
+      [] -> :empty
+      terms -> {:terms, terms}
+    end
+  end
+
+  @doc """
+  Filters `ChatMessage` queries to messages with a text content containing
+  every term (case-insensitive literal substrings).
 
   The partial trigram index is over raw `content_text`. Its kind and item-type
   predicates must be present so PostgreSQL can use it for ILIKE rechecks.
   """
   def filter(query, search, opts \\ [])
 
-  def filter(query, {:contains, term}, opts) when is_binary(term) do
-    pattern = like_pattern(term)
+  def filter(query, {:terms, [_ | _] = terms}, opts) do
     owner_id = Keyword.get(opts, :owner_id)
     content_owner = if owner_id, do: Ash.Expr.expr(owner_id == ^owner_id), else: true
+    text_predicate = contents_predicate(terms)
 
     query =
       Ash.Query.filter(
@@ -45,7 +82,7 @@ defmodule IntellectualClub.Chat.MessageText do
               exists(
                 contents,
                 kind == :text and item_type in ^@searchable_trace_item_types and
-                  ^content_owner and fragment("? ILIKE ?", content_text, ^pattern)
+                  ^content_owner and ^text_predicate
               )
           )
         )
@@ -54,12 +91,23 @@ defmodule IntellectualClub.Chat.MessageText do
     if owner_id, do: Ash.Query.filter(query, owner_id == ^owner_id), else: query
   end
 
-  @doc """
-  Whether `term` has a run of at least three letters or digits.
+  @doc "An Ash expression over `ChatMessageContent` matching every term."
+  def contents_predicate([_ | _] = terms) do
+    Enum.reduce(terms, true, fn term, acc ->
+      pattern = like_pattern(term)
+      Ash.Expr.expr(^acc and fragment("? ILIKE ?", content_text, ^pattern))
+    end)
+  end
 
-  Trigram indexes can only narrow substring matches for such terms; anything
-  shorter would have to scan every stored text.
+  @doc """
+  Whether a search can be narrowed by the trigram index: some term has a run
+  of at least three letters or digits. Shorter terms alone would have to scan
+  every stored text; combined with an indexable term they only filter.
   """
+  def indexable?({:terms, terms}), do: Enum.any?(terms, &indexable_term?/1)
+  def indexable?(_search), do: false
+
+  @doc "Whether `term` has a run of at least three letters or digits."
   def indexable_term?(term) when is_binary(term), do: Regex.match?(~r/[\p{L}\p{N}]{3}/u, term)
   def indexable_term?(_term), do: false
 
@@ -67,6 +115,9 @@ defmodule IntellectualClub.Chat.MessageText do
     escaped = String.replace(term, ["\\", "%", "_"], fn char -> "\\" <> char end)
     "%" <> escaped <> "%"
   end
+
+  @doc "ILIKE patterns for every term, in search order."
+  def like_patterns({:terms, terms}), do: Enum.map(terms, &like_pattern/1)
 
   def load_texts([], _actor), do: %{}
 
@@ -251,9 +302,9 @@ defmodule IntellectualClub.Chat.MessageText do
 
   defp read_matching_text_contents_for_items([], _search, _actor), do: []
 
-  defp read_matching_text_contents_for_items(item_ids, {:contains, term}, actor)
-       when is_list(item_ids) and is_binary(term) do
-    pattern = like_pattern(term)
+  defp read_matching_text_contents_for_items(item_ids, {:terms, [_ | _] = terms}, actor)
+       when is_list(item_ids) do
+    text_predicate = contents_predicate(terms)
 
     item_ids
     |> chunk_ids()
@@ -261,7 +312,7 @@ defmodule IntellectualClub.Chat.MessageText do
       ChatMessageContent
       |> Ash.Query.filter(
         chat_message_item_id in ^chunk and item_type in ^@searchable_trace_item_types and
-          kind == :text and fragment("? ILIKE ?", content_text, ^pattern)
+          kind == :text and ^text_predicate
       )
       |> Ash.Query.select([:id, :chat_message_item_id, :sequence, :content_text])
       |> Ash.read!(actor: actor)
@@ -296,60 +347,54 @@ defmodule IntellectualClub.Chat.MessageText do
     {sort_seq(record), Map.get(record, :id, 0)}
   end
 
+  @doc """
+  A window of `text` around the earliest occurrence of any term, or `nil` when
+  no term occurs. Callers highlight terms themselves.
+  """
   def snippet(text, search, radius \\ @snippet_radius)
 
-  def snippet(text, {:contains, term}, radius) when is_integer(radius) do
-    build_exact_snippet(text, term, radius)
+  def snippet(text, {:terms, [_ | _] = terms}, radius) when is_integer(radius) do
+    text = to_string(text || "")
+
+    if text == "" do
+      nil
+    else
+      terms
+      |> Enum.map(&normalize_term/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.flat_map(fn term ->
+        case Regex.run(Regex.compile!(Regex.escape(term), "iu"), text, return: :index) do
+          [{start, length} | _] -> [{start, length}]
+          nil -> []
+        end
+      end)
+      |> Enum.min(fn -> nil end)
+      |> case do
+        nil ->
+          nil
+
+        {match_start_bytes, match_len_bytes} ->
+          window(text, match_start_bytes, match_len_bytes, radius)
+      end
+    end
   end
 
   def snippet(_text, _search, _radius), do: nil
 
-  defp build_exact_snippet(text, term, radius) when is_integer(radius) do
-    text = to_string(text || "")
-    term = normalize_term(term)
-
-    if text == "" or term == "" do
-      nil
-    else
-      regex = Regex.compile!(Regex.escape(term), "iu")
-
-      case Regex.run(regex, text, return: :index) do
-        nil ->
-          nil
-
-        [{match_start_bytes, match_len_bytes} | _] ->
-          prefix_len =
-            if match_start_bytes <= 0 do
-              0
-            else
-              text
-              |> binary_part(0, match_start_bytes)
-              |> String.length()
-            end
-
-          match_end_bytes = match_start_bytes + match_len_bytes
-
-          match_end_len =
-            if match_end_bytes <= 0 do
-              0
-            else
-              text
-              |> binary_part(0, match_end_bytes)
-              |> String.length()
-            end
-
-          total_len = String.length(text)
-          start_idx = max(0, prefix_len - radius)
-          end_idx = min(total_len, match_end_len + radius)
-
-          snippet = String.slice(text, start_idx, end_idx - start_idx)
-          prefix = if start_idx > 0, do: "...", else: ""
-          suffix = if end_idx < total_len, do: "...", else: ""
-
-          prefix <> snippet <> suffix
-      end
-    end
+  defp window(text, match_start_bytes, match_len_bytes, radius) do
+    prefix_len = if match_start_bytes <= 0, do: 0, else: grapheme_length(text, match_start_bytes)
+    match_end_bytes = match_start_bytes + match_len_bytes
+    match_end_len = if match_end_bytes <= 0, do: 0, else: grapheme_length(text, match_end_bytes)
+    total_len = String.length(text)
+    start_idx = max(0, prefix_len - radius)
+    end_idx = min(total_len, match_end_len + radius)
+    snippet = String.slice(text, start_idx, end_idx - start_idx)
+    prefix = if start_idx > 0, do: "...", else: ""
+    suffix = if end_idx < total_len, do: "...", else: ""
+    prefix <> snippet <> suffix
   end
+
+  defp grapheme_length(text, bytes), do: text |> binary_part(0, bytes) |> String.length()
 
   @doc "Returns text from an already authorized, possibly projected fork trace."
   def from_loaded(message) do

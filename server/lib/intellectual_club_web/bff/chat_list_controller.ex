@@ -25,7 +25,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   def index(conn, %{"sections" => _} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(params),
-         {:ok, sections} <- search_sections(params) do
+         {:ok, sections} <- list_sections(params) do
       result =
         Listing.read_sections(
           actor,
@@ -172,31 +172,42 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     )
   end
 
-  @search_sections ["drafts", "unread", "working", "other"]
+  @list_sections ["drafts", "unread", "working", "other"]
 
   @doc """
   Searches the chat list.
 
-  With `sections=drafts,unread,...` the matches are split into list sections
-  in one request (`page_<section>` selects each section's page). Without it,
-  returns up to `per_page` best matches as a flat list.
+  Returns chats whose note matches (`notes`, first page only) and message hits
+  newest first (`hits`) with an opaque `next_cursor`; `chats` carries summaries
+  for both. `exact=1` matches the whole query as one substring instead of every
+  word. `limit` bounds hits per page.
   """
   def search(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
-         {:ok, bot_filter} <- ChatParams.bot_filter(params),
-         {:ok, sections} <- search_sections(params) do
+         {:ok, bot_filter} <- ChatParams.bot_filter(params) do
       term = params |> Map.get("q", "") |> to_string()
 
-      cond do
-        Map.has_key?(params, "section") and not Map.has_key?(params, "sections") ->
-          search_legacy_section(conn, actor, term, bot_filter, params)
-
-        sections == [] ->
-          search_flat(conn, actor, term, bot_filter, params)
-
-        true ->
-          search_grouped(conn, actor, term, bot_filter, sections, params)
-      end
+      render_search(conn, fn ->
+        with {:ok, result} <-
+               ChatSearch.search_chat_list(term, actor,
+                 exact?: ChatParams.flag?(params, "exact"),
+                 bot_filter: bot_filter,
+                 after: params["after"],
+                 limit: ChatParams.search_limit(params)
+               ) do
+          SearchDeadline.query(fn ->
+            %{
+              chats: search_chats_payload(result, actor, params),
+              notes: result.notes,
+              hits: Enum.map(result.hits, &hit_payload/1),
+              next_cursor: result.next_cursor,
+              text_search: result.text_search?,
+              terms: result.terms,
+              next_read_state_expiry: ReadState.list_marker(actor).next_expiry
+            }
+          end)
+        end
+      end)
     else
       {:error, %Plug.Conn{} = conn} ->
         conn
@@ -208,7 +219,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     end
   end
 
-  defp search_sections(%{"sections" => raw}) do
+  defp list_sections(%{"sections" => raw}) do
     sections =
       raw
       |> to_string()
@@ -216,76 +227,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> Enum.map(&String.trim/1)
       |> Enum.uniq()
 
-    if sections != [] and Enum.all?(sections, &(&1 in @search_sections)),
+    if sections != [] and Enum.all?(sections, &(&1 in @list_sections)),
       do: {:ok, sections},
       else: {:error, "Invalid sections"}
-  end
-
-  defp search_sections(%{"section" => section}) when section in @search_sections, do: {:ok, []}
-  defp search_sections(%{"section" => _section}), do: {:error, "Invalid section"}
-  defp search_sections(_params), do: {:ok, []}
-
-  defp search_flat(conn, actor, term, bot_filter, params) do
-    limit = ChatParams.pagination(params).per_page
-
-    render_search(conn, fn ->
-      with {:ok, entries} <-
-             ChatSearch.search_chat_list(term, actor, bot_filter: bot_filter, limit: limit) do
-        SearchDeadline.query(fn -> %{chats: search_entries_payload(entries, actor, params)} end)
-      end
-    end)
-  end
-
-  defp search_legacy_section(conn, actor, term, bot_filter, params) do
-    pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
-
-    render_search(conn, fn ->
-      with {:ok, result} <- ChatSearch.search_chat_page(term, actor, bot_filter, pagination) do
-        SearchDeadline.query(fn ->
-          %{
-            chats: search_entries_payload(result.entries, actor, params),
-            page: %{
-              number: pagination.page,
-              per_page: pagination.per_page,
-              total: result.total,
-              has_next: pagination.page * pagination.per_page < result.total
-            },
-            next_read_state_expiry: ReadState.list_marker(actor).next_expiry
-          }
-        end)
-      end
-    end)
-  end
-
-  defp search_grouped(conn, actor, term, bot_filter, sections, params) do
-    per_page = ChatParams.pagination(params).per_page
-
-    pages =
-      Map.new(sections, &{&1, ChatParams.pagination(%{"page" => params["page_" <> &1]}).page})
-
-    cursors = Map.new(sections, &{&1, params["after_" <> &1]})
-
-    render_search(conn, fn ->
-      with {:ok, result} <-
-             ChatSearch.search_chat_sections(term, actor, bot_filter,
-               sections: sections,
-               pages: pages,
-               cursors: cursors,
-               per_page: per_page
-             ) do
-        SearchDeadline.query(fn ->
-          %{
-            chats: search_entries_payload(result.entries, actor, params),
-            sections:
-              Map.new(result.sections, fn {section, page} ->
-                {section, %{ids: page.ids, page: Map.drop(page, [:ids])}}
-              end),
-            next_read_state_expiry: ReadState.list_marker(actor).next_expiry,
-            text_search: result.text_search?
-          }
-        end)
-      end
-    end)
   end
 
   defp render_search(conn, fun) do
@@ -312,8 +256,19 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     })
   end
 
-  defp search_entries_payload(entries, actor, params) do
-    chats = Enum.map(entries, & &1.chat)
+  defp hit_payload(hit) do
+    %{
+      message_id: hit.message_id,
+      chat_id: hit.chat_id,
+      role: hit.role,
+      created_at: hit.created_at,
+      active: hit.active?,
+      snippet: hit.snippet
+    }
+  end
+
+  defp search_chats_payload(result, actor, params) do
+    chats = result.chats
     drafts = ChatDraft.load_many(chats, actor)
 
     {subchats_by_parent, _subchat_lifecycle_states} =
@@ -321,21 +276,14 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
     child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
 
-    Enum.map(entries, fn entry ->
-      chat = entry.chat
-      activity_at = Listing.activity_at(chat)
-
+    Enum.map(chats, fn chat ->
       Serializer.chat_summary(chat,
-        activity_at: activity_at,
+        activity_at: Listing.activity_at(chat),
         child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
         subchats: Map.get(subchats_by_parent, chat.id, [])
       )
       |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-      |> Map.put(:message_count, entry.message_count)
-      |> Map.put(:match_type, ChatParams.match_type(entry.match_type))
-      |> Map.put(:snippet, entry.snippet)
-      |> Map.put(:message_id, entry.message_id)
-      |> Map.put(:message_role, entry.message_role)
+      |> Map.put(:message_count, Map.get(result.message_counts, chat.id, 0))
     end)
   end
 
@@ -412,7 +360,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   def idle_state(conn, %{"sections" => _} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(params),
-         {:ok, sections} <- search_sections(params) do
+         {:ok, sections} <- list_sections(params) do
       result =
         Listing.read_sections(actor, bot_filter, section_paginations(params, sections), [
           :last_message,

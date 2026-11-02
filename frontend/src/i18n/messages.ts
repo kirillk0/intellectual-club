@@ -172,7 +172,6 @@ export const ruMessages: Record<string, string> = {
   'Bookmark': 'Закладка',
   'Bookmarks': 'Закладки',
   'Bot': 'Бот',
-  'Bot/Note': 'Бот/заметка',
   'Bots': 'Боты',
   'Branch': 'Ветка',
   'Branch message': 'Создать ветку от сообщения',
@@ -995,8 +994,11 @@ export const ruMessages: Record<string, string> = {
   "Read the contents of 1–10 HTTP(S) URLs as clean text or Markdown. Failed URLs are retried with the configured fallback providers. Brave uses the built-in Web Reader. Does not follow links to crawl a site.": "Чтение содержимого 1–10 HTTP(S)-адресов в виде очищенного текста или Markdown. Неудавшиеся адреса передаются резервным провайдерам. Brave использует встроенный Web Reader. Обход сайта по ссылкам не выполняется.",
   'Timeout (seconds)': 'Таймаут (секунды)',
   'To': 'По',
-  'To search message text, enter at least 3 letters or digits in a row. Only chat titles, notes and bot names were searched.':
-    'Чтобы искать по тексту сообщений, введите хотя бы 3 буквы или цифры подряд. Сейчас поиск выполнен только по названиям и заметкам чатов и именам ботов.',
+  'Message text was not searched: some word must have at least 3 letters or digits in a row. Only chat notes were searched.':
+    'Текст сообщений не искался: хотя бы в одном слове должно быть 3 буквы или цифры подряд. Поиск выполнен только по заметкам чатов.',
+  'Exact': 'Точно',
+  'Match the whole phrase exactly, including spaces': 'Искать фразу целиком, включая пробелы',
+  'Show more': 'Показать ещё',
   'Today, {time}': 'Сегодня, {time}',
   'Token estimate': 'Оценка токенов',
   'Too many requests were sent. Wait a moment and try again.': 'Отправлено слишком много запросов. Подождите немного и попробуйте снова.',

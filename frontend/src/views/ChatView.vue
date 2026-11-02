@@ -116,6 +116,7 @@
           :is-context-soft-limit-reached="vm.isContextSoftLimitReached"
           :context-usage-percent="vm.contextUsagePercent"
           :branch-search-term="vm.branchSearchTerm"
+          :branch-search-exact="vm.branchSearchExact"
           :has-branch-search="vm.hasBranchSearch"
           :branch-search-loading="vm.branchSearchLoading"
           :branch-search-error="vm.branchSearchError"
@@ -137,6 +138,7 @@
           @update:leftOpen="(value) => (vm.leftOpen = value)"
           @update:leftTab="(value) => (vm.leftTab = value)"
           @update:branchSearchTerm="(value) => (vm.branchSearchTerm = value)"
+          @update:branchSearchExact="(value) => (vm.branchSearchExact = value)"
           @open-prompt-modal="vm.openPromptModal"
           @open-message-tree="openMessageTree"
           @branch-item-click="vm.handleBranchItemClick"
@@ -1227,6 +1229,20 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.chat-page .branch-search__exact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.chat-page .branch-search__exact.active {
+  color: var(--color-link);
+  border-color: var(--color-info-border);
+  background: var(--color-info-bg);
 }
 
 .chat-page .branch-search input {

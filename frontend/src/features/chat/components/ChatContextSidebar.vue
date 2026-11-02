@@ -101,6 +101,17 @@
             aria-label="Search messages"
             @input="handleSearchInput"
           />
+          <button
+            type="button"
+            class="branch-search__exact"
+            :class="{ active: branchSearchExact }"
+            :aria-pressed="branchSearchExact"
+            :title="translate('Match the whole phrase exactly, including spaces')"
+            @click="emit('update:branchSearchExact', !branchSearchExact)"
+          >
+            <span aria-hidden="true">“ ”</span>
+            <span>{{ translate('Exact') }}</span>
+          </button>
           <button v-if="branchSearchTerm" type="button" @click="emit('update:branchSearchTerm', '')">
             Clear
           </button>
@@ -287,6 +298,7 @@ interface Props {
   isContextSoftLimitReached: boolean;
   contextUsagePercent: number;
   branchSearchTerm: string;
+  branchSearchExact?: boolean;
   hasBranchSearch: boolean;
   branchSearchLoading: boolean;
   branchSearchError: string;
@@ -308,6 +320,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  branchSearchExact: false,
   readonly: false,
 });
 
@@ -315,6 +328,7 @@ const emit = defineEmits<{
   (e: 'update:leftOpen', value: boolean): void;
   (e: 'update:leftTab', value: LeftPanelTab): void;
   (e: 'update:branchSearchTerm', value: string): void;
+  (e: 'update:branchSearchExact', value: boolean): void;
   (e: 'open-prompt-modal'): void;
   (e: 'open-message-tree'): void;
   (e: 'branch-item-click', id?: number | null): void;

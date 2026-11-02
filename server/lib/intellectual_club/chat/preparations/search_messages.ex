@@ -6,13 +6,16 @@ defmodule IntellectualClub.Chat.Preparations.SearchMessages do
 
   @impl true
   def prepare(query, _opts, _context) do
-    term = query |> Ash.Query.get_argument(:q) |> to_string() |> String.trim()
+    search =
+      MessageText.search(
+        Ash.Query.get_argument(query, :q),
+        Ash.Query.get_argument(query, :exact) == true
+      )
 
     query =
-      if term == "" do
-        Ash.Query.filter(query, false)
-      else
-        MessageText.filter(query, {:contains, term})
+      case search do
+        :empty -> Ash.Query.filter(query, false)
+        search -> MessageText.filter(query, search)
       end
 
     query

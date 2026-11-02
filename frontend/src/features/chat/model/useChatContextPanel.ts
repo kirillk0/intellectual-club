@@ -164,6 +164,8 @@ export function useChatContextPanel(params: Params) {
   });
 
   const branchSearchTerm = ref('');
+  // Match the whole query as one phrase instead of every word.
+  const branchSearchExact = ref(false);
   const hasBranchSearch = computed(() => branchSearchTerm.value.trim().length > 0);
   const branchSearchLoading = ref(false);
   const branchSearchError = ref('');
@@ -194,6 +196,7 @@ export function useChatContextPanel(params: Params) {
     try {
       const searchParams = new URLSearchParams();
       searchParams.set('q', query);
+      if (branchSearchExact.value) searchParams.set('exact', '1');
       const payload = await api.get<BranchSearchResults>(
         `/api/bff/chat-search/${params.chatId.value}/messages?${searchParams.toString()}`
       );
@@ -244,6 +247,14 @@ export function useChatContextPanel(params: Params) {
     if (!hasBranchSearch.value) return;
     void runBranchSearch(branchSearchTerm.value.trim());
   };
+
+  watch(
+    () => branchSearchExact.value,
+    () => {
+      clearBranchSearchTimer();
+      rerunBranchSearch();
+    }
+  );
 
   const searchHitMeta = (hit: ChatMessageSearchHit) => {
     const time = formatRelativeDateTime(displayTimestampIso(hit));
@@ -474,6 +485,7 @@ export function useChatContextPanel(params: Params) {
     isContextSoftLimitReached,
     contextUsagePercent,
     branchSearchTerm,
+    branchSearchExact,
     hasBranchSearch,
     branchSearchLoading,
     branchSearchError,
