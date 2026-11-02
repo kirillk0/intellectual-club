@@ -13,6 +13,261 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.SqlCapture
   alias IntellectualClub.Chat.Threads
 
+  describe "grouped chat list" do
+    test "matches independently paginated sections while sharing overlapping draft rows", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      %{user: outsider} = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      bot = create_bot!(actor)
+      with_bot = create_chat!(actor, bot_id: bot.id)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn)
+      others = for _ <- 1..3, do: create_chat!(actor)
+      working = create_chat!(actor)
+      create_generating_message!(actor, working)
+      unread = create_chat!(actor)
+      create_generating_message!(actor, unread)
+      create_chat!(outsider)
+
+      for chat <- [unread, with_bot] do
+        assert {:ok, _} =
+                 IntellectualClub.Chat.ReadState.mutate(
+                   chat.id,
+                   %{"action" => "unread", "expected_state_version" => 0},
+                   actor
+                 )
+      end
+
+      snoozed = create_chat!(actor)
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 snoozed.id,
+                 %{
+                   "action" => "snooze",
+                   "expected_state_version" => 0,
+                   "snoozed_until" =>
+                     DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+                 },
+                 actor
+               )
+
+      for chat <- [parent, child, unread | others] do
+        assert {:ok, _} =
+                 IntellectualClub.Chat.ChatDraft.save(
+                   chat.id,
+                   %{"text" => "private unfinished text", "expected_revision" => 0},
+                   actor
+                 )
+      end
+
+      for bot_filter <- ["", "none", to_string(bot.id)], page <- [1, 2, 9] do
+        params = %{
+          sections: "drafts,unread,working,other",
+          per_page: 2,
+          page_drafts: page,
+          page_unread: 1,
+          page_working: 1,
+          page_other: page,
+          bot: bot_filter
+        }
+
+        grouped = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+        ids = Enum.map(grouped["chats"], & &1["id"])
+        assert length(ids) == length(Enum.uniq(ids))
+        refute Jason.encode!(grouped) =~ "private unfinished text"
+
+        for section <- ~w(drafts unread working other) do
+          number = if section in ~w(drafts other), do: page, else: 1
+
+          single =
+            conn
+            |> get("/api/bff/chat-list", %{
+              section: section,
+              page: number,
+              per_page: 2,
+              bot: bot_filter
+            })
+            |> json_response(200)
+
+          assert grouped["sections"][section]["ids"] == Enum.map(single["chats"], & &1["id"])
+          assert grouped["sections"][section]["page"] == single["page"]
+          assert grouped["stats"] == single["stats"]
+
+          for chat <- single["chats"] do
+            assert Enum.find(grouped["chats"], &(&1["id"] == chat["id"])) == chat
+          end
+        end
+      end
+    end
+
+    test "shares stable idle revisions and invalidates them when drafts or section pages change",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn)
+      create_chat!(actor)
+      params = %{sections: "drafts,unread,working,other", per_page: 1}
+      list = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+      revision_params = Map.put(params, :revision, list["idle_revision"])
+      conn |> get("/api/bff/chat-list/idle-state", revision_params) |> response(204)
+
+      conn
+      |> get("/api/bff/chat-list/idle-state", Map.put(revision_params, :page_other, 2))
+      |> json_response(200)
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ChatDraft.save(
+                 child.id,
+                 %{"text" => "unfinished", "expected_revision" => 0},
+                 actor
+               )
+
+      changed =
+        conn |> get("/api/bff/chat-list/idle-state", revision_params) |> json_response(200)
+
+      refute changed["revision"] == list["idle_revision"]
+      updated = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+      assert updated["idle_revision"] == changed["revision"]
+      assert updated["sections"]["drafts"]["ids"] == [child.id]
+
+      conn
+      |> get(
+        "/api/bff/chat-list/idle-state",
+        Map.put(params, :revision, updated["idle_revision"])
+      )
+      |> response(204)
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 parent.id,
+                 %{"action" => "unread", "expected_state_version" => 0},
+                 actor
+               )
+
+      conn
+      |> get(
+        "/api/bff/chat-list/idle-state",
+        Map.put(params, :revision, updated["idle_revision"])
+      )
+      |> json_response(200)
+    end
+
+    test "idle tracks visible subchat completion and keeps snooze expiry observable", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn)
+      message = create_generating_message!(actor, child)
+      params = %{sections: "drafts,unread,working,other"}
+      list = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+      idle = conn |> get("/api/bff/chat-list/idle-state", params) |> json_response(200)
+      assert idle["revision"] == list["idle_revision"]
+      assert idle["active_generation_message_id"] == message.id
+
+      conn
+      |> get("/api/bff/chat-list/idle-state", Map.put(params, :revision, idle["revision"]))
+      |> response(204)
+
+      set_message_status!(actor, message, :done)
+
+      completed =
+        conn
+        |> get("/api/bff/chat-list/idle-state", Map.put(params, :revision, idle["revision"]))
+        |> json_response(200)
+
+      refute completed["revision"] == idle["revision"]
+      assert is_nil(completed["active_generation_message_id"])
+      updated = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+      assert updated["idle_revision"] == completed["revision"]
+
+      assert {:ok, _} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 parent.id,
+                 %{
+                   "action" => "snooze",
+                   "expected_state_version" => 0,
+                   "snoozed_until" =>
+                     DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+                 },
+                 actor
+               )
+
+      snoozed = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+
+      unchanged =
+        conn
+        |> get(
+          "/api/bff/chat-list/idle-state",
+          Map.put(params, :revision, snoozed["idle_revision"])
+        )
+        |> json_response(200)
+
+      assert is_binary(snoozed["next_read_state_expiry"])
+      assert unchanged["revision"] == snoozed["idle_revision"]
+      assert unchanged["next_read_state_expiry"] == snoozed["next_read_state_expiry"]
+    end
+
+    test "validates sections and supports empty accounts and a subset of sections", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+
+      for path <- ["/api/bff/chat-list", "/api/bff/chat-list/idle-state"] do
+        for sections <- ["", "other,unknown"] do
+          conn |> get(path, %{sections: sections}) |> json_response(422)
+        end
+      end
+
+      empty =
+        conn |> get("/api/bff/chat-list", %{sections: "other,drafts,other"}) |> json_response(200)
+
+      assert empty["chats"] == []
+      assert Enum.sort(Map.keys(empty["sections"])) == ["drafts", "other"]
+      assert empty["sections"]["other"]["page"]["total"] == 0
+      chat = create_chat!(actor)
+      subset = conn |> get("/api/bff/chat-list", %{sections: "other"}) |> json_response(200)
+      assert subset["sections"]["other"]["ids"] == [chat.id]
+      assert Map.keys(subset["sections"]) == ["other"]
+    end
+
+    @tag :whitebox
+    test "loads shared list data once rather than repeating it for every section", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chats = for _ <- 1..3, do: create_chat!(actor)
+
+      for chat <- chats do
+        assert {:ok, _} =
+                 IntellectualClub.Chat.ChatDraft.save(
+                   chat.id,
+                   %{"text" => "draft", "expected_revision" => 0},
+                   actor
+                 )
+      end
+
+      {_single, single} =
+        SqlCapture.measure(fn ->
+          for section <- ~w(drafts unread working other) do
+            conn |> get("/api/bff/chat-list", %{section: section}) |> json_response(200)
+          end
+        end)
+
+      {_grouped, grouped} =
+        SqlCapture.measure(fn ->
+          conn
+          |> get("/api/bff/chat-list", %{sections: "drafts,unread,working,other"})
+          |> json_response(200)
+        end)
+
+      assert length(grouped.queries) < div(length(single.queries), 2)
+    end
+  end
+
   describe "personal draft section" do
     test "filters before pagination and orders by saved draft rather than chat activity", %{
       conn: conn

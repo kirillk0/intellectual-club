@@ -41,6 +41,10 @@ expiry. A later activation starts a new visit and can consume the reminder.
 The list contains independent, paginated Drafts, Unread, Working, and Other sections.
 Drafts is an overlapping personal section; see [chat drafts](chat-drafts.md).
 Unread takes precedence over working; snoozed chats can still appear as working.
+The ordinary list and its idle probe each use one grouped request with independent
+`page_<section>` offsets and a shared revision (see
+[chat data API](chat-data-api.md#grouped-chat-list)).
+
 Filters and search apply across the dataset before section pagination. Grouped
 search returns all requested sections in one request, with unique chat summaries
 and separate ordered IDs and pagination metadata for each section (see

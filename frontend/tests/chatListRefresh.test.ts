@@ -21,8 +21,7 @@ import { provideStackLayer } from '@/features/stack/useStackLayer';
 import { publishChatChange } from '@/features/chat/chatEvents';
 
 const listPayload = (note = 'Old list') => ({
-  chats: [{ id: 1, note, created_at: '2026-09-06T00:00:00Z', message_count: 0 }],
-  page: { number: 1, per_page: 20, total: 1, has_next: false },
+  ...groupedListRows([{ id: 1, note, created_at: '2026-09-06T00:00:00Z', message_count: 0 } as ChatSummary]),
   idle_revision: note,
 });
 
@@ -35,7 +34,8 @@ const searchCursor = (section: string, page: number) => `opaque:${section}/${pag
 function groupedSearchPayload(
   path: string,
   sectionResult: (section: string, page: number, cursor: string | null) => SectionResult,
-  extra: Record<string, unknown> = {}
+  extra: Record<string, unknown> = {},
+  search = true
 ) {
   const params = new URL(path, 'http://localhost').searchParams;
   const rows = new Map<number, ChatSummary>();
@@ -46,11 +46,22 @@ function groupedSearchPayload(
     const page = {
       number, per_page: Number(params.get('per_page') || 20), has_next: false,
       next_cursor: result.page?.has_next ? searchCursor(section, number + 1) : null,
-      ...result.page, total: null,
+      ...result.page, total: search ? null : result.page?.total ?? result.chats.length,
     };
     return [section, { ids: result.chats.map((chat) => chat.id), page }];
   }));
   return { chats: [...rows.values()], sections, next_read_state_expiry: null, text_search: true, ...extra };
+}
+
+function groupedListPayload(path: string, sectionResult: (section: string, page: number) => SectionResult, extra: Record<string, unknown> = {}) {
+  return groupedSearchPayload(path, sectionResult, extra, false);
+}
+
+function groupedListRows(chats: ChatSummary[], extra: Record<string, unknown> = {}) {
+  return groupedListPayload(`/api/bff/chat-list?sections=${SECTIONS.join(',')}`, (section) => ({ chats: chats.filter((chat) => {
+    if (section === 'drafts') return chat.has_draft;
+    return section === (chat.read_state?.is_unread ? 'unread' : chat.active_generation_message_id ? 'working' : 'other');
+  }) }), extra);
 }
 
 const searchPayload = (note: string, extra: Record<string, unknown> = {}) => groupedSearchPayload(
@@ -154,14 +165,14 @@ describe('chat list refresh after returning from the background', () => {
       path.startsWith('/api/bff/chat-list?') ? listPayload('Fresh list') : undefined
     );
     await pull();
-    expect(listRequests()).toHaveLength(12);
+    expect(listRequests()).toHaveLength(3);
     expect(wrapper.get('.chat-row').text()).toContain('Fresh list');
     await vi.advanceTimersByTimeAsync(400);
     expect(wrapper.get('.pull-to-refresh').classes()).toContain('pull-to-refresh--idle');
     expect(queryClient.isFetching()).toBe(1);
 
     await pull();
-    expect(listRequests()).toHaveLength(16);
+    expect(listRequests()).toHaveLength(4);
     bots.resolve({ data: [] });
     await flushPromises();
   });
@@ -174,10 +185,10 @@ describe('chat list refresh after returning from the background', () => {
     await nextTick();
     active.value = true;
     await flushPromises();
-    const pendingSignal = listRequests()[4][1].signal as AbortSignal;
+    const pendingSignal = listRequests()[1][1].signal as AbortSignal;
 
     await pull();
-    expect(listRequests()).toHaveLength(12);
+    expect(listRequests()).toHaveLength(3);
     expect(pendingSignal.aborted).toBe(true);
     stale.resolve(listPayload('Obsolete response'));
     await flushPromises();
@@ -219,41 +230,77 @@ describe('chat list refresh after returning from the background', () => {
     window.dispatchEvent(new Event('focus'));
 
     expect(signal.aborted).toBe(false);
-    expect(idleRequests()).toHaveLength(4);
+    expect(idleRequests()).toHaveLength(1);
     probe.resolve({ revision: 'Fresh list' });
     await flushPromises();
     expect(wrapper.get('.chat-row').text()).toContain('Fresh list');
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(idleRequests()).toHaveLength(8);
+    expect(idleRequests()).toHaveLength(2);
   });
 
   it('refreshes when only the working section changes on another device', async () => {
     await mountList();
     apiMocks.get.mockImplementation(async (path: string) => {
       const url = new URL(path, 'https://example.test');
-      if (url.pathname.endsWith('/idle-state')) return url.searchParams.get('section') === 'working' ? { revision: 'working-changed' } : undefined;
+      if (url.pathname.endsWith('/idle-state')) return { revision: 'working-changed' };
       return listPayload('Working changed remotely');
     });
     await vi.advanceTimersByTimeAsync(30_000);
     await flushPromises();
-    expect(idleRequests()).toHaveLength(4);
-    expect(listRequests()).toHaveLength(8);
+    expect(idleRequests()).toHaveLength(1);
+    expect(listRequests()).toHaveLength(2);
     expect(wrapper.get('.chat-row').text()).toContain('Working changed remotely');
+  });
+
+  it('probes all displayed pages with one revision and skips a reload on an unchanged response', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?')
+      ? { ...sectionPayload(path), idle_revision: 'all-sections-revision' } : undefined);
+    await mountList('/chats?draftsPage=2&unreadPage=2&workingPage=3&page=2&bot=5');
+    expect(listRequests()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushPromises();
+    expect(idleRequests()).toHaveLength(1);
+    const params = searchParams(idleRequests()[0]);
+    expect(params.get('sections')).toBe(SECTIONS.join(','));
+    expect(params.get('revision')).toBe('all-sections-revision');
+    expect(params.get('bot')).toBe('5');
+    expect(params.get('per_page')).toBe('20');
+    expect(SECTIONS.map((section) => params.get(`page_${section}`))).toEqual(['2', '2', '3', '2']);
+    expect(params.has('section')).toBe(false);
+    expect(listRequests()).toHaveLength(1);
+  });
+
+  it('retains the last applied revision when a changed idle response cannot be loaded', async () => {
+    await mountList();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'not-applied' };
+      throw new Error('Offline');
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushPromises();
+    expect(listRequests()).toHaveLength(2);
+    expect(wrapper.get('.chat-row').text()).toContain('Old list');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flushPromises();
+    expect(idleRequests()).toHaveLength(2);
+    expect(searchParams(idleRequests()[1]).get('revision')).toBe('Old list');
+    expect(listRequests()).toHaveLength(3);
   });
 
   it('refreshes immediately after a quick second background round trip', async () => {
     await mountList();
     window.dispatchEvent(new Event('focus'));
     await flushPromises();
-    expect(idleRequests()).toHaveLength(4);
+    expect(idleRequests()).toHaveLength(1);
     visibility = 'hidden';
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(100);
     visibility = 'visible';
     document.dispatchEvent(new Event('visibilitychange'));
     await flushPromises();
-    expect(idleRequests()).toHaveLength(8);
+    expect(idleRequests()).toHaveLength(2);
   });
 
   function sectionChat(id: number, section: string, extra: Partial<ChatSummary> = {}): ChatSummary & { read_state: NonNullable<ChatSummary['read_state']> } {
@@ -291,15 +338,14 @@ describe('chat list refresh after returning from the background', () => {
   }
 
   function sectionPayload(path: string) {
-    const params = new URL(path, 'http://localhost').searchParams;
-    return sectionPage(params.get('section') || 'other', Number(params.get('page') || 1));
+    return groupedListPayload(path, sectionPage);
   }
 
   it.each(['/chats', '/chats?q=needle'])('hides empty sections in %s', async (path) => {
     const rows = (section: string | null) => ({ chats: section === 'working' ? [sectionChat(1, 'working')] : [] });
     apiMocks.get.mockImplementation(async (url: string) => isSearchPath(url)
       ? groupedSearchPayload(url, rows)
-      : rows(new URL(url, 'http://localhost').searchParams.get('section')));
+      : groupedListPayload(url, rows));
     await mountList(path);
     expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['working']);
     expect(wrapper.text()).not.toContain('No chats in this section.');
@@ -319,7 +365,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.text()).toContain('No chats match the current filters.');
   });
 
-  it('requests all sections independently and changes only the selected section page', async () => {
+  it('requests all sections once and changes only the selected section page', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     apiMocks.get.mockImplementation(async (path: string) => {
       const payload = sectionPayload(path);
@@ -327,14 +373,17 @@ describe('chat list refresh after returning from the background', () => {
       return payload;
     });
     await mountList('/chats?bot=5');
-    expect(listRequests()).toHaveLength(4);
-    expect(listRequests().map(([path]) => new URL(path, 'http://localhost').searchParams.get('section'))).toEqual(['drafts', 'unread', 'working', 'other']);
+    expect(listRequests()).toHaveLength(1);
+    expect(searchParams(listRequests()[0]).get('sections')).toBe('drafts,unread,working,other');
+    expect(searchParams(listRequests()[0]).has('section')).toBe(false);
+    expect(searchParams(listRequests()[0]).has('page')).toBe(false);
     for (const [path] of listRequests()) expect(new URL(path, 'http://localhost').searchParams.get('bot')).toBe('5');
     const unread = wrapper.get('[data-section="unread"]');
     expect(wrapper.findAll('.chat-row')).toHaveLength(4);
     await unread.findAll('button').find((button) => button.text() === 'Next')!.trigger('click');
     await flushPromises();
-    const pages = listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'));
+    expect(listRequests()).toHaveLength(2);
+    const pages = SECTIONS.map((section) => searchParams(listRequests().at(-1)!).get(`page_${section}`));
     expect(pages).toEqual(['1', '2', '1', '1']);
     expect(unread.text()).toContain('Page 2 of 3');
     expect(wrapper.get('[data-section="other"]').text()).toContain('Page 1 of 3');
@@ -700,7 +749,7 @@ describe('chat list refresh after returning from the background', () => {
     };
     apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
       ? groupedSearchPayload(path, sectionRows)
-      : sectionRows(new URL(path, 'http://localhost').searchParams.get('section')));
+      : groupedListPayload(path, sectionRows));
     await mountList(route);
     expect(wrapper.findAll('[data-section]').map((section) => section.attributes('data-section'))).toEqual(['drafts', 'unread', 'other']);
     const drafts = wrapper.get('[data-section="drafts"]');
@@ -710,7 +759,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.get('[data-section="other"]').text()).not.toContain('other 13');
   });
 
-  it('preserves each search section order despite draft overlap and regroups the newest read state', async () => {
+  it.each(['/chats', '/chats?q=needle'])('preserves section order despite draft overlap and regroups the newest read state in %s', async (route) => {
     const shared = sectionChat(12, 'unread', { has_draft: true });
     const first = sectionChat(10, 'unread');
     const draftOnly = sectionChat(13, 'other', { has_draft: true });
@@ -718,12 +767,11 @@ describe('chat list refresh after returning from the background', () => {
     const stale = sectionChat(15, 'unread', { has_draft: true });
     const moved = sectionChat(15, 'other', { has_draft: true });
     moved.read_state.state_version = 3;
-    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
-      ? groupedSearchPayload(path, (section) => ({ chats: {
+    apiMocks.get.mockImplementation(async (path: string) => (isSearchPath(path) ? groupedSearchPayload : groupedListPayload)(path,
+      (section) => ({ chats: {
         drafts: [shared, moved, draftOnly], unread: [first, shared, stale], other: [ordinary],
-      }[section] || [] }), { chats: [shared, stale, draftOnly, first, ordinary, moved] })
-      : listPayload());
-    await mountList('/chats?q=needle');
+      }[section] || [] }), { chats: [shared, stale, draftOnly, first, ordinary, moved] }));
+    await mountList(route);
     const notes = (section: string) => wrapper.get(`[data-section="${section}"]`).findAll('.chat-row').map((row) => row.text());
     expect(notes('drafts')).toEqual(['unread 12', 'other 15', 'other 13'].map((note) => expect.stringContaining(note)));
     expect(notes('unread')).toEqual(['unread 10', 'unread 12'].map((note) => expect.stringContaining(note)));
@@ -736,25 +784,23 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.get('[data-section="drafts"]').text()).toContain('drafts 402');
     await wrapper.get('[data-section="drafts"]').findAll('button').find((button) => button.text() === 'Previous')!.trigger('click');
     await flushPromises();
-    expect(listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '1', '1', '2']);
+    expect(SECTIONS.map((section) => searchParams(listRequests().at(-1)!).get(`page_${section}`))).toEqual(['1', '1', '1', '2']);
     expect(window.location.search).not.toContain('draftsPage=');
     apiMocks.get.mockImplementation(async (path: string) => {
-      const payload = sectionPayload(path);
-      if (new URL(path, 'http://localhost').searchParams.get('section') === 'drafts') return { ...payload, chats: [], page: { number: 1, per_page: 20, total: 0, has_next: false } };
-      return payload;
+      return groupedListPayload(path, (section, page) => section === 'drafts'
+        ? { chats: [], page: { number: 1, per_page: 20, total: 0, has_next: false } }
+        : sectionPage(section, page));
     });
     await pull();
     expect(wrapper.find('[data-section="drafts"]').exists()).toBe(false);
     expect(wrapper.get('[data-section="other"]').text()).toContain('other 302');
   });
 
-  it('deduplicates rows moved during a section batch using the newer read state', async () => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      const section = new URL(path, 'http://localhost').searchParams.get('section');
-      const chat = sectionChat(1, section === 'unread' ? 'unread' : 'other');
-      if (section === 'unread') chat.read_state.state_version = 3;
-      return { chats: section === 'working' ? [] : [chat] };
-    });
+  it('deduplicates repeated rows using the newer read state', async () => {
+    const older = sectionChat(1, 'other');
+    const newer = sectionChat(1, 'unread');
+    newer.read_state.state_version = 3;
+    apiMocks.get.mockResolvedValue(groupedListRows([older, newer]));
     await mountList();
     expect(wrapper.findAll('.chat-row')).toHaveLength(1);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
@@ -765,38 +811,38 @@ describe('chat list refresh after returning from the background', () => {
     const until = new Date(Date.now() + 1_000).toISOString();
     const chat = sectionChat(1, 'other');
     chat.read_state = { ...chat.read_state, manual_unread: true, has_unread: true, is_snoozed: true, snoozed_until: until };
-    apiMocks.get.mockResolvedValue({ chats: [chat] });
+    apiMocks.get.mockResolvedValue(groupedListRows([chat]));
     await mountList();
-    apiMocks.get.mockResolvedValue({ chats: [sectionChat(1, 'unread')] });
+    apiMocks.get.mockResolvedValue(groupedListRows([sectionChat(1, 'unread')]));
     await vi.advanceTimersByTimeAsync(1_100);
     await flushPromises();
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
     expect(wrapper.find('[data-section="other"]').exists()).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
   });
 
   it('refreshes an expired snooze after foregrounding even when the idle probe returns no changes', async () => {
     const chat = sectionChat(1, 'other');
     chat.read_state = { ...chat.read_state, manual_unread: true, is_snoozed: true, snoozed_until: new Date(Date.now() + 500).toISOString() };
-    apiMocks.get.mockResolvedValue({ chats: [chat] });
+    apiMocks.get.mockResolvedValue(groupedListRows([chat]));
     await mountList();
     visibility = 'hidden';
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(listRequests()).toHaveLength(4);
-    apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?') ? { chats: [sectionChat(1, 'unread')] } : undefined);
+    expect(listRequests()).toHaveLength(1);
+    apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?') ? groupedListRows([sectionChat(1, 'unread')]) : undefined);
     visibility = 'visible';
     document.dispatchEvent(new Event('visibilitychange'));
     window.dispatchEvent(new Event('focus'));
     window.dispatchEvent(new Event('pageshow'));
     await flushPromises();
     await vi.advanceTimersByTimeAsync(100);
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
   });
 
@@ -808,12 +854,12 @@ describe('chat list refresh after returning from the background', () => {
         finished = true;
         return { chat_generations: [], active_message_ids: [] };
       }
-      return { chats: [finished ? sectionChat(1, 'unread', { last_message_status: 'error' }) : active] };
+      return groupedListRows([finished ? sectionChat(1, 'unread', { last_message_status: 'error' }) : active]);
     });
     await mountList();
     await vi.advanceTimersByTimeAsync(1_500);
     await flushPromises();
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 1');
     expect(wrapper.find('[data-section="working"]').exists()).toBe(false);
   });
@@ -821,31 +867,30 @@ describe('chat list refresh after returning from the background', () => {
 
   it('uses the server deadline for snoozed rows outside the loaded pages', async () => {
     const expiry = new Date(Date.now() + 1_000).toISOString();
-    apiMocks.get.mockResolvedValue({ chats: [], next_read_state_expiry: expiry });
+    apiMocks.get.mockResolvedValue(groupedListRows([], { next_read_state_expiry: expiry }));
     await mountList();
-    apiMocks.get.mockResolvedValue({ chats: [sectionChat(99, 'unread')], next_read_state_expiry: null });
+    apiMocks.get.mockResolvedValue(groupedListRows([sectionChat(99, 'unread')], { next_read_state_expiry: null }));
     await vi.advanceTimersByTimeAsync(1_100);
     await flushPromises();
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 99');
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(listRequests()).toHaveLength(8);
+    expect(listRequests()).toHaveLength(2);
   });
 
   it('clamps an emptied section page without resetting the other section pages', async () => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      const payload = sectionPayload(path);
-      const params = new URL(path, 'http://localhost').searchParams;
-      if (params.get('section') === 'unread') {
+    apiMocks.get.mockImplementation(async (path: string) => groupedListPayload(path, (section, page) => {
+      const payload = sectionPage(section, page);
+      if (section === 'unread') {
         payload.page.total = 20;
         payload.page.has_next = false;
-        if (params.get('page') === '2') payload.chats = [];
+        if (page === 2) payload.chats = [];
       }
       return payload;
-    });
+    }));
     await mountList('/chats?unreadPage=2&workingPage=2&page=2');
-    expect(listRequests()).toHaveLength(8);
-    expect(listRequests().slice(-4).map(([path]) => new URL(path, 'http://localhost').searchParams.get('page'))).toEqual(['1', '1', '2', '2']);
+    expect(listRequests()).toHaveLength(2);
+    expect(SECTIONS.map((section) => searchParams(listRequests().at(-1)!).get(`page_${section}`))).toEqual(['1', '1', '2', '2']);
     expect(wrapper.get('[data-section="unread"]').text()).toContain('unread 101');
     expect(wrapper.get('[data-section="working"]').text()).toContain('working 202');
     expect(wrapper.get('[data-section="other"]').text()).toContain('other 302');

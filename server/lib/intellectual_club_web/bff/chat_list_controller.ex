@@ -22,6 +22,38 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   require Ash.Query
 
+  def index(conn, %{"sections" => _} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- ChatParams.bot_filter(params),
+         {:ok, sections} <- search_sections(params) do
+      result =
+        Listing.read_sections(
+          actor,
+          bot_filter,
+          section_paginations(params, sections),
+          summary_loads()
+        )
+
+      marker = ReadState.list_marker(actor)
+      drafts = ChatDraft.list_marker(actor)
+
+      {payload, lifecycle_states} =
+        list_entries_payload(result.results, actor, ChatParams.preview_len(params))
+
+      json(conn, %{
+        chats: payload,
+        sections: result.sections,
+        stats: Serializer.chat_list_stats(ListingStats.sidebar(actor)),
+        next_read_state_expiry: marker.next_expiry,
+        idle_revision:
+          sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states)
+      })
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, message} -> conn |> put_status(:unprocessable_entity) |> json(%{error: message})
+    end
+  end
+
   def index(conn, _params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, bot_filter} <- ChatParams.bot_filter(conn.params) do
@@ -29,17 +61,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       pagination = Map.put(ChatParams.pagination(conn.params), :section, conn.params["section"])
 
       page =
-        Listing.read_page(actor, bot_filter, pagination, [
-          :bot,
-          :last_message,
-          :last_activity_at,
-          :blocks_count,
-          :tools_count,
-          :can_edit,
-          :shared_incoming,
-          :shared_outgoing,
-          llm_configuration: [:model_name, :note, :provider]
-        ])
+        Listing.read_page(actor, bot_filter, pagination, summary_loads())
 
       marker = ReadState.list_marker(actor)
 
@@ -49,36 +71,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> Map.put(:draft_marker, ChatDraft.list_marker(actor))
 
       chats = Map.get(page, :results, [])
-      drafts = ChatDraft.load_many(chats, actor)
-      active_branch_summaries = Listing.active_branch_summaries(chats, actor)
-
-      first_message_previews =
-        Listing.active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
-
+      {payload, subchat_lifecycle_states} = list_entries_payload(chats, actor, preview_len)
       sidebar_stats = ListingStats.sidebar(actor)
-      child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
-
-      {subchats_by_parent, subchat_lifecycle_states} =
-        direct_subchat_summaries(chats, actor, preview_len)
-
-      payload =
-        Enum.map(chats, fn chat ->
-          activity_at = Listing.activity_at(chat)
-          active_branch_summary = Map.get(active_branch_summaries, chat.id, %{})
-
-          {first_message_preview, first_message_role} =
-            Map.get(first_message_previews, chat.id, {nil, nil})
-
-          Serializer.chat_summary(chat,
-            activity_at: activity_at,
-            child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
-            subchats: Map.get(subchats_by_parent, chat.id, [])
-          )
-          |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
-          |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
-          |> Map.put(:first_message_preview, first_message_preview)
-          |> Map.put(:first_message_role, first_message_role)
-        end)
 
       json(conn, %{
         chats: payload,
@@ -108,6 +102,74 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         |> put_status(:unprocessable_entity)
         |> json(%{error: error_message})
     end
+  end
+
+  defp summary_loads do
+    [
+      :bot,
+      :last_message,
+      :last_activity_at,
+      :blocks_count,
+      :tools_count,
+      :can_edit,
+      :shared_incoming,
+      :shared_outgoing,
+      llm_configuration: [:model_name, :note, :provider]
+    ]
+  end
+
+  defp list_entries_payload(chats, actor, preview_len) do
+    drafts = ChatDraft.load_many(chats, actor)
+    active_branch_summaries = Listing.active_branch_summaries(chats, actor)
+
+    first_message_previews =
+      Listing.active_root_message_previews(chats, active_branch_summaries, preview_len, actor)
+
+    child_subchat_counts = Listing.child_subchat_counts(Enum.map(chats, & &1.id), actor)
+
+    {subchats_by_parent, subchat_lifecycle_states} =
+      direct_subchat_summaries(chats, actor, preview_len)
+
+    payload =
+      Enum.map(chats, fn chat ->
+        activity_at = Listing.activity_at(chat)
+        active_branch_summary = Map.get(active_branch_summaries, chat.id, %{})
+
+        {first_message_preview, first_message_role} =
+          Map.get(first_message_previews, chat.id, {nil, nil})
+
+        Serializer.chat_summary(chat,
+          activity_at: activity_at,
+          child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
+          subchats: Map.get(subchats_by_parent, chat.id, [])
+        )
+        |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
+        |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
+        |> Map.put(:first_message_preview, first_message_preview)
+        |> Map.put(:first_message_role, first_message_role)
+      end)
+
+    {payload, subchat_lifecycle_states}
+  end
+
+  defp section_paginations(params, sections) do
+    per_page = ChatParams.pagination(params).per_page
+
+    Map.new(sections, fn section ->
+      page = ChatParams.pagination(%{"page" => params["page_" <> section]}).page
+      {section, %{section: section, page: page, per_page: per_page}}
+    end)
+  end
+
+  defp sections_revision(result, bot_filter, read_marker, draft_marker, lifecycle_states) do
+    Revisions.chat_list_sections_revision(
+      bot_filter,
+      result.sections,
+      result.results,
+      read_marker,
+      draft_marker,
+      lifecycle_states
+    )
   end
 
   @search_sections ["drafts", "unread", "working", "other"]
@@ -344,6 +406,38 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
       {:error, error} ->
         ChatAccess.render_error(conn, error)
+    end
+  end
+
+  def idle_state(conn, %{"sections" => _} = params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- ChatParams.bot_filter(params),
+         {:ok, sections} <- search_sections(params) do
+      result =
+        Listing.read_sections(actor, bot_filter, section_paginations(params, sections), [
+          :last_message,
+          :blocks_count,
+          :tools_count
+        ])
+
+      marker = ReadState.list_marker(actor)
+      drafts = ChatDraft.list_marker(actor)
+      lifecycle_states = direct_subchat_lifecycle_states(result.results, actor)
+      revision = sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states)
+
+      if is_nil(marker.next_expiry) and Revisions.client_revision_matches?(params, revision) do
+        send_resp(conn, :no_content, "")
+      else
+        json(conn, %{
+          revision: revision,
+          next_read_state_expiry: marker.next_expiry,
+          active_generation_message_id:
+            Revisions.visible_active_generation_message_id(result.results, lifecycle_states)
+        })
+      end
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, message} -> conn |> put_status(:unprocessable_entity) |> json(%{error: message})
     end
   end
 

@@ -31,6 +31,112 @@ defmodule IntellectualClub.Chat.Listing do
     |> Ash.read!(actor: actor)
   end
 
+  @doc """
+  Reads independently paginated sections from one lightweight membership snapshot.
+
+  Drafts overlap the inbox and can include subchats. Classification and ordering
+  use the same authorized SQL expressions as `read_page/4`, but related records
+  and read-state details are loaded only for the distinct visible page IDs.
+  """
+  @spec read_sections(map(), term(), map(), list()) :: map()
+  def read_sections(actor, bot_filter, paginations, loads) do
+    section_keys =
+      Enum.filter(["drafts", "unread", "working", "other"], &Map.has_key?(paginations, &1))
+
+    rows =
+      Chat
+      |> Ash.Query.filter(owner_id == ^actor.id)
+      |> section_candidates("drafts" in section_keys)
+      |> apply_bot_filter(bot_filter)
+      |> Ash.Query.select([:id, :subagent])
+      |> Ash.Query.load([:last_activity_at, :inbox_unread, :personal_draft_updated_at],
+        strict?: true
+      )
+      |> Ash.Query.calculate(
+        :list_working,
+        :boolean,
+        Ash.Expr.expr(exists(last_message, status == :generating))
+      )
+      |> Ash.read!(actor: actor, page: false)
+      |> Enum.sort_by(&{datetime_sort_value(&1.last_activity_at), &1.id}, :desc)
+
+    grouped =
+      Enum.reduce(rows, %{}, fn chat, acc ->
+        acc =
+          if is_nil(chat.personal_draft_updated_at),
+            do: acc,
+            else: Map.update(acc, "drafts", [chat], &[chat | &1])
+
+        if chat.subagent do
+          acc
+        else
+          section =
+            cond do
+              chat.inbox_unread == true -> "unread"
+              chat.calculations.list_working == true -> "working"
+              true -> "other"
+            end
+
+          Map.update(acc, section, [chat], &[chat | &1])
+        end
+      end)
+
+    sections =
+      Map.new(section_keys, fn section ->
+        pagination = Map.fetch!(paginations, section)
+        candidates = grouped |> Map.get(section, []) |> section_order(section)
+        total = length(candidates)
+        offset = (pagination.page - 1) * pagination.per_page
+        ids = candidates |> Enum.slice(offset, pagination.per_page) |> Enum.map(& &1.id)
+
+        {section,
+         %{
+           ids: ids,
+           page: %{
+             number: pagination.page,
+             per_page: pagination.per_page,
+             total: total,
+             has_next: offset + pagination.per_page < total
+           }
+         }}
+      end)
+
+    ids = section_keys |> Enum.flat_map(&sections[&1].ids) |> Enum.uniq()
+
+    chats =
+      if ids == [] do
+        []
+      else
+        Chat
+        |> Ash.Query.filter(owner_id == ^actor.id and id in ^ids)
+        |> apply_bot_filter(bot_filter)
+        |> Ash.Query.load([:read_state | loads], strict?: true)
+        |> Ash.read!(actor: actor, page: false)
+      end
+
+    by_id = Map.new(chats, &{&1.id, &1})
+    %{results: Enum.flat_map(ids, &List.wrap(Map.get(by_id, &1))), sections: sections}
+  end
+
+  defp section_candidates(query, true) do
+    Ash.Query.filter(
+      query,
+      subagent == false or exists(drafts, user_id == ^Ash.Expr.actor(:id) and text != "")
+    )
+  end
+
+  defp section_candidates(query, false), do: Ash.Query.filter(query, subagent == false)
+
+  defp section_order(chats, "drafts"),
+    do: Enum.sort_by(chats, &{datetime_sort_value(&1.personal_draft_updated_at), &1.id}, :desc)
+
+  defp section_order(chats, _section), do: Enum.reverse(chats)
+
+  defp datetime_sort_value(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
+
+  defp datetime_sort_value(%NaiveDateTime{} = value),
+    do: value |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(:microsecond)
+
   def apply_hierarchy_filter(query, _actor, "drafts"), do: query
 
   def apply_hierarchy_filter(query, _actor, _section) do

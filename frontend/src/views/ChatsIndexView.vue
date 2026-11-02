@@ -341,12 +341,7 @@ type ChatListGenerationStatePayload = {
 type ChatListPayload = {
   next_read_state_expiry?: string | null;
   chats: ChatSummary[];
-  page?: {
-    number?: number;
-    per_page?: number;
-    total?: number;
-    has_next?: boolean;
-  };
+  sections?: Partial<Record<ChatSection, { ids?: number[]; page?: Partial<SectionPage> }>>;
   stats?: ChatListStats;
   idle_revision?: string | null;
 };
@@ -448,12 +443,12 @@ const chatSearchResults = ref<ChatSearchResult[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchError = ref('');
 const chatSearchTextSearch = ref(true);
-const chatListIdleRevisions = ref<Record<ChatSection, string | null>>({ drafts: null, unread: null, working: null, other: null });
+const chatListIdleRevision = ref<string | null>(null);
 const nextReadStateExpiry = ref<string | null>(null);
 const chatListGenerationPollReconnecting = ref(false);
 const expandedSubchatParentIds = ref(new Set<number>());
 const botFilter = ref<string>(readBotFilterQuery(route.query.bot));
-const chatListRead = useRecoverableRead<ChatListPayload[]>({
+const chatListRead = useRecoverableRead<ChatListPayload>({
   key: () => `chats:index:${SECTION_KEYS.map((key) => sectionPages.value[key].number).join(':')}:${botFilter.value || 'all'}`,
 });
 const botSearchTerm = ref('');
@@ -830,7 +825,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   if (summary.subagent) {
     chats.value = upsertSubchatInRows(chats.value, summary);
     chatSearchResults.value = upsertSubchatInRows(chatSearchResults.value, summary);
-    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
+    chatListIdleRevision.value = null;
     return;
   }
 
@@ -847,7 +842,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
   }
 
   chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
-  chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
+  chatListIdleRevision.value = null;
 }
 
 function removeChatFromLists(chatId: number) {
@@ -859,7 +854,7 @@ function removeChatFromLists(chatId: number) {
   chatSearchResults.value = searchRows.rows.filter((chat) => chat.id !== chatId);
   if (existedInPage) totalChats.value = Math.max(0, totalChats.value - 1);
 
-  chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
+  chatListIdleRevision.value = null;
 }
 
 const chatSummaryRefreshTimers = new Map<number, number>();
@@ -939,11 +934,11 @@ function sectionChats(key: ChatSection) {
   }
   // Drafts overlap the inbox, but must not pull rows from another inbox page.
   const inboxIds = new Set([...ids.unread, ...ids.working, ...ids.other]);
-  // Preserve each search section's order, then append rows regrouped by their newest state.
-  const rows = hasChatSearch.value ? [...new Set([...ids[key], ...inboxIds])].flatMap((id) => {
+  // Preserve each section's order, then append rows regrouped by their newest state.
+  const rows = [...new Set([...ids[key], ...inboxIds])].flatMap((id) => {
     const chat = byId.get(id);
     return chat ? [chat] : [];
-  }) : visibleChats.value;
+  });
   return rows.filter((chat) => inboxIds.has(chat.id) && sectionForChat(chat) === key);
 }
 
@@ -997,7 +992,7 @@ function uniqueChatRows<T extends ChatSummary>(items: T[]): T[] {
   return [...byId.values()];
 }
 
-type SectionPagePayload = { page?: ChatListPayload['page']; count: number };
+type SectionPagePayload = { page?: Partial<SectionPage>; count: number };
 
 // `payloads` is indexed like SECTION_KEYS; `count` is the number of rows the section returned.
 function applySectionPages(payloads: SectionPagePayload[], pages: Record<ChatSection, SectionPage>) {
@@ -1365,33 +1360,30 @@ async function loadChats(
   }
 
   try {
-    const paths = SECTION_KEYS.map((section) => {
-      const params = new URLSearchParams();
-      params.set('section', section);
-      params.set('preview_len', String(Math.min(previewLength.value, 500)));
-      params.set('page', String(sectionPages.value[section].number));
-      params.set('per_page', String(perPage.value));
-      if (botFilter.value) params.set('bot', botFilter.value);
-      return `/api/bff/chat-list?${params.toString()}`;
-    });
-    const request = (signal?: AbortSignal) => Promise.all(paths.map((path) => api.get<ChatListPayload>(path, {
+    const params = chatListSectionParams();
+    params.set('preview_len', String(Math.min(previewLength.value, 500)));
+    const path = `/api/bff/chat-list?${params.toString()}`;
+    const request = (signal?: AbortSignal) => api.get<ChatListPayload>(path, {
       retry: false, showErrorBanner: opts.showErrorBanner ?? false, signal,
-    })));
-    const payloads = silent ? await request(opts.signal)
+    });
+    const payload = silent ? await request(opts.signal)
       : await chatListRead.run(({ signal }) => request(signal), { restart: true });
-    if (seq !== chatListLoadSeq || unmounted) return;
+    if (seq !== chatListLoadSeq || unmounted || opts.signal?.aborted) return;
 
-    const pagePayloads = payloads.map((payload) => ({ page: payload.page, count: (payload.chats || []).length }));
+    const pagePayloads = SECTION_KEYS.map((key) => ({
+      page: payload.sections?.[key]?.page,
+      count: payload.sections?.[key]?.ids?.length ?? 0,
+    }));
     if (applySectionPages(pagePayloads, sectionPages.value)) {
       await loadChats(opts);
       return;
     }
-    sectionIds.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, (payloads[index].chats || []).map((chat) => chat.id)])) as Record<ChatSection, number[]>;
-    chats.value = uniqueChatRows(payloads.flatMap((payload) => payload.chats || []));
-    nextReadStateExpiry.value = payloads[0].next_read_state_expiry ?? null;
+    sectionIds.value = Object.fromEntries(SECTION_KEYS.map((key) => [key, payload.sections?.[key]?.ids ?? []])) as Record<ChatSection, number[]>;
+    chats.value = uniqueChatRows(payload.chats || []);
+    nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
     totalChats.value = SECTION_KEYS.filter((key) => key !== 'drafts').reduce((total, key) => total + sectionPages.value[key].total, 0);
-    chatListStats.value = normalizeChatListStats(payloads[0].stats);
-    chatListIdleRevisions.value = Object.fromEntries(SECTION_KEYS.map((key, index) => [key, payloads[index].idle_revision ?? null])) as Record<ChatSection, string | null>;
+    chatListStats.value = normalizeChatListStats(payload.stats);
+    chatListIdleRevision.value = payload.idle_revision ?? null;
     startChatListIdlePolling();
 
     if (opts.scrollToTop) {
@@ -1715,15 +1707,21 @@ async function refreshVisibleChatGenerationStates(signal: AbortSignal) {
 
 }
 
-function chatListIdleProbeParams(section: ChatSection) {
+function chatListSectionParams() {
   const params = new URLSearchParams();
-  params.set('section', section);
-  params.set('page', String(Math.max(1, sectionPages.value[section].number)));
+  params.set('sections', SECTION_KEYS.join(','));
+  for (const section of SECTION_KEYS) {
+    params.set(`page_${section}`, String(Math.max(1, sectionPages.value[section].number)));
+  }
   params.set('per_page', String(perPage.value));
   const bot = String(botFilter.value || '').trim();
   if (bot) params.set('bot', bot);
-  const revision = chatListIdleRevisions.value[section];
-  if (revision) params.set('revision', revision);
+  return params;
+}
+
+function chatListIdleProbeParams() {
+  const params = chatListSectionParams();
+  if (chatListIdleRevision.value) params.set('revision', chatListIdleRevision.value);
   return params;
 }
 
@@ -1740,14 +1738,15 @@ async function runChatListIdleProbe(signal: AbortSignal, forceRefresh = false) {
   if (!forceRefresh && !canRunChatListIdleProbe()) return;
   if (forceRefresh && (!layer.active.value || document.visibilityState !== 'visible' || loading.value || chatSearchLoading.value)) return;
 
-  const payloads = await Promise.all(SECTION_KEYS.map((section) => api.get<ChatListIdleStatePayload | undefined>(
-    `/api/bff/chat-list/idle-state?${chatListIdleProbeParams(section).toString()}`,
+  const seq = chatListLoadSeq;
+  const payload = await api.get<ChatListIdleStatePayload | undefined>(
+    `/api/bff/chat-list/idle-state?${chatListIdleProbeParams().toString()}`,
     { signal, showErrorBanner: false }
-  )));
-  if (!payloads.some(Boolean) && !forceRefresh) return;
-  const expiryPayload = payloads.find((payload) => payload && 'next_read_state_expiry' in payload);
-  if (expiryPayload) nextReadStateExpiry.value = expiryPayload.next_read_state_expiry ?? null;
-  // Only an applied section batch acknowledges revisions, so failed loads retry.
+  );
+  if (signal.aborted || unmounted || seq !== chatListLoadSeq) return;
+  if (!payload && !forceRefresh) return;
+  if (payload && 'next_read_state_expiry' in payload) nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
+  // Only an applied list response acknowledges its revision, so failed loads retry.
 
   if (hasChatSearch.value) {
     const term = chatSearchTerm.value.trim();
@@ -1951,7 +1950,7 @@ async function refreshBots(opts: { showError?: boolean } = {}) {
 watch(
   () => chatSearchTerm.value,
   (value, previousValue) => {
-    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
+    chatListIdleRevision.value = null;
     resetSectionPageNumbers();
     resetChatSearch();
     const term = value.trim();
@@ -1974,7 +1973,7 @@ watch(
 watch(
   () => [botFilter.value, perPage.value],
   () => {
-    chatListIdleRevisions.value = { drafts: null, unread: null, working: null, other: null };
+    chatListIdleRevision.value = null;
     resetChatSearch();
     if (!hasChatSearch.value) return;
     const term = chatSearchTerm.value.trim();

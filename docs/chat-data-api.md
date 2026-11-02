@@ -127,6 +127,48 @@ owner/text GIN index, or a new `btree_gin` migration. Ash authorization remains
 in force; chat-list matching additionally restricts results to the actor's own
 chats and messages.
 
+## Grouped chat list
+
+`GET /api/bff/chat-list?sections=drafts,unread,working,other` returns the ordinary
+list in one request. `sections` is a non-empty comma-separated subset of these
+four names; duplicates are ignored and unknown names return `422`.
+
+- `page_<section>`: independent positive offset page number, default 1.
+- `per_page`: shared page size, default 20, maximum 100.
+- `bot`: omitted for all bots, `none`, or a positive bot id.
+- `preview_len`: first-message preview budget, default 200, maximum 500.
+
+The response contains unique top-level `chats`, `sections`, shared `stats`,
+`idle_revision`, and `next_read_state_expiry`. Each section has ordered `ids` and
+`page: {number, per_page, total, has_next}`. Counts are exact; out-of-range pages
+have empty IDs and retain the requested page number. Unlike grouped search,
+ordinary list pagination needs no cursors. The client clamps pages after deletions
+and reloads if necessary.
+
+Drafts overlap the inbox and may include nested chats. They sort by personal draft
+update time and descending id. Unread, Working, and Other exclude subagents and
+sort by last activity and descending id; unread takes precedence over working.
+Bot and ownership filters apply before counting and pagination. Sidebar stats
+remain independent of the selected bot and sections.
+
+All reads retain Ash authorization. A single lightweight membership query loads
+classification and sorting metadata for matching chats; grouping and pagination
+happen in memory. Detailed summaries, previews, and read states are loaded only
+for the unique selected page IDs, and shared markers/stats are computed once.
+Metadata memory is linear in the matching chat count, with sorting O(N log N);
+this is not a bounded SQL-window implementation or a transactional snapshot.
+
+`GET /api/bff/chat-list/idle-state` accepts the same section/page/bot parameters
+and `revision=<idle_revision>`. One shared revision covers all selected pages,
+personal read/draft markers, and visible subchat lifecycle state. Unchanged state
+returns `204` when no snooze expiry is pending; otherwise the existing idle payload
+contains `revision`, `next_read_state_expiry`, and
+`active_generation_message_id`. The client acknowledges the revision only after
+successfully applying the full list response.
+
+Without `sections`, both endpoints retain the singular `section`/`page` contract
+for already-open clients and other existing callers.
+
 ## Chat list search
 
 ### Grouped cursor pages

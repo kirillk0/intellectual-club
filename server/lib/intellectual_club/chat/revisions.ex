@@ -30,6 +30,27 @@ defmodule IntellectualClub.Chat.Revisions do
     hash(revision_parts)
   end
 
+  @doc "A shared revision for independently paginated chat list sections."
+  def chat_list_sections_revision(
+        bot_filter,
+        sections,
+        chats,
+        read_marker,
+        draft_marker,
+        lifecycle_states
+      ) do
+    [
+      :chat_list_sections,
+      normalize_bot_filter(bot_filter),
+      Enum.sort(sections),
+      read_marker,
+      draft_marker,
+      chats |> Enum.sort_by(& &1.id) |> Enum.map(&chat_list_revision_row/1),
+      lifecycle_revision_rows(lifecycle_states)
+    ]
+    |> hash()
+  end
+
   @spec chat_revision(Chat.t()) :: String.t()
   def chat_revision(%Chat{} = chat) do
     chat_revision(chat, [], [])

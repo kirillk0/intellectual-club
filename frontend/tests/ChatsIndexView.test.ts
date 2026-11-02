@@ -31,7 +31,7 @@ describe('ChatsIndexView stack navigation', () => {
       if (path.startsWith('/api/bff/chat-list?')) {
         return {
           chats: [],
-          page: { number: 1, per_page: 20, total: 0, has_next: false },
+          sections: Object.fromEntries(['drafts', 'unread', 'working', 'other'].map((section) => [section, { ids: [], page: { number: 1, per_page: 20, total: 0, has_next: false } }])),
           stats: { total_chats: 0, no_bot_chat_count: 0, no_bot_last_activity_at: null, bots: [] },
           idle_revision: 'revision-1',
         };
@@ -68,16 +68,18 @@ describe('ChatsIndexView stack navigation', () => {
   ])('shows appropriate headings for $sections', async ({ sections, headings }) => {
     apiMocks.get.mockImplementation(async (path: string) => {
       if (!path.startsWith('/api/bff/chat-list?')) return undefined;
-      const section = new URL(path, 'http://localhost').searchParams.get('section')!;
-      const chats = sections.includes(section) ? [{
+      const chats = sections.map((section) => ({
         id: ['unread', 'working', 'other'].indexOf(section) + 1,
         title: `${section} chat`,
         read_state: { is_unread: section === 'unread' },
         active_generation_message_id: section === 'working' ? 42 : null,
-      }] : [];
+      }));
       return {
         chats,
-        page: { number: 1, per_page: 20, total: chats.length, has_next: false },
+        sections: Object.fromEntries(['drafts', 'unread', 'working', 'other'].map((section) => {
+          const ids = sections.includes(section) ? [chats[sections.indexOf(section)].id] : [];
+          return [section, { ids, page: { number: 1, per_page: 20, total: ids.length, has_next: false } }];
+        })),
         idle_revision: 'revision-1',
       };
     });
@@ -154,7 +156,7 @@ describe('ChatsIndexView stack navigation', () => {
     const fullListRequests = () =>
       apiMocks.get.mock.calls.filter(([path]) => String(path).startsWith('/api/bff/chat-list?'));
 
-    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(4));
+    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(1));
 
     active.value = false;
     await nextTick();
@@ -162,7 +164,7 @@ describe('ChatsIndexView stack navigation', () => {
     await nextTick();
     await flushPromises();
 
-    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(8));
+    await vi.waitFor(() => expect(fullListRequests()).toHaveLength(2));
 
     wrapper.unmount();
     queryClient.clear();

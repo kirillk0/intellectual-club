@@ -22,7 +22,7 @@ vi.mock('@/api/jsonApi', async () => ({
 import ChatsIndexView from '@/views/ChatsIndexView.vue';
 import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import { chatReadStateInput, updateChatReadState } from '@/features/chat/chatReadState';
-import type { ChatReadState } from '@/types/api';
+import type { ChatReadState, ChatSummary } from '@/types/api';
 import { provideStackLayer } from '@/features/stack/useStackLayer';
 
 const readState = (patch: Partial<ChatReadState> = {}): ChatReadState => ({
@@ -42,9 +42,13 @@ const chatRow = (id: number, note: string, canEdit: boolean) => ({
   read_state: readState(),
 });
 
-const listPayload = () => ({
-  chats: [chatRow(1, 'Own chat', true), chatRow(2, 'Shared chat', false)],
-  page: { number: 1, per_page: 20, total: 2, has_next: false },
+const listPayload = (chats: ChatSummary[] = [chatRow(1, 'Own chat', true), chatRow(2, 'Shared chat', false)]) => ({
+  chats,
+  sections: Object.fromEntries(['drafts', 'unread', 'working', 'other'].map((section) => {
+    const ids = chats.filter((chat) => section === 'drafts' ? chat.has_draft
+      : section === (chat.read_state?.is_unread ? 'unread' : chat.active_generation_message_id ? 'working' : 'other')).map((chat) => chat.id);
+    return [section, { ids, page: { number: 1, per_page: 20, total: ids.length, has_next: false } }];
+  })),
   idle_revision: 'revision-1',
 });
 
@@ -181,7 +185,7 @@ describe('chat list actions menu', () => {
     await mountList();
     apiMocks.jsonApiDelete.mockImplementation(async () => {
       apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?')
-        ? { ...listPayload(), chats: [chatRow(2, 'Shared chat', false)] } : undefined);
+        ? listPayload([chatRow(2, 'Shared chat', false)]) : undefined);
     });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
 
@@ -206,7 +210,7 @@ describe('chat list actions menu', () => {
     apiMocks.post.mockImplementation(async () => {
       const moved = { ...chatRow(2, 'Shared chat', false), read_state: readState({ manual_unread: true, has_unread: true, is_unread: true, state_version: 3 }) };
       apiMocks.get.mockImplementation(async (path: string) => path.startsWith('/api/bff/chat-list?')
-        ? { ...listPayload(), chats: new URL(path, 'http://localhost').searchParams.get('section') === 'unread' ? [moved] : [chatRow(1, 'Own chat', true)] } : undefined);
+        ? listPayload([moved, chatRow(1, 'Own chat', true)]) : undefined);
       return { read_state: moved.read_state };
     });
     await rows()[1].get('.chat-list-row__actions-button').trigger('click');
@@ -229,13 +233,13 @@ describe('chat list actions menu', () => {
     menuItem('Mark as unread')!.click();
     await flushPromises();
     expect(apiMocks.post).toHaveBeenCalledTimes(1);
-    expect(apiMocks.get.mock.calls.length - before).toBe(4);
+    expect(apiMocks.get.mock.calls.length - before).toBe(1);
     expect(wrapper.text()).toContain('Chat state changed. Please try again.');
   });
 
   it('marks a snoozed chat explicitly read using its observed activity revision', async () => {
     const state = readState({ manual_unread: true, has_unread: true, is_snoozed: true, snoozed_until: '2099-01-01T09:00:00Z' });
-    apiMocks.get.mockResolvedValue({ ...listPayload(), chats: [{ ...chatRow(1, 'Snoozed', false), read_state: state }] });
+    apiMocks.get.mockResolvedValue(listPayload([{ ...chatRow(1, 'Snoozed', false), read_state: state }]));
     apiMocks.post.mockResolvedValue({ read_state: readState({ state_version: 3 }) });
     await mountList();
     expect(wrapper.get('.chat-snoozed').attributes('title')).toContain('Snoozed until');
@@ -283,7 +287,7 @@ describe('chat list actions menu', () => {
     await mountList();
     const snoozed = readState({ manual_unread: true, has_unread: true, is_snoozed: true, snoozed_until: '2099-07-01T10:30:00Z', state_version: 3 });
     apiMocks.post.mockImplementationOnce(async () => {
-      apiMocks.get.mockResolvedValue({ chats: [{ ...chatRow(1, 'Own chat', true), read_state: snoozed }] });
+      apiMocks.get.mockResolvedValue(listPayload([{ ...chatRow(1, 'Own chat', true), read_state: snoozed }]));
       return { read_state: snoozed };
     });
     await rows()[0].get('.chat-list-row__actions-button').trigger('click');
@@ -298,7 +302,7 @@ describe('chat list actions menu', () => {
     expect(wrapper.get('[data-section="other"]').text()).toContain('Own chat');
     const unread = readState({ manual_unread: true, has_unread: true, is_unread: true, state_version: 4 });
     apiMocks.post.mockImplementationOnce(async () => {
-      apiMocks.get.mockResolvedValue({ chats: [{ ...chatRow(1, 'Own chat', true), read_state: unread }] });
+      apiMocks.get.mockResolvedValue(listPayload([{ ...chatRow(1, 'Own chat', true), read_state: unread }]));
       return { read_state: unread };
     });
     await rows()[0].get('.chat-list-row__actions-button').trigger('click');
@@ -310,11 +314,11 @@ describe('chat list actions menu', () => {
   });
 
   it('renders failed and canceled generation independently from read state and never infers completion', async () => {
-    apiMocks.get.mockResolvedValue({ chats: [
+    apiMocks.get.mockResolvedValue(listPayload([
       { ...chatRow(1, 'Failed unread', true), last_message_status: 'error', read_state: readState({ has_unread: true, is_unread: true }) },
       { ...chatRow(2, 'Canceled read', false), last_message_status: 'canceled' },
       { ...chatRow(3, 'Completed read', false), last_message_status: 'done' },
-    ] });
+    ]));
     await mountList();
     const unread = wrapper.get('[data-section="unread"]');
     expect(unread.find('.chat-generation-state--error').exists()).toBe(true);
