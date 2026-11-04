@@ -19,7 +19,7 @@
             placeholder="Search bookmarks"
             aria-label="Search bookmarks"
           />
-          <button v-if="searchTerm" type="button" @click="searchTerm = ''">Clear</button>
+          <SearchClearButton v-if="searchTerm" @click="searchTerm = ''" />
         </div>
       </section>
 
@@ -61,6 +61,7 @@ import { api } from '@/api/client';
 import ChatListRow from '@/components/ChatListRow.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import { useRecoverableRead } from '@/features/app/useRecoverableRead';
 import { fetchChatSummary } from '@/features/chat/chatSummaries';

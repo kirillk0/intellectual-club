@@ -106,24 +106,25 @@
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
             <template v-if="readState">
               <button v-if="archivable" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="archive" @click="readState?.is_archived ? emit('unarchive') : emit('archive')">
-                {{ t(readState?.is_archived ? 'Unarchive' : 'Archive chat') }}
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon :name="readState?.is_archived ? 'unarchive' : 'archive'" size="16" /></span>
+                <span class="chat-menu-item__label">{{ t(readState?.is_archived ? 'Unarchive' : 'Archive chat') }}</span>
               </button>
               <button class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="toggle"
                 @click="isUnread ? emit('mark-read') : emit('mark-unread')">
-                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="check" size="16" /></span>
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon :name="isUnread ? 'mark-read' : 'mark-unread'" size="16" /></span>
                 <span class="chat-menu-item__label">{{ t(isUnread ? 'Mark as read' : 'Mark as unread') }}</span>
               </button>
               <button v-if="isSnoozed" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="read"
                 @click="emit('mark-read')">
-                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="check" size="16" /></span>
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="mark-read" size="16" /></span>
                 <span class="chat-menu-item__label">{{ t('Mark as read') }}</span>
               </button>
               <button class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="snooze" @click="emit('open-snooze')">
-                <span class="chat-menu-item__icon" aria-hidden="true">◷</span>
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="snooze" size="16" /></span>
                 <span class="chat-menu-item__label">{{ t('Snooze') }}</span>
               </button>
               <button v-if="isSnoozed" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="unsnooze" @click="emit('unsnooze')">
-                <span class="chat-menu-item__icon" aria-hidden="true">◷</span>
+                <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="unsnooze" size="16" /></span>
                 <span class="chat-menu-item__label">{{ t('Unsnooze') }}</span>
               </button>
               <div class="menu-divider" aria-hidden="true"></div>

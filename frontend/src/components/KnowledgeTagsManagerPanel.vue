@@ -28,7 +28,7 @@
         placeholder="Filter tags"
         aria-label="Filter tags"
       />
-      <button v-if="tagFilter" type="button" @click="tagFilter = ''">Clear</button>
+      <SearchClearButton v-if="tagFilter" @click="tagFilter = ''" />
     </div>
 
     <form v-if="editorMode" class="knowledge-tags-panel__editor" @submit.prevent="submitEditor">
@@ -149,6 +149,7 @@ import {
   type JsonApiResource,
 } from '@/api/jsonApi';
 import { serverStateKeys } from '@/features/serverState/queryClient';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 type TagEditorMode = 'create-root' | 'create-child';
 

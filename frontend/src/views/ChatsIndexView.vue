@@ -27,26 +27,25 @@
       <PullToRefresh :refresh="refreshChatIndex" :disabled="creating">
         <div class="catalog-split">
           <aside class="catalog-split__sidebar">
-            <ChatBotFiltersPanel
-              v-model:searchTerm="botSearchTerm"
-              :sortMode="botSortModeValue"
-              :selectedFilter="botFilter"
-              :hasActiveFilter="hasActiveBotFilter"
-              :allBotsCount="allBotsCount"
-              :options="visibleBotFilterOptions"
-              :emptyState="botFilterEmptyState"
-              @toggle-sort="toggleBotSortMode"
-              @select-filter="setBotFilter"
-              @clear-filter="setBotFilter('')"
-            />
+            <div class="chat-filters-stack">
+              <ChatInboxViewsPanel :modelValue="archiveView" @update:modelValue="setArchiveView" />
+              <ChatBotFiltersPanel
+                v-model:searchTerm="botSearchTerm"
+                :sortMode="botSortModeValue"
+                :selectedFilter="botFilter"
+                :hasActiveFilter="hasActiveBotFilter"
+                :allBotsCount="allBotsCount"
+                :options="visibleBotFilterOptions"
+                :emptyState="botFilterEmptyState"
+                @toggle-sort="toggleBotSortMode"
+                @select-filter="setBotFilter"
+                @clear-filter="setBotFilter('')"
+              />
+            </div>
           </aside>
 
           <main class="catalog-split__main stack">
             <section class="card stack">
-              <div class="chat-inbox-views" role="group" :aria-label="translate('Chat list view')">
-                <button type="button" :class="{ active: archiveView === 'inbox' }" :aria-pressed="archiveView === 'inbox'" @click="setArchiveView('inbox')">{{ translate('Inbox') }}</button>
-                <button type="button" :class="{ active: archiveView === 'archive' }" :aria-pressed="archiveView === 'archive'" @click="setArchiveView('archive')">{{ translate('Archive') }}</button>
-              </div>
               <div class="chat-search">
                 <input
                   v-model="chatSearchTerm"
@@ -57,16 +56,16 @@
                 />
                 <button
                   type="button"
-                  class="chat-search__exact"
+                  class="search-icon-button chat-search__exact"
                   :class="{ active: chatSearchExact }"
                   :aria-pressed="chatSearchExact"
+                  :aria-label="translate('Exact')"
                   :title="translate('Match the whole phrase exactly, including spaces')"
                   @click="toggleChatSearchExact"
                 >
-                  <span aria-hidden="true">“ ”</span>
-                  <span>{{ translate('Exact') }}</span>
+                  <SvgIcon name="quote" size="16" />
                 </button>
-                <button v-if="chatSearchTerm" type="button" @click="chatSearchTerm = ''">Clear</button>
+                <SearchClearButton v-if="chatSearchTerm" @click="chatSearchTerm = ''" />
               </div>
             </section>
 
@@ -91,7 +90,7 @@
                 <section v-for="section in renderedSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
                   <div v-if="section.showHeading" class="chat-section__header">
                     <h3 class="chat-section__heading">{{ section.label }} <span v-if="section.total != null" class="muted">{{ section.total }}</span></h3>
-                    <button v-if="section.key === 'other' && !hasChatSearch && archiveView === 'inbox'" class="icon-button" type="button" data-chat-actions-trigger :aria-label="translate('Other chats actions')" aria-haspopup="menu" :aria-expanded="Boolean(sectionActionsAnchor)" @click="openSectionActions($event)"><SvgIcon name="more-horizontal" size="16" /></button>
+                    <button v-if="section.key === 'other' && !hasChatSearch && archiveView === 'inbox'" class="chat-section__actions-button" type="button" data-chat-actions-trigger :aria-label="translate('Other chats actions')" aria-haspopup="menu" :aria-expanded="Boolean(sectionActionsAnchor)" @click="openSectionActions($event)"><SvgIcon name="more-horizontal" size="16" /></button>
                   </div>
                   <div class="list">
                     <div v-for="entry in section.entries" :key="entry.key" class="chat-list-entry">
@@ -206,7 +205,14 @@
         <div v-if="isMobile && filterOpen" class="panel-backdrop" @click="closeFilter"></div>
       </transition>
 
-      <aside v-if="isMobile && filterOpen" class="sidebar overlay align-left">
+      <aside v-if="isMobile && filterOpen" class="sidebar overlay align-left chat-filters-overlay">
+        <ChatInboxViewsPanel :modelValue="archiveView" @update:modelValue="setArchiveView">
+          <template #header-extra>
+            <button class="panel-toggle" type="button" @click="closeFilter" aria-label="Hide filters">
+              <SvgIcon name="chevron-left" />
+            </button>
+          </template>
+        </ChatInboxViewsPanel>
         <ChatBotFiltersPanel
           v-model:searchTerm="botSearchTerm"
           :sortMode="botSortModeValue"
@@ -218,24 +224,18 @@
           @toggle-sort="toggleBotSortMode"
           @select-filter="setBotFilter"
           @clear-filter="setBotFilter('')"
-        >
-          <template #header-extra>
-            <button class="panel-toggle" type="button" @click="closeFilter" aria-label="Hide bots filter">
-              <SvgIcon name="chevron-left" />
-            </button>
-          </template>
-        </ChatBotFiltersPanel>
+        />
       </aside>
 
       <button
         v-if="isMobile && !filterOpen"
         class="panel-toggle floating left"
-        :class="{ 'active-filter': hasActiveBotFilter }"
+        :class="{ 'active-filter': hasActiveBotFilter || archiveView === 'archive' }"
         type="button"
         @click="openFilter"
-        aria-label="Show bots filter"
+        aria-label="Show filters"
       >
-        <SvgIcon name="bot" />
+        <SvgIcon name="filter" />
       </button>
     </div>
 
@@ -308,6 +308,7 @@ import ChatArchiveAllModal from '@/components/chat/ChatArchiveAllModal.vue';
 import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import { chatReadStateInput, updateChatReadState, isChatReadStateConflict, type ChatReadStateAction } from '@/features/chat/chatReadState';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
+import ChatInboxViewsPanel from '@/components/ChatInboxViewsPanel.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
@@ -330,6 +331,7 @@ import type { Bot, ChatSummary, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 type ChatSearchHit = {
   message_id: number;
@@ -542,6 +544,7 @@ function setArchiveView(view: ArchiveView) {
   chats.value = [];
   chatListIdleRevision.value = null;
   void loadChats();
+  if (isMobile.value) filterOpen.value = false;
 }
 
 const chatSearchTerm = ref(getQueryString(route.query.q));
@@ -2271,9 +2274,59 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.chat-inbox-views { display: flex; gap: 8px; }
-.chat-inbox-views .active { background: var(--color-surface-hover); border-color: var(--color-border-strong); font-weight: 600; }
-.chat-section__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chat-filters-stack,
+.chat-filters-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Only the bots panel stretches inside the mobile overlay. */
+.chat-filters-overlay > .chat-inbox-views-panel {
+  flex: 0 0 auto;
+}
+
+.chat-section__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.chat-section__header .chat-section__heading { margin-bottom: 0; }
+
+/* Mirrors the hover-revealed actions trigger of chat list rows. */
+.chat-section__actions-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.chat-section__actions-button:hover,
+.chat-section__actions-button[aria-expanded='true'] {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.chat-section__actions-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-section__actions-button {
+    opacity: 0;
+  }
+
+  .chat-section__header:hover .chat-section__actions-button,
+  .chat-section__header:focus-within .chat-section__actions-button,
+  .chat-section__actions-button[aria-expanded='true'] {
+    opacity: 1;
+  }
+}
+
 .chat-sections { display: flex; flex-direction: column; gap: 20px; }
 .chat-section { min-width: 0; }
 .chat-section__heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 1rem; }
@@ -2295,20 +2348,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.chat-search__exact {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-}
-
-.chat-search__exact.active {
-  color: var(--color-link);
-  border-color: var(--color-info-border);
-  background: var(--color-info-bg);
 }
 
 .chat-search-hits {

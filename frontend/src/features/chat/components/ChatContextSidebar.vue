@@ -103,18 +103,16 @@
           />
           <button
             type="button"
-            class="branch-search__exact"
+            class="search-icon-button branch-search__exact"
             :class="{ active: branchSearchExact }"
             :aria-pressed="branchSearchExact"
+            :aria-label="translate('Exact')"
             :title="translate('Match the whole phrase exactly, including spaces')"
             @click="emit('update:branchSearchExact', !branchSearchExact)"
           >
-            <span aria-hidden="true">“ ”</span>
-            <span>{{ translate('Exact') }}</span>
+            <SvgIcon name="quote" size="16" />
           </button>
-          <button v-if="branchSearchTerm" type="button" @click="emit('update:branchSearchTerm', '')">
-            Clear
-          </button>
+          <SearchClearButton v-if="branchSearchTerm" @click="emit('update:branchSearchTerm', '')" />
           <button
             type="button"
             class="icon-button branch-tree-button"
@@ -283,6 +281,7 @@ import type {
   LeftPanelTab,
   LinkedBlock,
 } from '@/features/chat/types';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 interface Props {
   isMobile: boolean;

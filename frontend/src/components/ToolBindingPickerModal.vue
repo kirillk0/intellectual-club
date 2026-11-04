@@ -77,7 +77,7 @@
                     aria-label="Search tools"
                     :disabled="saving"
                   />
-                  <button v-if="query" type="button" :disabled="saving" @click="query = ''">Clear</button>
+                  <SearchClearButton v-if="query" :disabled="saving" @click="query = ''" />
                   <button
                     v-if="selectedLocal.length"
                     type="button"
@@ -209,6 +209,7 @@ import { toolTypeLabel } from '@/features/tools/model/toolInstances';
 import ToolBindingListItem from '@/components/ToolBindingListItem.vue';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 type ToolOption = {
   id: number;

@@ -547,6 +547,41 @@ fieldset {
   background: var(--color-surface-hover);
 }
 
+/* Square icon button placed next to a search field (clear, exact match). */
+.search-icon-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  line-height: 1;
+}
+
+.search-icon-button:hover:not(:disabled) {
+  border-color: var(--color-info-border-strong);
+  color: var(--color-text);
+}
+
+.search-icon-button.active {
+  background: var(--color-info-bg);
+  border-color: var(--color-info-border-strong);
+  color: var(--color-info-text);
+}
+
+/* The explicit clear button replaces the native one, so the field does not show two crosses. */
+input[type='search']:has(~ .search-clear-button)::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 .mobile-only {
   display: none;
 }

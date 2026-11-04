@@ -8,13 +8,36 @@
       :aria-label="t(sectionActions ? 'Section actions' : 'Chat actions')"
       :style="menuStyle"
     >
-      <button v-if="sectionActions" class="menu-item" type="button" role="menuitem" :disabled="busy" @click="emit('archive-all')">{{ t('Archive all') }}</button>
-      <button v-if="readable && archivable" class="menu-item" type="button" role="menuitem" :disabled="busy" @click="archived ? emit('unarchive') : emit('archive')">{{ t(archived ? 'Unarchive' : 'Archive chat') }}</button>
-      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="unread ? emit('mark-read') : emit('mark-unread')">
-        {{ t(unread ? 'Mark as read' : 'Mark as unread') }}
+      <button v-if="sectionActions" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('archive-all')">
+        <span class="chat-list-actions-menu__icon" aria-hidden="true">
+          <SvgIcon name="archive" size="16" />
+        </span>
+        <span class="chat-list-actions-menu__label">{{ t('Archive all') }}</span>
       </button>
-      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('snooze')">{{ t('Snooze') }}</button>
-      <button v-if="readable && snoozed" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('unsnooze')">{{ t('Unsnooze') }}</button>
+      <button v-if="readable && archivable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="archived ? emit('unarchive') : emit('archive')">
+        <span class="chat-list-actions-menu__icon" aria-hidden="true">
+          <SvgIcon :name="archived ? 'unarchive' : 'archive'" size="16" />
+        </span>
+        <span class="chat-list-actions-menu__label">{{ t(archived ? 'Unarchive' : 'Archive chat') }}</span>
+      </button>
+      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="unread ? emit('mark-read') : emit('mark-unread')">
+        <span class="chat-list-actions-menu__icon" aria-hidden="true">
+          <SvgIcon :name="unread ? 'mark-read' : 'mark-unread'" size="16" />
+        </span>
+        <span class="chat-list-actions-menu__label">{{ t(unread ? 'Mark as read' : 'Mark as unread') }}</span>
+      </button>
+      <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('snooze')">
+        <span class="chat-list-actions-menu__icon" aria-hidden="true">
+          <SvgIcon name="snooze" size="16" />
+        </span>
+        <span class="chat-list-actions-menu__label">{{ t('Snooze') }}</span>
+      </button>
+      <button v-if="readable && snoozed" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="emit('unsnooze')">
+        <span class="chat-list-actions-menu__icon" aria-hidden="true">
+          <SvgIcon name="unsnooze" size="16" />
+        </span>
+        <span class="chat-list-actions-menu__label">{{ t('Unsnooze') }}</span>
+      </button>
       <button
         v-if="canEdit"
         class="menu-item chat-list-actions-menu__item"

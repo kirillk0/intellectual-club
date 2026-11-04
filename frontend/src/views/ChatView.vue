@@ -1234,20 +1234,6 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
-.chat-page .branch-search__exact {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  color: var(--color-text-muted);
-}
-
-.chat-page .branch-search__exact.active {
-  color: var(--color-link);
-  border-color: var(--color-info-border);
-  background: var(--color-info-bg);
-}
-
 .chat-page .branch-search input {
   min-width: 0;
   flex: 1;

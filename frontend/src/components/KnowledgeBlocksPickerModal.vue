@@ -53,7 +53,7 @@
                     placeholder="Search blocks"
                     aria-label="Search blocks"
                   />
-                  <button v-if="query" type="button" @click="query = ''">Clear</button>
+                  <SearchClearButton v-if="query" @click="query = ''" />
                   <button
                     v-if="selectionMode !== 'single' && selectedLocal.length"
                     type="button"
@@ -177,6 +177,7 @@ import ModalWindow from '@/components/ModalWindow.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import KnowledgeTagsTree, { type KnowledgeTagTreeItem } from '@/components/KnowledgeTagsTree.vue';
 import type { KnowledgeBlock } from '@/types/api';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 type KnowledgeTagRow = KnowledgeTagTreeItem;
 

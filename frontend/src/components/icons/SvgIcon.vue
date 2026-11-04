@@ -71,6 +71,14 @@ import ToolPlugIcon from './svg/tool-plug.svg?component';
 import ToolSearchIcon from './svg/tool-search.svg?component';
 import ToolTerminalIcon from './svg/tool-terminal.svg?component';
 import ToolDiceIcon from './svg/tool-dice.svg?component';
+import ArchiveIcon from './svg/archive.svg?component';
+import UnarchiveIcon from './svg/unarchive.svg?component';
+import InboxIcon from './svg/inbox.svg?component';
+import MarkReadIcon from './svg/mark-read.svg?component';
+import MarkUnreadIcon from './svg/mark-unread.svg?component';
+import SnoozeIcon from './svg/snooze.svg?component';
+import UnsnoozeIcon from './svg/unsnooze.svg?component';
+import QuoteIcon from './svg/quote.svg?component';
 
 const iconMap: Record<string, Component> = {
   'copy': CopyIcon,
@@ -139,6 +147,14 @@ const iconMap: Record<string, Component> = {
   'tool-search': ToolSearchIcon,
   'tool-terminal': ToolTerminalIcon,
   'tool-dice': ToolDiceIcon,
+  'archive': ArchiveIcon,
+  'unarchive': UnarchiveIcon,
+  'inbox': InboxIcon,
+  'mark-read': MarkReadIcon,
+  'mark-unread': MarkUnreadIcon,
+  'snooze': SnoozeIcon,
+  'unsnooze': UnsnoozeIcon,
+  'quote': QuoteIcon,
 };
 
 const props = defineProps<{

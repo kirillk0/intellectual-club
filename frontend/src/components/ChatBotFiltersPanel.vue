@@ -27,7 +27,7 @@
       >
         <SvgIcon :name="sortMode === 'recent_activity' ? 'sort-time' : 'sort-alpha'" />
       </button>
-      <button v-if="searchTerm" type="button" @click="emit('update:searchTerm', '')">Clear</button>
+      <SearchClearButton v-if="searchTerm" @click="emit('update:searchTerm', '')" />
     </div>
 
     <div class="list chat-bot-filters-panel__list">
@@ -65,6 +65,7 @@ import { computed } from 'vue';
 import ImageThumbnail from '@/components/ImageThumbnail.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { ImageAsset } from '@/types/api';
+import SearchClearButton from '@/components/SearchClearButton.vue';
 
 type ChatBotFilterOption = {
   value: string;
