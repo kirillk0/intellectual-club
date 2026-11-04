@@ -157,6 +157,45 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
   end
 
   describe "GET /api/bff/chat-list/search" do
+    test "archive view scopes notes, message hits and cursors", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      active = create_chat!(actor, note: "archive needle active")
+      archived = create_chat!(actor, note: "archive needle old")
+
+      for chat <- [active, archived], _ <- 1..2 do
+        {:ok, _} = Threads.add_message_to_end(chat, :user, "archive needle", actor: actor)
+      end
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          archived.id,
+          %{"action" => "archive", "expected_state_version" => 0, "observed_revision" => 0},
+          actor
+        )
+
+      for {view, chat} <- [{"inbox", active}, {"archive", archived}] do
+        result =
+          conn
+          |> get("/api/bff/chat-list/search", %{q: "needle", view: view, limit: 1})
+          |> json_response(200)
+
+        assert result["notes"] == [chat.id]
+        assert Enum.map(result["hits"], & &1["chat_id"]) == [chat.id]
+        assert is_binary(result["next_cursor"])
+        other_view = if view == "inbox", do: "archive", else: "inbox"
+
+        conn
+        |> get("/api/bff/chat-list/search", %{
+          q: "needle",
+          view: other_view,
+          after: result["next_cursor"],
+          limit: 1
+        })
+        |> json_response(422)
+      end
+    end
+
     setup do
       put_app_env(:chat_search_probe_timeout_ms, 0)
       :ok

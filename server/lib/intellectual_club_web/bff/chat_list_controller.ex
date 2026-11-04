@@ -24,6 +24,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   def index(conn, %{"sections" => _} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params),
          {:ok, sections} <- list_sections(params) do
       result =
@@ -31,7 +32,8 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           actor,
           bot_filter,
           section_paginations(params, sections),
-          summary_loads()
+          summary_loads(),
+          view
         )
 
       marker = ReadState.list_marker(actor)
@@ -43,10 +45,10 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       json(conn, %{
         chats: payload,
         sections: result.sections,
-        stats: Serializer.chat_list_stats(ListingStats.sidebar(actor)),
+        stats: Serializer.chat_list_stats(ListingStats.sidebar(actor, view)),
         next_read_state_expiry: marker.next_expiry,
         idle_revision:
-          sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states)
+          sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states, view)
       })
     else
       {:error, %Plug.Conn{} = conn} -> conn
@@ -56,9 +58,15 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   def index(conn, _params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, view} <- ChatParams.archive_view(conn.params),
          {:ok, bot_filter} <- ChatParams.bot_filter(conn.params) do
       preview_len = ChatParams.preview_len(conn.params)
-      pagination = Map.put(ChatParams.pagination(conn.params), :section, conn.params["section"])
+
+      pagination =
+        Map.merge(ChatParams.pagination(conn.params), %{
+          section: conn.params["section"],
+          view: view
+        })
 
       page =
         Listing.read_page(actor, bot_filter, pagination, summary_loads())
@@ -72,7 +80,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
       chats = Map.get(page, :results, [])
       {payload, subchat_lifecycle_states} = list_entries_payload(chats, actor, preview_len)
-      sidebar_stats = ListingStats.sidebar(actor)
+      sidebar_stats = ListingStats.sidebar(actor, view)
 
       json(conn, %{
         chats: payload,
@@ -101,6 +109,34 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: error_message})
+    end
+  end
+
+  def archive_other_preview(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- ChatParams.bot_filter(params) do
+      snapshot = IntellectualClub.Chat.Archive.snapshot(actor, bot_filter)
+      json(conn, Map.take(snapshot, [:count, :revision]))
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, message} -> conn |> put_status(:unprocessable_entity) |> json(%{error: message})
+    end
+  end
+
+  def archive_other(conn, params) do
+    with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, bot_filter} <- ChatParams.bot_filter(params),
+         {:ok, result} <- ReadState.archive_other(actor, bot_filter, params["expected_revision"]) do
+      case result do
+        %{conflict: true} ->
+          conn |> put_status(:conflict) |> json(%{error: "stale_archive_preview"})
+
+        result ->
+          json(conn, result)
+      end
+    else
+      {:error, %Plug.Conn{} = conn} -> conn
+      {:error, error} -> ChatAccess.render_error(conn, error)
     end
   end
 
@@ -161,14 +197,15 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     end)
   end
 
-  defp sections_revision(result, bot_filter, read_marker, draft_marker, lifecycle_states) do
+  defp sections_revision(result, bot_filter, read_marker, draft_marker, lifecycle_states, view) do
     Revisions.chat_list_sections_revision(
       bot_filter,
       result.sections,
       result.results,
       read_marker,
       draft_marker,
-      lifecycle_states
+      lifecycle_states,
+      view
     )
   end
 
@@ -184,6 +221,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   """
   def search(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
       term = params |> Map.get("q", "") |> to_string()
 
@@ -192,6 +230,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
                ChatSearch.search_chat_list(term, actor,
                  exact?: ChatParams.flag?(params, "exact"),
                  bot_filter: bot_filter,
+                 view: view,
                  after: params["after"],
                  limit: ChatParams.search_limit(params)
                ) do
@@ -359,19 +398,28 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   def idle_state(conn, %{"sections" => _} = params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params),
          {:ok, sections} <- list_sections(params) do
       result =
-        Listing.read_sections(actor, bot_filter, section_paginations(params, sections), [
-          :last_message,
-          :blocks_count,
-          :tools_count
-        ])
+        Listing.read_sections(
+          actor,
+          bot_filter,
+          section_paginations(params, sections),
+          [
+            :last_message,
+            :blocks_count,
+            :tools_count
+          ],
+          view
+        )
 
       marker = ReadState.list_marker(actor)
       drafts = ChatDraft.list_marker(actor)
       lifecycle_states = direct_subchat_lifecycle_states(result.results, actor)
-      revision = sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states)
+
+      revision =
+        sections_revision(result, bot_filter, marker.rows, drafts, lifecycle_states, view)
 
       if is_nil(marker.next_expiry) and Revisions.client_revision_matches?(params, revision) do
         send_resp(conn, :no_content, "")
@@ -391,15 +439,22 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
 
   def idle_state(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
+         {:ok, view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
-      pagination = Map.put(ChatParams.pagination(params), :section, params["section"])
+      pagination =
+        Map.merge(ChatParams.pagination(params), %{section: params["section"], view: view})
 
       page =
-        Listing.read_page(actor, bot_filter, pagination, [
-          :last_message,
-          :blocks_count,
-          :tools_count
-        ])
+        Listing.read_page(
+          actor,
+          bot_filter,
+          pagination,
+          [
+            :last_message,
+            :blocks_count,
+            :tools_count
+          ]
+        )
 
       marker = ReadState.list_marker(actor)
 

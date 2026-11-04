@@ -6,15 +6,17 @@
           <div class="chat-result-main">
             <div class="chat-result-title">
               <span v-if="readState?.is_unread" class="chat-unread-dot" :title="t('Unread')" :aria-label="t('Unread')"></span>
-              <span v-if="readState?.is_snoozed" class="chat-snoozed" :title="snoozeLabel" :aria-label="snoozeLabel">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>
-              </span>
+
               <span class="chat-result-name">{{ title }}</span>
               <span v-if="configLabel" class="chat-result-config">({{ configLabel }})</span>
             </div>
             <div class="chat-result-meta">
               <div class="muted">{{ metaText }}</div>
               <ChatGenerationStateIndicator :state="generationState" />
+            </div>
+            <div v-if="readState?.is_snoozed" class="chat-snoozed" :title="snoozeLabel" :aria-label="snoozeLabel" role="status">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>
+              <span>{{ snoozeLabel }}</span>
             </div>
             <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
             <div v-if="previewText" class="chat-first-preview">
@@ -207,7 +209,8 @@ const previewToneClass = computed(() => ({
 
 .chat-list-row--unread .chat-result-name { font-weight: 700; }
 .chat-unread-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; align-self: center; }
-.chat-snoozed { display: inline-flex; color: var(--color-text-muted); align-self: center; }
+.chat-snoozed { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 3px 7px; border-radius: 6px; background: var(--color-surface-muted); color: var(--color-text); font-size: 0.85rem; }
+.chat-snoozed svg { flex: 0 0 auto; }
 
 .chat-result-config {
   color: var(--color-text-muted);

@@ -81,6 +81,59 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
                1
     end
 
+    test "concurrent archiving cannot hide a terminal result newer than its observed revision", %{
+      read_state_actor: actor,
+      read_state_chat: chat
+    } do
+      message = create_generating_message!(actor, chat)
+
+      concurrent_read_state_calls([
+        fn ->
+          IntellectualClub.Chat.ReadState.mutate(
+            chat.id,
+            %{"action" => "archive", "expected_state_version" => 0, "observed_revision" => 0},
+            actor
+          )
+        end,
+        fn -> set_message_status!(actor, message, :done) end
+      ])
+
+      state = IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id]
+      refute state.is_archived
+      assert state.is_unread
+    end
+
+    test "bulk archive and first draft save serialize without deadlocking", %{
+      read_state_actor: actor,
+      read_state_chat: chat
+    } do
+      snapshot = IntellectualClub.Chat.Archive.snapshot(actor, nil)
+
+      results =
+        concurrent_read_state_calls([
+          fn -> IntellectualClub.Chat.ReadState.archive_other(actor, nil, snapshot.revision) end,
+          fn ->
+            IntellectualClub.Chat.ChatDraft.save(
+              chat.id,
+              %{"text" => "unfinished", "expected_revision" => 0},
+              actor
+            )
+          end
+        ])
+
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+      assert {:ok, %{text: "unfinished"}} = IntellectualClub.Chat.ChatDraft.get(chat.id, actor)
+      [archive_result, _draft_result] = results
+
+      case archive_result do
+        {:ok, %{conflict: true}} ->
+          refute IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
+
+        {:ok, %{count: 1}} ->
+          assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
+      end
+    end
+
     test "one request wins each CAS version, including concurrent initial inserts", %{
       read_state_actor: actor,
       read_state_chat: chat
@@ -172,6 +225,49 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
   end
 
   describe "durable terminal activity" do
+    test "each terminal result returns an archived chat while subchat activity leaves its parent archived" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      child = create_subchat!(actor, chat, :spawn)
+
+      for status <- [:done, :error, :canceled] do
+        state = IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id]
+
+        assert {:ok, %{read_state: %{is_archived: true}}} =
+                 IntellectualClub.Chat.ReadState.mutate(
+                   chat.id,
+                   %{
+                     "action" => "archive",
+                     "expected_state_version" => state.state_version,
+                     "observed_revision" => state.activity_revision
+                   },
+                   actor
+                 )
+
+        child_message = create_generating_message!(actor, child)
+        set_message_status!(actor, child_message, status)
+        assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
+        message = create_generating_message!(actor, chat)
+        set_message_status!(actor, message, status)
+        refute IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
+      end
+
+      state = IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id]
+      message = create_generating_message!(actor, chat)
+      set_message_status!(actor, message, :done)
+
+      assert {:ok, %{read_state: %{is_archived: false}}} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => state.state_version,
+                   "observed_revision" => state.activity_revision
+                 },
+                 actor
+               )
+    end
+
     test "terminal status and activity roll back together" do
       %{user: actor} = user_fixture()
       chat = create_chat!(actor)

@@ -3,7 +3,7 @@ import { chatReadStateInput, isChatReadStateConflict, updateChatReadState } from
 import { publishChatChange } from '@/features/chat/chatEvents';
 import type { ChatReadState } from '@/types/api';
 
-type ReadAction = 'read' | 'unread' | 'snooze' | 'unsnooze';
+type ReadAction = 'read' | 'unread' | 'snooze' | 'unsnooze' | 'archive' | 'unarchive';
 type Options = {
   chatId: Readonly<Ref<number>>;
   active: Readonly<Ref<boolean>>;
@@ -207,5 +207,7 @@ export function useChatReadStateRuntime(options: Options) {
     markUnread: () => mutate('unread'),
     snooze: (until: string) => mutate('snooze', until),
     unsnooze: () => mutate('unsnooze'),
+    archive: () => mutate('archive'),
+    unarchive: () => mutate('unarchive'),
   };
 }

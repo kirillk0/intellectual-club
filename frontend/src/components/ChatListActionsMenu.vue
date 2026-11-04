@@ -5,9 +5,11 @@
       ref="menuRef"
       class="dropdown floating-dropdown chat-list-actions-menu"
       role="menu"
-      :aria-label="t('Chat actions')"
+      :aria-label="t(sectionActions ? 'Section actions' : 'Chat actions')"
       :style="menuStyle"
     >
+      <button v-if="sectionActions" class="menu-item" type="button" role="menuitem" :disabled="busy" @click="emit('archive-all')">{{ t('Archive all') }}</button>
+      <button v-if="readable && archivable" class="menu-item" type="button" role="menuitem" :disabled="busy" @click="archived ? emit('unarchive') : emit('archive')">{{ t(archived ? 'Unarchive' : 'Archive chat') }}</button>
       <button v-if="readable" class="menu-item chat-list-actions-menu__item" type="button" role="menuitem" :disabled="busy" @click="unread ? emit('mark-read') : emit('mark-unread')">
         {{ t(unread ? 'Mark as read' : 'Mark as unread') }}
       </button>
@@ -68,6 +70,9 @@ const props = withDefaults(
     unread?: boolean;
     snoozed?: boolean;
     busy?: boolean;
+    archivable?: boolean;
+    archived?: boolean;
+    sectionActions?: boolean;
   }>(),
   {
     deleting: false,
@@ -76,6 +81,9 @@ const props = withDefaults(
     unread: false,
     snoozed: false,
     busy: false,
+    archivable: false,
+    archived: false,
+    sectionActions: false,
   }
 );
 
@@ -87,6 +95,9 @@ const emit = defineEmits<{
   'mark-unread': [];
   snooze: [];
   unsnooze: [];
+  archive: [];
+  unarchive: [];
+  'archive-all': [];
 }>();
 
 const t = translate;

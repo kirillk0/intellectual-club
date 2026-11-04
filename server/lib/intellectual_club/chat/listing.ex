@@ -20,6 +20,7 @@ defmodule IntellectualClub.Chat.Listing do
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> apply_hierarchy_filter(actor, Map.get(pagination, :section))
     |> apply_bot_filter(bot_filter)
+    |> apply_view(Map.get(pagination, :view, "inbox"), actor, Map.get(pagination, :section))
     |> apply_section_sort(Map.get(pagination, :section))
     |> apply_section(Map.get(pagination, :section))
     |> Ash.Query.load([:read_state | loads], strict?: true)
@@ -39,7 +40,7 @@ defmodule IntellectualClub.Chat.Listing do
   and read-state details are loaded only for the distinct visible page IDs.
   """
   @spec read_sections(map(), term(), map(), list()) :: map()
-  def read_sections(actor, bot_filter, paginations, loads) do
+  def read_sections(actor, bot_filter, paginations, loads, view \\ "inbox") do
     section_keys =
       Enum.filter(["drafts", "unread", "working", "other"], &Map.has_key?(paginations, &1))
 
@@ -47,6 +48,7 @@ defmodule IntellectualClub.Chat.Listing do
       Chat
       |> Ash.Query.filter(owner_id == ^actor.id)
       |> section_candidates("drafts" in section_keys)
+      |> apply_view(view, actor, if("drafts" in section_keys, do: "drafts"))
       |> apply_bot_filter(bot_filter)
       |> Ash.Query.select([:id, :subagent])
       |> Ash.Query.load([:last_activity_at, :inbox_unread, :personal_draft_updated_at],
@@ -116,6 +118,18 @@ defmodule IntellectualClub.Chat.Listing do
 
     by_id = Map.new(chats, &{&1.id, &1})
     %{results: Enum.flat_map(ids, &List.wrap(Map.get(by_id, &1))), sections: sections}
+  end
+
+  def apply_view(query, view, actor, section \\ nil)
+
+  def apply_view(query, view, actor, "drafts") do
+    ids = IntellectualClub.Chat.Archive.visible_ids(actor, view)
+    Ash.Query.filter(query, id in ^ids)
+  end
+
+  def apply_view(query, view, _actor, _section) do
+    archived = view == "archive"
+    Ash.Query.filter(query, is_archived == ^archived)
   end
 
   defp section_candidates(query, true) do

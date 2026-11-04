@@ -43,6 +43,10 @@
 
           <main class="catalog-split__main stack">
             <section class="card stack">
+              <div class="chat-inbox-views" role="group" :aria-label="translate('Chat list view')">
+                <button type="button" :class="{ active: archiveView === 'inbox' }" :aria-pressed="archiveView === 'inbox'" @click="setArchiveView('inbox')">{{ translate('Inbox') }}</button>
+                <button type="button" :class="{ active: archiveView === 'archive' }" :aria-pressed="archiveView === 'archive'" @click="setArchiveView('archive')">{{ translate('Archive') }}</button>
+              </div>
               <div class="chat-search">
                 <input
                   v-model="chatSearchTerm"
@@ -71,6 +75,7 @@
             </section>
 
             <section v-else class="card stack chat-list-main">
+              <p v-if="archiveNotice" role="status">{{ archiveNotice }}</p>
               <p v-if="error" class="error-text" role="alert">{{ error }}</p>
               <p v-if="readStateError && !snoozeChat" class="error-text" role="alert">{{ readStateError }}</p>
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
@@ -84,7 +89,10 @@
               />
               <div v-else class="chat-sections">
                 <section v-for="section in renderedSections" :key="section.key" class="chat-section" :data-section="section.key" :aria-label="section.label">
-                  <h3 v-if="section.showHeading" class="chat-section__heading">{{ section.label }} <span v-if="section.total != null" class="muted">{{ section.total }}</span></h3>
+                  <div v-if="section.showHeading" class="chat-section__header">
+                    <h3 class="chat-section__heading">{{ section.label }} <span v-if="section.total != null" class="muted">{{ section.total }}</span></h3>
+                    <button v-if="section.key === 'other' && !hasChatSearch && archiveView === 'inbox'" class="icon-button" type="button" data-chat-actions-trigger :aria-label="translate('Other chats actions')" aria-haspopup="menu" :aria-expanded="Boolean(sectionActionsAnchor)" @click="openSectionActions($event)"><SvgIcon name="more-horizontal" size="16" /></button>
+                  </div>
                   <div class="list">
                     <div v-for="entry in section.entries" :key="entry.key" class="chat-list-entry">
                       <ChatListRow
@@ -251,6 +259,10 @@
       :unread="Boolean(chatActionsMenu?.chat.read_state?.has_unread || chatActionsMenu?.chat.read_state?.manual_unread)"
       :snoozed="Boolean(chatActionsMenu?.chat.read_state?.is_snoozed)"
       :busy="readStateSaving"
+      :archivable="Boolean(chatActionsMenu && !chatActionsMenu.chat.subagent)"
+      :archived="Boolean(chatActionsMenu?.chat.read_state?.is_archived)"
+      @archive="changeReadStateFromMenu('archive')"
+      @unarchive="changeReadStateFromMenu('unarchive')"
       @mark-read="changeReadStateFromMenu('read')"
       @mark-unread="changeReadStateFromMenu('unread')"
       @snooze="openSnoozeModal"
@@ -260,6 +272,9 @@
       @edit-note="openChatNoteModal"
       @delete="deleteChatFromMenu"
     />
+
+    <ChatListActionsMenu :anchor="sectionActionsAnchor" :readable="false" :section-actions="true" @close="sectionActionsAnchor = null" @archive-all="openArchiveAll" />
+    <ChatArchiveAllModal v-if="archiveAllTarget" :bot="archiveAllTarget.bot" :bot-label="archiveAllTarget.label" @close="archiveAllTarget = null" @archived="finishArchiveAll" />
 
     <ChatSnoozeModal
       :open="snoozeChat != null"
@@ -289,6 +304,7 @@ import BotSelectorModal from '@/components/BotSelectorModal.vue';
 import ChatListActionsMenu, { type ChatListActionsAnchor } from '@/components/ChatListActionsMenu.vue';
 import ChatListRow, { type ChatListRowActionsRequest } from '@/components/ChatListRow.vue';
 import ChatNoteModal from '@/components/chat/ChatNoteModal.vue';
+import ChatArchiveAllModal from '@/components/chat/ChatArchiveAllModal.vue';
 import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import { chatReadStateInput, updateChatReadState, isChatReadStateConflict, type ChatReadStateAction } from '@/features/chat/chatReadState';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
@@ -488,6 +504,46 @@ sectionPages.value.working.number = readChatListPageQuery(route.query.workingPag
 const pageNumber = computed({ get: () => sectionPages.value.other.number, set: (value) => { sectionPages.value.other.number = value; } });
 const perPage = ref(20);
 const totalChats = ref(0);
+type ArchiveView = 'inbox' | 'archive';
+const archiveView = ref<ArchiveView>(route.query.view === 'archive' ? 'archive' : 'inbox');
+const sectionActionsAnchor = ref<ChatListActionsAnchor | null>(null);
+const archiveAllTarget = ref<{ bot: string; label: string } | null>(null);
+const archiveNotice = ref('');
+
+function openSectionActions(event: MouseEvent) {
+  closeChatActions();
+  if (sectionActionsAnchor.value) { sectionActionsAnchor.value = null; return; }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  sectionActionsAnchor.value = { x: rect.right, y: rect.bottom + 4, flipY: rect.top - 4, align: 'end' };
+}
+
+function openArchiveAll() {
+  sectionActionsAnchor.value = null;
+  const bot = String(botFilter.value || '');
+  archiveAllTarget.value = { bot, label: botFilterOptions.value.find((option) => option.value === bot)?.label || translate('All bots') };
+}
+
+async function finishArchiveAll(count: number) {
+  archiveAllTarget.value = null;
+  archiveNotice.value = translate('Archived chats: {count}', { count });
+  chatListLoadSeq += 1;
+  chatSearchSeq += 1;
+  await refreshSections();
+}
+
+function setArchiveView(view: ArchiveView) {
+  if (archiveView.value === view) return;
+  archiveView.value = view;
+  archiveNotice.value = '';
+  sectionActionsAnchor.value = null;
+  closeChatActions();
+  resetSectionPageNumbers();
+  resetChatSearch();
+  chats.value = [];
+  chatListIdleRevision.value = null;
+  void loadChats();
+}
+
 const chatSearchTerm = ref(getQueryString(route.query.q));
 const chatSearchExact = ref(readExactQuery(route.query.exact));
 // Chat summaries referenced by note matches and hits.
@@ -558,6 +614,8 @@ function syncChatListRouteQuery() {
   const bot = String(botFilter.value || '').trim();
   const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
   const next = { ...route.query };
+  if (archiveView.value === 'archive') next.view = 'archive';
+  else delete next.view;
   for (const key of ['drafts', 'unread', 'working'] as const) {
     const queryKey = `${key}Page`;
     const number = sectionPages.value[key].number;
@@ -578,6 +636,7 @@ function syncChatListRouteQuery() {
   else delete (next as Record<string, unknown>).page;
 
   if (
+    sameQueryValue(new URLSearchParams(window.location.search).get('view') ?? undefined, next.view as string | undefined) &&
     sameQueryValue(route.query.q, q || undefined) &&
     sameQueryValue(route.query.exact, exact) &&
     sameQueryValue(route.query.bot, bot || undefined) &&
@@ -610,13 +669,17 @@ function syncChatListRouteQuery() {
 }
 
 watch(
-  () => [route.query.q, route.query.exact, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage, route.query.draftsPage],
-  ([q, exact, bot, page, unreadPage, workingPage, draftsPage]) => {
+  () => [route.query.q, route.query.exact, route.query.bot, route.query.page, route.query.unreadPage, route.query.workingPage, route.query.draftsPage, route.query.view],
+  ([q, exact, bot, page, unreadPage, workingPage, draftsPage, view]) => {
+    const nextView = view === 'archive' ? 'archive' : 'inbox';
+    const viewChanged = archiveView.value !== nextView;
+    archiveView.value = nextView;
+    if (viewChanged) { chats.value = []; resetChatSearch(); }
     const nextQ = getQueryString(q);
     const nextExact = readExactQuery(exact);
     const nextBot = readBotFilterQuery(bot);
     const nextPage = readChatListPageQuery(page);
-    const shouldLoadChats = botFilter.value !== nextBot || pageNumber.value !== nextPage ||
+    const shouldLoadChats = viewChanged || botFilter.value !== nextBot || pageNumber.value !== nextPage ||
       sectionPages.value.drafts.number !== readChatListPageQuery(draftsPage) ||
       sectionPages.value.unread.number !== readChatListPageQuery(unreadPage) ||
       sectionPages.value.working.number !== readChatListPageQuery(workingPage);
@@ -629,14 +692,14 @@ watch(
     if (botFilter.value !== nextBot) botFilter.value = nextBot;
     if (pageNumber.value !== nextPage) pageNumber.value = nextPage;
 
-    if (shouldLoadChats && !hasChatSearch.value) {
+    if (shouldLoadChats && (viewChanged || !hasChatSearch.value)) {
       void loadChats();
     }
   }
 );
 
 watch(
-  () => [chatSearchTerm.value, chatSearchExact.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
+  () => [archiveView.value, chatSearchTerm.value, chatSearchExact.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
   () => {
     syncChatListRouteQuery();
   }
@@ -899,7 +962,7 @@ function applyChatSummary(summary: ChatSummary, changeReason?: unknown) {
 
   const existedInPage = chats.value.some((chat) => chat.id === summary.id);
 
-  if (matchesBotFilter(summary)) {
+  if (matchesBotFilter(summary) && matchesArchiveView(summary)) {
     chats.value = mergeChatRows(chats.value, summary);
     if (!existedInPage && isNewChatChangeReason(changeReason)) {
       totalChats.value += 1;
@@ -980,8 +1043,12 @@ useChatChanges((change) => {
   refreshChatSummary(change.id, change.meta?.reason);
 });
 
-const filteredChats = computed(() => chats.value.filter(matchesBotFilter));
-const filteredChatSearchResults = computed(() => chatSearchResults.value.filter(matchesBotFilter));
+function matchesArchiveView(chat: ChatSummary) {
+  // Draft subchats inherit their parent view through server-side membership.
+  return chat.subagent || Boolean(chat.read_state?.is_archived) === (archiveView.value === 'archive');
+}
+const filteredChats = computed(() => chats.value.filter((chat) => matchesBotFilter(chat) && matchesArchiveView(chat)));
+const filteredChatSearchResults = computed(() => chatSearchResults.value.filter((chat) => matchesBotFilter(chat) && matchesArchiveView(chat)));
 const visibleChats = computed(() => (hasChatSearch.value ? filteredChatSearchResults.value : filteredChats.value));
 const visibleGenerationChats = computed(() => flattenChatRows(visibleChats.value));
 const hasVisibleGeneratingChat = computed(() =>
@@ -1021,7 +1088,7 @@ const visibleSections = computed<ChatListSection[]>(() => {
       totalPages, showPagination: totalPages > 1, showHeading: true,
     };
   }).filter((section) => section.entries.length > 0);
-  return sections.map((section) => ({ ...section, showHeading: section.key !== 'other' || sections.length > 1 }));
+  return sections;
 });
 
 // Note matches come first; adjacent hits of one chat share a header, a chat
@@ -1590,6 +1657,7 @@ async function runChatSearch(
   try {
     const params = new URLSearchParams();
     params.set('q', term);
+    params.set('view', archiveView.value);
     if (chatSearchExact.value) params.set('exact', '1');
     // A silent refresh re-reads every hit already shown in one request.
     const limit = append || !silent
@@ -1822,6 +1890,7 @@ async function refreshVisibleChatGenerationStates(signal: AbortSignal) {
 function chatListSectionParams() {
   const params = new URLSearchParams();
   params.set('sections', SECTION_KEYS.join(','));
+  params.set('view', archiveView.value);
   for (const section of SECTION_KEYS) {
     params.set(`page_${section}`, String(Math.max(1, sectionPages.value[section].number)));
   }
@@ -2084,7 +2153,7 @@ watch(
 );
 
 watch(
-  () => [botFilter.value, chatSearchExact.value],
+  () => [botFilter.value, chatSearchExact.value, archiveView.value],
   () => {
     chatListIdleRevision.value = null;
     resetChatSearch();
@@ -2202,6 +2271,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.chat-inbox-views { display: flex; gap: 8px; }
+.chat-inbox-views .active { background: var(--color-surface-hover); border-color: var(--color-border-strong); font-weight: 600; }
+.chat-section__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-sections { display: flex; flex-direction: column; gap: 20px; }
 .chat-section { min-width: 0; }
 .chat-section__heading { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 1rem; }

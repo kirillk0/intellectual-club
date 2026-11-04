@@ -105,6 +105,9 @@
         <Teleport to="body">
           <div class="dropdown floating-dropdown" v-if="menuOpen" :ref="setMenuRef" :style="menuStyle">
             <template v-if="readState">
+              <button v-if="archivable" class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="archive" @click="readState?.is_archived ? emit('unarchive') : emit('archive')">
+                {{ t(readState?.is_archived ? 'Unarchive' : 'Archive chat') }}
+              </button>
               <button class="menu-item chat-menu-item" type="button" :disabled="readStateBusy" data-read-action="toggle"
                 @click="isUnread ? emit('mark-read') : emit('mark-unread')">
                 <span class="chat-menu-item__icon" aria-hidden="true"><SvgIcon name="check" size="16" /></span>
@@ -273,6 +276,7 @@ interface Props {
   readStateBusy?: boolean;
   isUnread?: boolean;
   isSnoozed?: boolean;
+  archivable?: boolean;
   handoffPending: boolean;
   handoffDisabled: boolean;
   showMissingToolsBanner: boolean;
@@ -302,6 +306,8 @@ const emit = defineEmits<{
   'mark-unread': [];
   'open-snooze': [];
   unsnooze: [];
+  archive: [];
+  unarchive: [];
   'update:selectedConfig': [value: number | ''];
   'change-config': [];
   'toggle-menu': [];

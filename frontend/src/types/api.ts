@@ -166,6 +166,7 @@ export type ForkContext = {
 export type ChatExportForkContext = ForkContext & { messages: ForkContextMessage[] };
 
 export type ChatReadState = {
+  is_archived?: boolean;
   activity_revision: number;
   read_revision: number;
   manual_unread: boolean;

@@ -10,9 +10,37 @@ not a field on the shared chat and does not change chat activity ordering.
 - `ReadState.manual_unread`: explicit reminder independent of new activity.
 - `ReadState.snoozed_until`: UTC deadline suppressing the unread indicator.
 - `ReadState.state_version`: compare-and-swap version of personal intent.
+- `ReadState.archived_revision`: nullable observed activity revision at archive time.
 
 `has_unread = manual_unread OR activity_revision > read_revision`.
 `is_unread = has_unread AND NOT is_snoozed`.
+
+`is_archived = archived_revision IS NOT NULL AND activity_revision <= archived_revision`.
+Archiving is personal, including for shared read-only viewers, and preserves read
+state, snooze, drafts, and chat ordering. A new terminal generation (`done`,
+`error`, or `canceled`) returns the chat to the inbox without rewriting personal
+rows. Reading, opening, or completing a subchat does not unarchive its parent.
+Only standalone chats (`subagent=false`) can be archived directly. Subchats,
+including their draft section entries, follow the nearest standalone parent’s
+list mode. Independent forks remain independent.
+
+The read-state endpoint also accepts `archive` (with `observed_revision`) and
+`unarchive`, using the same `expected_state_version` CAS as other personal actions.
+A newer result arriving concurrently remains visible. Existing history starts
+unarchived; the schema migration does not archive any user data.
+
+The list offers Inbox and Archive modes, stored as `view=inbox|archive` in the
+URL. Search, pagination, and sidebar counts use that mode. The Other section’s
+Archive all command previews an actor/filter-bound snapshot across all pages,
+then requires confirmation. Chats with a nonempty draft or active snooze anywhere
+in their subchat tree are excluded. A changed eligible set, activity revision,
+or personal state version invalidates confirmation with 409; no partial writes
+are committed. Personal writes acquire chat key-share locks before their upsert;
+bulk archive locks authorized owned chats, then draft/state rows, in ID order.
+This also serializes first inserts without reversing foreign-key lock order.
+
+Snoozed list rows show a clock and a visible local deadline, including on mobile.
+Expiry refreshes the presentation through the existing deadline timers.
 
 Snooze sets manual unread, so a reminder appears even without a new response.
 Expiry changes presentation without requiring a scheduled database mutation.

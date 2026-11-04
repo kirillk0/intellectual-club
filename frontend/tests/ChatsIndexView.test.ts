@@ -60,7 +60,7 @@ describe('ChatsIndexView stack navigation', () => {
   });
 
   it.each([
-    { sections: ['other'], headings: [] },
+    { sections: ['other'], headings: ['Other chats 1'] },
     { sections: ['unread', 'other'], headings: ['Unread 1', 'Other chats 1'] },
     { sections: ['working', 'other'], headings: ['Working chats 1', 'Other chats 1'] },
     { sections: ['unread'], headings: ['Unread 1'] },

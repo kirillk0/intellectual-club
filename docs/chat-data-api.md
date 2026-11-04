@@ -267,3 +267,31 @@ per-SQL cap, bounded by the remaining overall budget.
 `GET /api/bff/chat-search/:id/messages?q=...&exact=1` searches one readable
 chat with the same tokenization and returns `active` and `inactive` branch hits
 in conversation order, each with the full `content` and a `snippet`.
+
+## Personal archive in the chat-list BFF
+
+`GET /api/bff/chat-list`, `/api/bff/chat-list/idle-state`, and
+`/api/bff/chat-list/search` accept `view=inbox|archive` (default `inbox`). Invalid
+values return 422. Mode filtering happens before section/message pagination;
+sidebar counts are scoped to the mode, but not the selected bot. Both grouped
+and individual section reads support it. Idle revisions and search cursors
+include the mode; discard cursors when switching modes. Direct chat access and
+the general Ash message-search API are unaffected by this inbox presentation.
+
+`read_state.is_archived` is an additive boolean in chat summaries and detail
+payloads. Archive state is independent of `can_edit`. The existing
+`POST /api/bff/chat-state/:id/read-state` accepts `archive` and `unarchive`;
+`archive` requires the observed activity revision, and both require the expected
+personal state version. Direct subchat archive attempts return 422.
+
+`GET /api/bff/chat-list/archive-other-preview?bot=...` returns `{count, revision}`
+for all eligible Other chats in the inbox, not just the visible page. Bot filtering
+has the same syntax as the ordinary list. Drafts and future snoozes on a chat or
+any nested subchat protect the standalone parent.
+
+`POST /api/bff/chat-list/archive-other` accepts `{bot, expected_revision}` and
+returns `{count}`. The authorized Ash action locks and rechecks the snapshot,
+then commits all personal archive writes together. A changed snapshot returns
+409 with `error: "stale_archive_preview"`; refresh the preview and obtain a new
+explicit confirmation. Empty valid snapshots return count zero. Successful
+writes invalidate the requesting user's list through the existing SSE stream.

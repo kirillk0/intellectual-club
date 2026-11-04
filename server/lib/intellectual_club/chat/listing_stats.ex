@@ -3,10 +3,7 @@ defmodule IntellectualClub.Chat.ListingStats do
   Aggregates for chat list sidebars and filter counters.
   """
 
-  import Ecto.Query, only: [from: 2]
-
   alias IntellectualClub.Chat.Chat
-  alias IntellectualClub.Repo
 
   require Ash.Query
 
@@ -24,21 +21,21 @@ defmodule IntellectualClub.Chat.ListingStats do
         }
 
   @spec sidebar(any()) :: sidebar_stats()
-  def sidebar(%{id: owner_id} = actor) when is_integer(owner_id) do
+  def sidebar(actor, view \\ "inbox")
+
+  def sidebar(%{id: owner_id} = actor, view) when is_integer(owner_id) do
     rows =
-      Repo.all(
-        from(c in "chats",
-          left_join: b in "bots",
-          on: b.id == c.bot_id and b.owner_id == c.owner_id,
-          where: c.owner_id == ^owner_id and c.subagent == false,
-          group_by: [c.bot_id, b.name],
-          select: %{
-            bot_id: c.bot_id,
-            bot_name: b.name,
-            count: count(c.id)
-          }
-        )
-      )
+      Chat
+      |> Ash.Query.filter(owner_id == ^owner_id and subagent == false)
+      |> IntellectualClub.Chat.Listing.apply_view(view, actor)
+      |> Ash.Query.select([:id, :bot_id])
+      |> Ash.Query.load(:bot)
+      |> Ash.read!(actor: actor, page: false)
+      |> Enum.group_by(& &1.bot_id)
+      |> Enum.map(fn {bot_id, chats} ->
+        bot = hd(chats).bot
+        %{bot_id: bot_id, bot_name: if(bot, do: bot.name), count: length(chats)}
+      end)
 
     Enum.reduce(rows, empty_sidebar_stats(), fn row, acc ->
       count = normalize_count(Map.get(row, :count))
@@ -66,15 +63,18 @@ defmodule IntellectualClub.Chat.ListingStats do
         }
       end)
     end)
-    |> Map.put(:no_bot_last_activity_at, no_bot_last_activity_at(actor))
+    |> Map.put(:no_bot_last_activity_at, no_bot_last_activity_at(actor, view))
   end
 
-  def sidebar(_actor), do: empty_sidebar_stats()
+  def sidebar(_actor, _view), do: empty_sidebar_stats()
 
   @spec no_bot_last_activity_at(any()) :: DateTime.t() | NaiveDateTime.t() | nil
-  def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
+  def no_bot_last_activity_at(actor, view \\ "inbox")
+
+  def no_bot_last_activity_at(%{id: actor_id} = actor, view) when is_integer(actor_id) do
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id) and subagent == false)
+    |> IntellectualClub.Chat.Listing.apply_view(view, actor)
     |> Ash.Query.sort(last_activity_at: :desc, id: :desc)
     |> Ash.Query.load(:last_activity_at)
     |> Ash.Query.limit(1)
@@ -85,7 +85,7 @@ defmodule IntellectualClub.Chat.ListingStats do
     end
   end
 
-  def no_bot_last_activity_at(_actor), do: nil
+  def no_bot_last_activity_at(_actor, _view), do: nil
 
   defp chat_activity_at(%Chat{} = chat) do
     case Map.get(chat, :last_activity_at) do

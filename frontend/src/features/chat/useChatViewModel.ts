@@ -1165,6 +1165,8 @@ export function useChatViewModel() {
     chatReadState: readRuntime.state,
     readStateBusy: readRuntime.busy,
     chatIsUnread: readRuntime.isUnread,
+    archiveChat: () => changeReadState(readRuntime.archive),
+    unarchiveChat: () => changeReadState(readRuntime.unarchive),
     chatIsSnoozed: readRuntime.isSnoozed,
     snoozeOpen,
     markChatRead: () => changeReadState(readRuntime.markRead),

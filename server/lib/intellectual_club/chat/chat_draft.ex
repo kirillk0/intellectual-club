@@ -56,6 +56,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     defaults [:read]
 
     action :save, :map do
+      transaction? true
       argument :chat_id, :integer, allow_nil?: false
       argument :params, :map, allow_nil?: false
 
@@ -65,12 +66,13 @@ defmodule IntellectualClub.Chat.ChatDraft do
     end
 
     action :consume, :boolean do
+      transaction? true
       argument :chat_id, :integer, allow_nil?: false
       argument :text, :string, allow_nil?: false, constraints: [trim?: false, allow_empty?: true]
       argument :revision, :integer, allow_nil?: false
 
       run fn input, context ->
-        with :ok <- owned_chat(input.arguments.chat_id, context.actor) do
+        with :ok <- owned_chat(input.arguments.chat_id, context.actor, true) do
           result =
             Repo.query!(
               """
@@ -172,9 +174,12 @@ defmodule IntellectualClub.Chat.ChatDraft do
     )
   end
 
-  defp owned_chat(chat_id, actor) do
+  defp owned_chat(chat_id, actor, lock? \\ false) do
     case Chat
          |> Ash.Query.filter(id == ^chat_id and owner_id == ^actor.id)
+         |> then(fn query ->
+           if lock?, do: Ash.Query.lock(query, "FOR KEY SHARE"), else: query
+         end)
          |> Ash.read_one(actor: actor, authorize?: true) do
       {:ok, %Chat{}} -> :ok
       {:ok, nil} -> {:error, :not_found}
@@ -186,7 +191,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     text = params["text"]
     revision = params["expected_revision"]
 
-    with :ok <- owned_chat(chat_id, actor) do
+    with :ok <- owned_chat(chat_id, actor, true) do
       cond do
         not is_binary(text) or byte_size(text) > @max_bytes ->
           {:ok, %{error: "text must be a string of at most 1 MiB"}}

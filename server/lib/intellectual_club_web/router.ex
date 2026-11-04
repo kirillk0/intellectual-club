@@ -144,6 +144,8 @@ defmodule IntellectualClubWeb.Router do
          :regenerate_keys
 
     get "/chat-list", ChatListController, :index
+    get "/chat-list/archive-other-preview", ChatListController, :archive_other_preview
+    post "/chat-list/archive-other", ChatListController, :archive_other
     get "/chat-list/search", ChatListController, :search
     get "/chat-list/idle-state", ChatListController, :idle_state
     get "/chat-list/generation-state", ChatListController, :generation_state

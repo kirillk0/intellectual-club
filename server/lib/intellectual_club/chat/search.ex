@@ -127,9 +127,10 @@ defmodule IntellectualClub.Chat.Search do
     SearchDeadline.run(fn ->
       exact? = Keyword.get(opts, :exact?, false)
       bot_filter = Keyword.get(opts, :bot_filter)
+      view = Keyword.get(opts, :view, "inbox")
       limit = opts |> Keyword.get(:limit, @default_hit_limit) |> min(@max_hit_limit) |> max(1)
       search = MessageText.search(query, exact?)
-      scope = cursor_scope(search, actor, bot_filter)
+      scope = cursor_scope(search, actor, bot_filter, view)
       position = decode_cursor(Keyword.get(opts, :after), scope)
 
       case search do
@@ -139,7 +140,7 @@ defmodule IntellectualClub.Chat.Search do
         {:terms, terms} ->
           notes =
             if is_nil(position),
-              do: SearchDeadline.query(fn -> note_chats(search, actor, bot_filter) end),
+              do: SearchDeadline.query(fn -> note_chats(search, actor, bot_filter, view) end),
               else: []
 
           text_search? = MessageText.indexable?(search)
@@ -148,7 +149,7 @@ defmodule IntellectualClub.Chat.Search do
             if text_search?,
               do:
                 read_hits(
-                  %{q: query, exact?: exact?, search: search},
+                  %{q: query, exact?: exact?, search: search, view: view},
                   actor,
                   bot_filter,
                   position,
@@ -303,21 +304,22 @@ defmodule IntellectualClub.Chat.Search do
     |> then(fn {rows, checked, _count} -> {rows, checked} end)
   end
 
-  defp hits_query(%{q: query, exact?: exact?}, actor, bot_filter, strategy) do
+  defp hits_query(%{q: query, exact?: exact?, view: view}, actor, bot_filter, strategy) do
     ChatMessage
-    |> chat_filters(bot_filter)
-    |> Ash.Query.sort(created_at: :desc, id: :desc)
-    |> Ash.Query.select([:id, :chat_id, :role, :created_at])
     |> Ash.Query.for_read(:list_search, %{q: query, exact: exact?, strategy: strategy},
       actor: actor
     )
+    |> chat_filters(bot_filter, view, actor.id)
+    |> Ash.Query.sort(created_at: :desc, id: :desc)
+    |> Ash.Query.select([:id, :chat_id, :role, :created_at])
   end
 
   # The newest messages a probe may inspect, oldest last.
-  defp window_candidates(_context, actor, bot_filter, position, window) do
+  defp window_candidates(%{view: view}, actor, bot_filter, position, window) do
     ChatMessage
+    |> Ash.Query.for_read(:read, %{}, actor: actor)
     |> Ash.Query.filter(owner_id == ^actor.id and role in [:user, :assistant])
-    |> chat_filters(bot_filter)
+    |> chat_filters(bot_filter, view, actor.id)
     |> after_position(position)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.select([:id, :created_at])
@@ -325,9 +327,22 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.read!(actor: actor, page: false)
   end
 
-  defp chat_filters(query, bot_filter) do
+  defp chat_filters(query, bot_filter, view, user_id) do
+    archived = view == "archive"
+
     query
-    |> Ash.Query.filter(exists(chat, subagent == false))
+    # Bind the requesting user explicitly: nested calculation expansion loses actor context.
+    |> Ash.Query.filter(
+      exists(
+        chat,
+        subagent == false and
+          exists(
+            read_states,
+            user_id == ^user_id and not is_nil(archived_revision) and
+              archived_revision >= (parent(activity.revision) || 0)
+          ) == ^archived
+      )
+    )
     |> apply_bot_filter_via_chat(bot_filter)
   end
 
@@ -344,13 +359,14 @@ defmodule IntellectualClub.Chat.Search do
   defp after_position(query, {time, id}),
     do: Ash.Query.filter(query, created_at < ^time or (created_at == ^time and id < ^id))
 
-  defp note_chats(search, actor, bot_filter) do
+  defp note_chats(search, actor, bot_filter, view) do
     predicate = note_predicate(search)
 
     Chat
     |> Ash.Query.filter(owner_id == ^actor.id)
     |> Listing.apply_hierarchy_filter(actor, nil)
     |> Listing.apply_bot_filter(bot_filter)
+    |> Listing.apply_view(view, actor)
     |> Ash.Query.filter(^predicate)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
     |> Ash.Query.limit(@notes_limit)
@@ -365,8 +381,8 @@ defmodule IntellectualClub.Chat.Search do
     end)
   end
 
-  defp cursor_scope(search, actor, bot_filter),
-    do: :crypto.hash(:sha256, :erlang.term_to_binary({search, actor.id, bot_filter}))
+  defp cursor_scope(search, actor, bot_filter, view),
+    do: :crypto.hash(:sha256, :erlang.term_to_binary({search, actor.id, bot_filter, view}))
 
   defp encode_cursor(message, scope) do
     Phoenix.Token.sign(

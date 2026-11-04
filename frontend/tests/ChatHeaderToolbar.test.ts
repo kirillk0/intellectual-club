@@ -136,3 +136,15 @@ it('offers in-place context compaction', async () => {
   await wrapper.setProps({ handoffPending: true });
   expect(menu().text()).toContain('Compacting context…');
 });
+
+it('allows shared readers to archive standalone chats and restore archived ones', async () => {
+  wrapper = mountToolbar({ canEdit: false, archivable: true, readState: { is_archived: false } });
+  await menu().get('[data-read-action="archive"]').trigger('click');
+  expect(wrapper.emitted('archive')).toHaveLength(1);
+  await wrapper.setProps({ readState: { is_archived: true } });
+  expect(menu().get('[data-read-action="archive"]').text()).toBe('Unarchive');
+  await menu().get('[data-read-action="archive"]').trigger('click');
+  expect(wrapper.emitted('unarchive')).toHaveLength(1);
+  await wrapper.setProps({ archivable: false });
+  expect(menu().find('[data-read-action="archive"]').exists()).toBe(false);
+});

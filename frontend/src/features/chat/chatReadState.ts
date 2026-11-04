@@ -1,7 +1,7 @@
 import { api } from '@/api/client';
 import type { ChatReadState } from '@/types/api';
 
-export type ChatReadStateAction = 'read' | 'unread' | 'snooze' | 'unsnooze';
+export type ChatReadStateAction = 'read' | 'unread' | 'snooze' | 'unsnooze' | 'archive' | 'unarchive';
 export type ChatReadStateInput = {
   action: ChatReadStateAction;
   expected_state_version: number;
@@ -18,6 +18,7 @@ export function chatReadStateInput(
   return {
     action,
     expected_state_version: state.state_version,
+    ...(action === 'archive' ? { observed_revision: state.activity_revision } : {}),
     ...(action === 'read' ? { observed_revision: state.activity_revision, explicit: true } : {}),
     ...options,
   };

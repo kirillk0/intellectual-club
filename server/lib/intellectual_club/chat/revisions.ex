@@ -17,6 +17,7 @@ defmodule IntellectualClub.Chat.Revisions do
     revision_parts = [
       :chat_list,
       Map.get(pagination, :section),
+      Map.get(pagination, :view, "inbox"),
       Map.get(page, :read_state_marker),
       Map.get(page, :draft_marker),
       Map.get(pagination, :page),
@@ -37,10 +38,12 @@ defmodule IntellectualClub.Chat.Revisions do
         chats,
         read_marker,
         draft_marker,
-        lifecycle_states
+        lifecycle_states,
+        view \\ "inbox"
       ) do
     [
       :chat_list_sections,
+      view,
       normalize_bot_filter(bot_filter),
       Enum.sort(sections),
       read_marker,

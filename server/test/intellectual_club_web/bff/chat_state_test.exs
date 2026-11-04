@@ -89,6 +89,104 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   end
 
   describe "POST /api/bff/chat-state/:id/read-state" do
+    test "archive preserves personal state and accepts only the observed activity", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+      until = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+
+      conn
+      |> post(path, %{action: "snooze", expected_state_version: 0, snoozed_until: until})
+      |> json_response(200)
+
+      {:ok, _} =
+        IntellectualClub.Chat.ChatDraft.save(
+          chat.id,
+          %{"text" => "unfinished", "expected_revision" => 0},
+          actor
+        )
+
+      archived =
+        conn
+        |> post(path, %{action: "archive", expected_state_version: 1, observed_revision: 0})
+        |> json_response(200)
+
+      assert archived["read_state"]["is_archived"]
+      assert archived["read_state"]["manual_unread"]
+      assert archived["read_state"]["snoozed_until"] == until
+      assert {:ok, %{text: "unfinished"}} = IntellectualClub.Chat.ChatDraft.get(chat.id, actor)
+      assert Ash.get!(Chat, chat.id, actor: actor).updated_at == chat.updated_at
+      conn |> post(path, %{action: "unarchive", expected_state_version: 1}) |> json_response(409)
+
+      read =
+        conn
+        |> post(path, %{
+          action: "read",
+          expected_state_version: 2,
+          observed_revision: 0,
+          explicit: true
+        })
+        |> json_response(200)
+
+      assert read["read_state"]["is_archived"]
+
+      restored =
+        conn
+        |> post(path, %{action: "unarchive", expected_state_version: 3})
+        |> json_response(200)
+
+      refute restored["read_state"]["is_archived"]
+
+      for observed <- [nil, -1, 1] do
+        conn
+        |> post(path, %{action: "archive", expected_state_version: 4, observed_revision: observed})
+        |> json_response(422)
+      end
+    end
+
+    test "archive is private for read-only viewers and unavailable for subchats or strangers", %{
+      conn: conn
+    } do
+      %{user: owner} = user_fixture()
+      %{user: viewer} = fixture = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, viewer]})
+      bot = create_bot!(owner)
+      configuration = create_configuration!(owner)
+      share_bot!(owner, bot, group)
+      share_configuration!(owner, configuration, group)
+      chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
+      share_chat!(owner, chat, group)
+      viewer_conn = sign_in_conn(conn, fixture)
+      path = "/api/bff/chat-state/#{chat.id}/read-state"
+
+      archived =
+        viewer_conn
+        |> post(path, %{action: "archive", expected_state_version: 0, observed_revision: 0})
+        |> json_response(200)
+
+      assert archived["read_state"]["is_archived"]
+      refute IntellectualClub.Chat.ReadState.load_many([chat], owner)[chat.id].is_archived
+
+      conn
+      |> sign_in_conn(user_fixture())
+      |> post(path, %{action: "archive", expected_state_version: 0, observed_revision: 0})
+      |> json_response(404)
+
+      child = create_subchat!(owner, chat, :spawn)
+
+      assert {:ok, %{error: "Archive the parent chat instead"}} =
+               IntellectualClub.Chat.ReadState.mutate(
+                 child.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 0,
+                   "observed_revision" => 0
+                 },
+                 owner
+               )
+    end
+
     test "legacy baseline is read and explicit read only acknowledges the observed revision", %{
       conn: conn
     } do
@@ -108,7 +206,8 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
                "state_version" => 0,
                "has_unread" => false,
                "is_unread" => false,
-               "is_snoozed" => false
+               "is_snoozed" => false,
+               "is_archived" => false
              }
 
       message = create_generating_message!(actor, chat)

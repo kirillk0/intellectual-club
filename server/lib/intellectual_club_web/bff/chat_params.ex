@@ -32,6 +32,13 @@ defmodule IntellectualClubWeb.Bff.ChatParams do
     end
   end
 
+  def archive_view(params) do
+    case Map.get(params, "view", "inbox") do
+      view when view in ["inbox", "archive"] -> {:ok, view}
+      _ -> {:error, "view must be inbox or archive"}
+    end
+  end
+
   def pagination(params) when is_map(params) do
     %{
       page: parse_positive_integer(Map.get(params, "page"), 1),

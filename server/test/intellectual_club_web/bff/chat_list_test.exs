@@ -14,6 +14,159 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Threads
 
   describe "grouped chat list" do
+    test "archive mode filters before pagination, includes descendant drafts and changes idle revisions",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn)
+      active = create_chat!(actor)
+
+      {:ok, _} =
+        IntellectualClub.Chat.ChatDraft.save(
+          child.id,
+          %{"text" => "draft", "expected_revision" => 0},
+          actor
+        )
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          parent.id,
+          %{"action" => "archive", "expected_state_version" => 0, "observed_revision" => 0},
+          actor
+        )
+
+      params = %{sections: "drafts,unread,working,other", per_page: 1}
+      inbox = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+      assert inbox["sections"]["other"]["ids"] == [active.id]
+      assert inbox["sections"]["drafts"]["ids"] == []
+      assert inbox["stats"]["total_chats"] == 1
+
+      archived =
+        conn |> get("/api/bff/chat-list", Map.put(params, :view, "archive")) |> json_response(200)
+
+      assert archived["sections"]["other"]["ids"] == [parent.id]
+      assert archived["sections"]["drafts"]["ids"] == [child.id]
+      assert archived["stats"]["total_chats"] == 1
+      refute archived["idle_revision"] == inbox["idle_revision"]
+
+      for view <- ["inbox", "archive"] do
+        list = if view == "inbox", do: inbox, else: archived
+
+        conn
+        |> get(
+          "/api/bff/chat-list/idle-state",
+          Map.merge(params, %{view: view, revision: list["idle_revision"]})
+        )
+        |> response(204)
+      end
+
+      conn |> get("/api/bff/chat-list", %{view: "invalid"}) |> json_response(422)
+    end
+
+    test "bulk archive covers all filtered pages, protects descendants and rejects stale confirmation atomically",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      %{user: outsider} = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      bot = create_bot!(actor)
+      eligible = for _ <- 1..3, do: create_chat!(actor, bot_id: bot.id)
+      create_chat!(actor)
+      other = create_chat!(outsider)
+      protected = for _ <- 1..3, do: create_chat!(actor, bot_id: bot.id)
+      [draft_parent, snooze_parent, unread] = protected
+      child = create_subchat!(actor, draft_parent, :spawn)
+      grandchild = create_subchat!(actor, child, :spawn)
+
+      {:ok, _} =
+        IntellectualClub.Chat.ChatDraft.save(
+          grandchild.id,
+          %{"text" => "unfinished", "expected_revision" => 0},
+          actor
+        )
+
+      child = create_subchat!(actor, snooze_parent, :spawn)
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          child.id,
+          %{
+            "action" => "snooze",
+            "expected_state_version" => 0,
+            "snoozed_until" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+          },
+          actor
+        )
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          unread.id,
+          %{"action" => "unread", "expected_state_version" => 0},
+          actor
+        )
+
+      preview =
+        conn
+        |> get("/api/bff/chat-list/archive-other-preview", %{bot: bot.id})
+        |> json_response(200)
+
+      assert preview["count"] == 3
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          hd(eligible).id,
+          %{"action" => "unread", "expected_state_version" => 0},
+          actor
+        )
+
+      conn
+      |> post("/api/bff/chat-list/archive-other", %{
+        bot: bot.id,
+        expected_revision: preview["revision"]
+      })
+      |> json_response(409)
+
+      refute Enum.any?(
+               Map.values(IntellectualClub.Chat.ReadState.load_many(eligible, actor)),
+               & &1.is_archived
+             )
+
+      preview =
+        conn
+        |> get("/api/bff/chat-list/archive-other-preview", %{bot: bot.id})
+        |> json_response(200)
+
+      assert preview["count"] == 2
+
+      result =
+        conn
+        |> post("/api/bff/chat-list/archive-other", %{
+          bot: bot.id,
+          expected_revision: preview["revision"]
+        })
+        |> json_response(200)
+
+      assert result["count"] == 2
+      states = IntellectualClub.Chat.ReadState.load_many(eligible ++ protected, actor)
+      assert Enum.count(Map.values(states), & &1.is_archived) == 2
+      for chat <- protected, do: refute(states[chat.id].is_archived)
+      refute IntellectualClub.Chat.ReadState.load_many([other], outsider)[other.id].is_archived
+
+      empty =
+        conn
+        |> get("/api/bff/chat-list/archive-other-preview", %{bot: bot.id})
+        |> json_response(200)
+
+      assert empty["count"] == 0
+
+      assert conn
+             |> post("/api/bff/chat-list/archive-other", %{
+               bot: bot.id,
+               expected_revision: empty["revision"]
+             })
+             |> json_response(200) == %{"count" => 0}
+    end
+
     test "matches independently paginated sections while sharing overlapping draft rows", %{
       conn: conn
     } do

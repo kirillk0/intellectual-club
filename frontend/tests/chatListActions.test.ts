@@ -62,7 +62,7 @@ describe('chat list actions menu', () => {
   let wrapper: VueWrapper;
   let queryClient: QueryClient;
 
-  async function mountList() {
+  async function mountList(path = '/chats') {
     const Host = defineComponent({
       setup() {
         provideStackLayer({ active: ref(true), presented: ref(true), depth: ref(0), setReady: vi.fn() });
@@ -76,7 +76,7 @@ describe('chat list actions menu', () => {
         { path: '/chats/:id', component: { template: '<div />' } },
       ],
     });
-    await router.push('/chats');
+    await router.push(path);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     wrapper = mount(Host, {
       attachTo: document.body,
@@ -116,6 +116,94 @@ describe('chat list actions menu', () => {
     queryClient?.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('archives a shared chat using the observed revision and removes it from the inbox', async () => {
+    apiMocks.post.mockResolvedValue({ read_state: readState({ is_archived: true, state_version: 3 }) });
+    await mountList();
+    await rows()[1].get('.chat-list-row__actions-button').trigger('click');
+    expect(menuItem('Archive chat')).toBeTruthy();
+    apiMocks.get.mockResolvedValue(listPayload([chatRow(1, 'Own chat', true)]));
+    menuItem('Archive chat')!.click();
+    await flushPromises();
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-state/2/read-state', {
+      action: 'archive', expected_state_version: 2, observed_revision: 8,
+    }, expect.anything());
+    expect(rowTitles()).toEqual(['Own chat - No bot']);
+  });
+
+  it('loads archive URLs and offers restoration while hiding the section bulk menu', async () => {
+    apiMocks.get.mockResolvedValue(listPayload([{ ...chatRow(1, 'Archived', true), read_state: readState({ is_archived: true }) }]));
+    apiMocks.post.mockResolvedValue({ read_state: readState({ is_archived: false, state_version: 3 }) });
+    await mountList('/chats?view=archive&bot=none');
+    expect(apiMocks.get.mock.calls[0][0]).toContain('view=archive');
+    expect(apiMocks.get.mock.calls[0][0]).toContain('bot=none');
+    expect(wrapper.find('[aria-label="Other chats actions"]').exists()).toBe(false);
+    await rows()[0].get('.chat-list-row__actions-button').trigger('click');
+    expect(menuItem('Unarchive')).toBeTruthy();
+    apiMocks.get.mockResolvedValue(listPayload([]));
+    menuItem('Unarchive')!.click();
+    await flushPromises();
+    expect(apiMocks.post.mock.calls[0][1]).toEqual({ action: 'unarchive', expected_state_version: 2 });
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('resets section pages when switching modes and records the selected view in the URL', async () => {
+    await mountList('/chats?bot=none');
+    apiMocks.get.mockResolvedValue(listPayload([]));
+    await wrapper.get('.chat-inbox-views button:last-child').trigger('click');
+    await flushPromises();
+    const request = apiMocks.get.mock.calls.at(-1)![0];
+    expect(request).toContain('view=archive');
+    expect(request).toContain('page_other=1');
+    expect(request).toContain('bot=none');
+    expect(window.location.search).toContain('view=archive');
+    await wrapper.get('.chat-inbox-views button:first-child').trigger('click');
+    await flushPromises();
+    expect(apiMocks.get.mock.calls.at(-1)![0]).toContain('view=inbox');
+    expect(window.location.search).not.toContain('view=archive');
+  });
+
+  it('previews all filtered pages and requires fresh confirmation after a bulk conflict', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => path.includes('archive-other-preview')
+      ? { count: 35, revision: 'preview-1' } : listPayload());
+    await mountList('/chats?bot=none');
+    await wrapper.get('[aria-label="Other chats actions"]').trigger('click');
+    expect(menu()?.querySelectorAll('.menu-item')).toHaveLength(1);
+    menuItem('Archive all')!.click();
+    await flushPromises();
+    expect(document.body.textContent).toContain('35');
+    expect(document.body.textContent).toContain('including subchats');
+    const confirm = () => document.body.querySelector<HTMLButtonElement>('.modal button.primary')!;
+    apiMocks.post.mockRejectedValueOnce({ status: 409 });
+    apiMocks.get.mockImplementation(async (path: string) => path.includes('archive-other-preview')
+      ? { count: 34, revision: 'preview-2' } : listPayload());
+    confirm().click();
+    await flushPromises();
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain('Review the updated count');
+    expect(document.body.textContent).toContain('34');
+    apiMocks.post.mockResolvedValue({ count: 34 });
+    confirm().click();
+    await flushPromises();
+    expect(apiMocks.post.mock.calls[1][1]).toEqual({ bot: 'none', expected_revision: 'preview-2' });
+    expect(document.body.querySelector('.modal')).toBeNull();
+    expect(wrapper.text()).toContain('Archived chats: 34');
+  });
+
+  it('does not allow confirming an empty bulk archive and keeps subchats unarchivable', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => path.includes('archive-other-preview')
+      ? { count: 0, revision: 'empty' } : listPayload([{ ...chatRow(1, 'Subchat draft', true), subagent: true, has_draft: true }]));
+    await mountList();
+    await rows()[0].get('.chat-list-row__actions-button').trigger('click');
+    expect(menuItem('Archive chat')).toBeUndefined();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await flushPromises();
+    await wrapper.get('[aria-label="Other chats actions"]').trigger('click');
+    menuItem('Archive all')!.click();
+    await flushPromises();
+    expect(document.body.querySelector<HTMLButtonElement>('.modal button.primary')!.disabled).toBe(true);
+    expect(apiMocks.post).not.toHaveBeenCalled();
   });
 
   it('offers read-state actions for shared chats but restricts edit and delete', async () => {
@@ -243,6 +331,8 @@ describe('chat list actions menu', () => {
     apiMocks.post.mockResolvedValue({ read_state: readState({ state_version: 3 }) });
     await mountList();
     expect(wrapper.get('.chat-snoozed').attributes('title')).toContain('Snoozed until');
+    expect(wrapper.get('.chat-snoozed').text()).toContain('Snoozed until');
+    expect(wrapper.find('.chat-snoozed svg').exists()).toBe(true);
     await rows()[0].get('.chat-list-row__actions-button').trigger('click');
     expect(menuItem('Unsnooze')).toBeTruthy();
     menuItem('Mark as read')!.click();

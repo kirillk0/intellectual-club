@@ -523,6 +523,16 @@ defmodule IntellectualClub.Chat.Chat do
   calculations do
     calculate :read_state, :map, IntellectualClub.Chat.Calculations.ReadState
 
+    calculate :is_archived,
+              :boolean,
+              expr(
+                exists(
+                  read_states,
+                  user_id == ^actor(:id) and not is_nil(archived_revision) and
+                    archived_revision >= (parent(activity.revision) || 0)
+                )
+              )
+
     calculate :inbox_unread,
               :boolean,
               expr(
