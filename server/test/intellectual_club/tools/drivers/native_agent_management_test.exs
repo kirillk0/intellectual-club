@@ -114,6 +114,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
                %{"type" => "string", "format" => "uuid"}
 
       assert wait_background["schema"]["properties"]["timeout_seconds"]["minimum"] == 0
+      assert wait_background["schema"]["properties"]["wait_mode"]["enum"] == ["all", "any"]
+      assert wait_background["schema"]["properties"]["wait_mode"]["default"] == "all"
       refute Map.get(wait_background, "is_background_function", false)
       refute Map.get(wait_background, "provides_background_task_status", false)
 
@@ -737,29 +739,114 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
                ["completed", "failed", "canceled"]
     end
 
+    for terminal_status <- [:completed, :failed, :canceled] do
+      @tag terminal_status: terminal_status
+      test "any mode returns when a task becomes #{terminal_status} while other tasks remain active",
+           %{
+             terminal_status: terminal_status
+           } do
+        %{user: actor} = user_fixture()
+        tool = create_tool_instance!(actor, type: "native-agent-management")
+        first = create_test_task!(actor, :running)
+        second = create_test_task!(actor, :running)
+        third = create_test_task!(actor, :queued)
+        ids = [first.id, second.id, third.id]
+
+        waiter = start_background_wait(tool, ids, actor, %{"wait_mode" => "any"})
+        acknowledge_wait_phase(waiter, :protected)
+
+        assert_receive {:"$gen_call", from, {:tool_execution_phase, pid, :interruptible}}, 1_000
+        assert pid == waiter.pid
+
+        transition =
+          case terminal_status do
+            :completed -> BackgroundTasks.mark_completed(second, %ExecutionResult{text: "Done"})
+            :failed -> BackgroundTasks.mark_failed(second, "test_failure", %{}, "known")
+            :canceled -> BackgroundTasks.mark_canceled(second)
+          end
+
+        assert {:ok, _} = transition
+
+        GenServer.reply(from, :ok)
+        acknowledge_wait_phase(waiter, :protected)
+
+        assert {:completed, {:ok, result}} = Task.await(waiter, 1_000)
+        assert result.raw["timed_out"] == false
+        assert Enum.map(result.raw["background_tasks"], & &1["background_task_id"]) == ids
+
+        assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+                 ["running", Atom.to_string(terminal_status), "queued"]
+
+        for task <- [first, third] do
+          current = Ash.get!(BackgroundTask, task.id, actor: actor)
+          assert current.status == task.status
+          refute current.cancel_requested
+        end
+      end
+    end
+
+    test "any mode recognizes already finished tasks before timeout and returns unique ordered statuses" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      active = create_test_task!(actor, :running)
+
+      for status <- [:completed, :failed, :canceled] do
+        finished = create_test_task!(actor, status)
+
+        assert {:ok, result} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{
+                     "background_task_ids" => [active.id, finished.id, active.id],
+                     "wait_mode" => "any",
+                     "timeout_seconds" => 0
+                   },
+                   %ExecutionContext{owner_id: actor.id}
+                 )
+
+        assert result.raw == %{
+                 "background_tasks" => [
+                   %{"background_task_id" => active.id, "status" => "running"},
+                   %{"background_task_id" => finished.id, "status" => Atom.to_string(status)}
+                 ],
+                 "timed_out" => false
+               }
+      end
+    end
+
     test "background wait returns current statuses at a fractional timeout without canceling tasks" do
       %{user: actor} = user_fixture()
       tool = create_tool_instance!(actor, type: "native-agent-management")
-      tasks = Enum.map([:queued, :running, :completed], &create_test_task!(actor, &1))
-      started_at = System.monotonic_time(:millisecond)
+      active_tasks = Enum.map([:queued, :running], &create_test_task!(actor, &1))
+      completed = create_test_task!(actor, :completed)
 
-      assert {:ok, result} =
-               NativeAgentManagement.execute(
-                 tool,
-                 "wait_backround_tasks",
-                 %{"background_task_ids" => Enum.map(tasks, & &1.id), "timeout_seconds" => 0.03},
-                 %ExecutionContext{owner_id: actor.id}
-               )
+      for wait_mode <- [nil, "all", "any"] do
+        tasks = if wait_mode == "any", do: active_tasks, else: active_tasks ++ [completed]
+        started_at = System.monotonic_time(:millisecond)
 
-      elapsed_ms = System.monotonic_time(:millisecond) - started_at
-      assert elapsed_ms >= 30
-      assert elapsed_ms < 1_000
-      assert result.raw["timed_out"] == true
+        assert {:ok, result} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   %{
+                     "background_task_ids" => Enum.map(tasks, & &1.id),
+                     "wait_mode" => wait_mode,
+                     "timeout_seconds" => 0.03
+                   },
+                   %ExecutionContext{owner_id: actor.id}
+                 )
 
-      assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
-               ["queued", "running", "completed"]
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+        assert elapsed_ms >= 30
+        assert elapsed_ms < 1_000
+        assert result.raw["timed_out"] == true
 
-      for task <- tasks do
+        assert Enum.map(result.raw["background_tasks"], & &1["status"]) ==
+                 Enum.map(tasks, &Atom.to_string(&1.status))
+      end
+
+      for task <- active_tasks ++ [completed] do
         assert {:ok, current} = Ash.get(BackgroundTask, task.id, actor: actor)
         assert current.cancel_requested == false
         assert current.status == task.status
@@ -794,15 +881,15 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       %{user: actor} = user_fixture()
       %{user: other} = user_fixture()
       tool = create_tool_instance!(actor, type: "native-agent-management")
-      own = create_test_task!(actor, :running)
+      own = create_test_task!(actor, :completed)
       foreign = create_test_task!(other, :completed)
 
-      for task_id <- [Ash.UUID.generate(), foreign.id] do
+      for task_id <- [Ash.UUID.generate(), foreign.id], wait_mode <- ["all", "any"] do
         assert {:error, "not_found"} =
                  NativeAgentManagement.execute(
                    tool,
                    "wait_backround_tasks",
-                   %{"background_task_ids" => [own.id, task_id]},
+                   %{"background_task_ids" => [own.id, task_id], "wait_mode" => wait_mode},
                    %ExecutionContext{owner_id: actor.id}
                  )
       end
@@ -824,7 +911,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       assert Task.await(waiter, 1_000) == :canceled
     end
 
-    test "background wait validates task ids, timeout and owner context" do
+    test "background wait validates task ids, wait mode, timeout and owner context" do
       tool = %ToolInstance{type: "native-agent-management"}
       context = %ExecutionContext{owner_id: 1}
 
@@ -851,6 +938,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       end
 
       args = %{"background_task_ids" => [Ash.UUID.generate()]}
+
+      for value <- ["invalid", "ALL", "", true, false, 1, [], %{}] do
+        assert {:error, "wait_mode must be all or any"} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   "wait_backround_tasks",
+                   Map.put(args, "wait_mode", value),
+                   context
+                 )
+      end
 
       assert {:error, "owner_id is required"} =
                NativeAgentManagement.execute(
@@ -933,7 +1030,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
     )
   end
 
-  defp start_background_wait(tool, ids, actor) do
+  defp start_background_wait(tool, ids, actor, args \\ %{}) do
     owner = self()
     supervisor = start_supervised!(Task.Supervisor)
 
@@ -942,7 +1039,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
         NativeAgentManagement.execute(
           tool,
           "wait_backround_tasks",
-          %{"background_task_ids" => ids},
+          Map.put(args, "background_task_ids", ids),
           %ExecutionContext{owner_id: actor.id}
         )
       end)

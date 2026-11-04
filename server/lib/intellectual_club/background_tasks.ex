@@ -103,21 +103,22 @@ defmodule IntellectualClub.BackgroundTasks do
 
   def snapshot(_task_id, _cursor, _owner_id), do: {:error, :not_found}
 
-  @doc "Waits for all owned tasks to finish, returning their statuses when done or timed out."
-  @spec wait([Ecto.UUID.t()], pos_integer(), non_neg_integer() | :infinity) ::
+  @doc "Waits for all (default) or any owned tasks to finish, returning all statuses on exit."
+  @spec wait([Ecto.UUID.t()], pos_integer(), non_neg_integer() | :infinity, :all | :any) ::
           {:ok, map()} | {:error, term()}
-  def wait(task_ids, owner_id, timeout_ms \\ :infinity)
+  def wait(task_ids, owner_id, timeout_ms \\ :infinity, wait_mode \\ :all)
       when is_list(task_ids) and is_integer(owner_id) and owner_id > 0 and
-             (timeout_ms == :infinity or (is_integer(timeout_ms) and timeout_ms >= 0)) do
+             (timeout_ms == :infinity or (is_integer(timeout_ms) and timeout_ms >= 0)) and
+             wait_mode in [:all, :any] do
     deadline =
       if timeout_ms == :infinity,
         do: :infinity,
         else: System.monotonic_time(:millisecond) + timeout_ms
 
-    do_wait(Enum.uniq(task_ids), actor(owner_id), deadline)
+    do_wait(Enum.uniq(task_ids), actor(owner_id), deadline, wait_mode)
   end
 
-  defp do_wait(task_ids, actor, deadline) do
+  defp do_wait(task_ids, actor, deadline, wait_mode) do
     query =
       BackgroundTask
       |> Ash.Query.filter(id in ^task_ids)
@@ -128,7 +129,12 @@ defmodule IntellectualClub.BackgroundTasks do
         {:error, :not_found}
       else
         tasks_by_id = Map.new(tasks, &{&1.id, &1})
-        finished? = Enum.all?(tasks, &(&1.status in @terminal_statuses))
+
+        finished? =
+          case wait_mode do
+            :all -> Enum.all?(tasks, &(&1.status in @terminal_statuses))
+            :any -> Enum.any?(tasks, &(&1.status in @terminal_statuses))
+          end
 
         remaining_ms =
           if deadline == :infinity,
@@ -150,7 +156,7 @@ defmodule IntellectualClub.BackgroundTasks do
             Process.sleep(Kernel.min(remaining_ms, @wait_poll_interval_ms))
           end)
 
-          do_wait(task_ids, actor, deadline)
+          do_wait(task_ids, actor, deadline, wait_mode)
         end
       end
     end

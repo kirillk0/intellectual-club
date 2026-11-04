@@ -183,8 +183,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
         "name" => "wait_backround_tasks",
         "safe_to_interrupt" => true,
         "description" =>
-          "Wait until all listed background tasks finish or the optional timeout expires, " <>
-            "then return their current statuses. Completed, failed, and canceled tasks are " <>
+          "Wait until all listed background tasks finish (default), or any one finishes with " <>
+            "wait_mode=any, or the optional timeout expires, then return all their current " <>
+            "statuses. Completed, failed, and canceled tasks are " <>
             "finished. Use check_background_task_status to retrieve results and progress.",
         "schema" => %{
           "type" => "object",
@@ -194,6 +195,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
               "items" => %{"type" => "string", "format" => "uuid"},
               "minItems" => 1,
               "description" => "Background task ids returned by background tools."
+            },
+            "wait_mode" => %{
+              "type" => "string",
+              "enum" => ["all", "any"],
+              "default" => "all",
+              "description" =>
+                "Wait for all tasks (default) or any one task to finish. An already " <>
+                  "finished task satisfies any immediately. All task statuses are returned."
             },
             "timeout_seconds" => %{
               "type" => "number",
@@ -401,9 +410,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       )
       when is_map(args) do
     with {:ok, task_ids} <- required_background_task_ids(args),
+         {:ok, wait_mode} <- background_wait_mode(args),
          {:ok, timeout_ms} <- background_wait_timeout(args, context),
          {:ok, owner_id} <- required_integer(context.owner_id, "owner_id"),
-         {:ok, statuses} <- BackgroundTasks.wait(task_ids, owner_id, timeout_ms) do
+         {:ok, statuses} <- BackgroundTasks.wait(task_ids, owner_id, timeout_ms, wait_mode) do
       {:ok,
        %ExecutionResult{
          text: Jason.encode!(statuses, pretty: true),
@@ -539,6 +549,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
       _other ->
         {:error, "background_task_ids must be a non-empty list of UUID strings"}
+    end
+  end
+
+  defp background_wait_mode(args) do
+    case Map.get(args, "wait_mode") do
+      value when value in [nil, "all"] -> {:ok, :all}
+      "any" -> {:ok, :any}
+      _other -> {:error, "wait_mode must be all or any"}
     end
   end
 
