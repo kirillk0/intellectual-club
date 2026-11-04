@@ -91,12 +91,30 @@ defmodule IntellectualClub.Chat.MessageText do
     if owner_id, do: Ash.Query.filter(query, owner_id == ^owner_id), else: query
   end
 
-  @doc "An Ash expression over `ChatMessageContent` matching every term."
-  def contents_predicate([_ | _] = terms) do
-    Enum.reduce(terms, true, fn term, acc ->
-      pattern = like_pattern(term)
-      Ash.Expr.expr(^acc and fragment("? ILIKE ?", content_text, ^pattern))
-    end)
+  @doc """
+  An Ash expression over `ChatMessageContent` matching every term.
+
+  `index: :trigram` (the default) emits one `ILIKE` per term, which the
+  planner may serve from the partial trigram index. `index: :none` binds all
+  patterns as a single `ILIKE ALL(array)`, which no index serves: callers that
+  already narrowed the rows by id must use it, because PostgreSQL estimates a
+  `%term%` pattern as near-unique and would otherwise walk every text match in
+  the table through the trigram index and recheck each one.
+  """
+  def contents_predicate(terms, opts \\ [])
+
+  def contents_predicate([_ | _] = terms, opts) do
+    case Keyword.get(opts, :index, :trigram) do
+      :none ->
+        patterns = Enum.map(terms, &like_pattern/1)
+        Ash.Expr.expr(fragment("? ILIKE ALL(?::text[])", content_text, ^patterns))
+
+      :trigram ->
+        Enum.reduce(terms, true, fn term, acc ->
+          pattern = like_pattern(term)
+          Ash.Expr.expr(^acc and fragment("? ILIKE ?", content_text, ^pattern))
+        end)
+    end
   end
 
   @doc """
@@ -302,9 +320,11 @@ defmodule IntellectualClub.Chat.MessageText do
 
   defp read_matching_text_contents_for_items([], _search, _actor), do: []
 
+  # The rows are already bounded by item id; the term predicate must not
+  # tempt the planner into the trigram index (see `contents_predicate/2`).
   defp read_matching_text_contents_for_items(item_ids, {:terms, [_ | _] = terms}, actor)
        when is_list(item_ids) do
-    text_predicate = contents_predicate(terms)
+    text_predicate = contents_predicate(terms, index: :none)
 
     item_ids
     |> chunk_ids()

@@ -284,6 +284,12 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
         assert "content_text" in snippet_query.columns
         assert snippet_query.row_count <= 2
 
+        # Snippet contents are bounded by item id; the term predicate must not
+        # be one the planner could serve from the trigram index, or it rechecks
+        # every text match in the table instead of the page's few items.
+        assert snippet_query.sql =~ ~r/ILIKE ALL\(/
+        refute snippet_query.sql =~ ~r/ILIKE \$/
+
         ids =
           Stream.unfold(first, fn
             nil ->

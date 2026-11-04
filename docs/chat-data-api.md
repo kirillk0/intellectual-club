@@ -253,7 +253,12 @@ every global text match for the `EXISTS` form, and the authorization joins
 prevent an index-ordered early exit. Search transactions force custom plans
 (`plan_cache_mode`) so cached prepared statements still see the bound
 patterns. Snippets are loaded for the page's hits only, and the application
-never loads a global list of matching messages or counts all matches.
+never loads a global list of matching messages or counts all matches. The
+snippet read is bounded by the hits' item ids and binds the terms as one
+`ILIKE ALL(array)` predicate, which no index serves: PostgreSQL estimates a
+`%term%` pattern as near-unique, so a plain `ILIKE` would send it through the
+trigram index and recheck every matching text in the table (hundreds of
+milliseconds for a common term) instead of reading the page's few items.
 
 `SearchDeadline.run` bounds the whole search and response enrichment with
 `:chat_search_timeout_ms` (default 5,000 ms), including snippets, drafts and
