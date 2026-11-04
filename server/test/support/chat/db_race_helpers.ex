@@ -139,26 +139,32 @@ defmodule IntellectualClub.Chat.DbRaceHelpers do
   @doc """
   Polls PostgreSQL's wait graph (on the caller's connection) until backend
   `waiter` is blocked by backend `blocker`; returns the waiting query.
+  The caller must retain the blocking lock until this function returns.
   """
   def await_blocked!(waiter, blocker) do
     await_blocked!(waiter, blocker, System.monotonic_time(:millisecond) + @timeout)
   end
 
   defp await_blocked!(waiter, blocker, deadline) do
-    Repo.query!("SELECT pg_stat_clear_snapshot()")
-
-    %{rows: rows} =
+    %{rows: [[blocked?]]} =
       Repo.query!(
-        "SELECT query FROM pg_stat_activity WHERE pid = $1::int " <>
-          "AND $2::int = ANY(pg_blocking_pids(pid))",
+        "SELECT $2::int = ANY(pg_blocking_pids($1::int))",
         [waiter, blocker]
       )
 
-    case rows do
-      [[query]] ->
+    case blocked? do
+      true ->
+        # Activity and the wait graph are not sampled atomically. Read a fresh
+        # activity snapshot only after the waiter is blocked, while our lock
+        # prevents it from advancing to another query.
+        Repo.query!("SELECT pg_stat_clear_snapshot()")
+
+        %{rows: [[query]]} =
+          Repo.query!("SELECT query FROM pg_stat_activity WHERE pid = $1::int", [waiter])
+
         query
 
-      [] ->
+      false ->
         if System.monotonic_time(:millisecond) >= deadline do
           flunk("Backend #{waiter} did not wait on the expected PostgreSQL fence")
         end
