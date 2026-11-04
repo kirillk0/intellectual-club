@@ -540,6 +540,37 @@ defmodule IntellectualClub.Chat.SubagentLifecycleTest do
       assert List.last(child_messages).status == :done
     end
 
+    test "bot subagent uses the tool configuration in preference to the bot and calling turn" do
+      %{user: actor} = user_fixture()
+      calling_configuration = create_configuration!(actor, model_name: "demo")
+      bot_configuration = create_configuration!(actor, model_name: "demo")
+      tool_configuration = create_configuration!(actor, model_name: "demo")
+      subagent_bot = create_bot!(actor, default_llm_configuration_id: bot_configuration.id)
+
+      parent =
+        spawn_parent!(actor, "Delegate", "Use the tool configuration.",
+          tool: [
+            type: "native-bot-subagent",
+            config: %{
+              "bot_id" => subagent_bot.id,
+              "llm_configuration_id" => tool_configuration.id
+            }
+          ],
+          chat: %{llm_configuration_id: calling_configuration.id},
+          message: %{llm_configuration_id: calling_configuration.id}
+        )
+
+      assert {:ok, reference} =
+               start_or_resume(:spawn, parent, tool_call_context(parent, actor), actor)
+
+      completed = wait_for_status!(reference.generation_message_id, actor, [:done])
+      assert completed.llm_configuration_id == tool_configuration.id
+
+      child = Ash.get!(Chat, reference.chat_id, actor: actor)
+      assert child.bot_id == subagent_bot.id
+      assert child.llm_configuration_id == tool_configuration.id
+    end
+
     test "bot subagent keeps the calling turn's configuration when the bot has no default one" do
       %{user: actor} = user_fixture()
       pinned = create_configuration!(actor, model_name: "demo", context_length: nil)

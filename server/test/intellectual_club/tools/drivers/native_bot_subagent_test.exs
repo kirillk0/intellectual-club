@@ -54,10 +54,19 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagentTest do
       assert schema["required"] == ["bot_id"]
 
       assert Map.keys(schema["properties"]) |> Enum.sort() ==
-               ["allow_handoff_in_subchats", "bot_id", "nested_subchats_limit"]
+               [
+                 "allow_handoff_in_subchats",
+                 "bot_id",
+                 "llm_configuration_id",
+                 "nested_subchats_limit"
+               ]
 
       assert schema["properties"]["bot_id"]["title"] == "Bot"
       assert schema["properties"]["bot_id"]["x-ui"]["widget"] == "bot-select"
+
+      assert schema["properties"]["llm_configuration_id"]["x-ui"]["widget"] ==
+               "llm-configuration-select"
+
       assert schema["properties"]["nested_subchats_limit"]["title"] == "Nested subchats limit"
 
       assert schema["properties"]["allow_handoff_in_subchats"]["title"] ==
@@ -110,6 +119,39 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagentTest do
 
       tool_instance = create_bot_subagent_tool!(actor, bot)
       assert tool_instance.config["bot_id"] == bot.id
+    end
+
+    test "stores an accessible configuration and removes it when cleared" do
+      %{user: actor} = user_fixture()
+      %{user: stranger} = user_fixture()
+      bot = create_bot!(actor)
+      configuration = create_configuration!(actor)
+      foreign_configuration = create_configuration!(stranger)
+
+      for id <- [foreign_configuration.id, "invalid"] do
+        assert "Configuration is invalid or not accessible." in config_error_messages(actor, %{
+                 "bot_id" => bot.id,
+                 "llm_configuration_id" => id
+               })
+      end
+
+      tool_instance =
+        create_bot_subagent_tool!(actor, bot, %{
+          "llm_configuration_id" => to_string(configuration.id)
+        })
+
+      assert tool_instance.config["llm_configuration_id"] == configuration.id
+
+      updated =
+        tool_instance
+        |> Ash.Changeset.for_update(
+          :update,
+          %{config: Map.put(tool_instance.config, "llm_configuration_id", "")},
+          actor: actor
+        )
+        |> Ash.update!(actor: actor)
+
+      refute Map.has_key?(updated.config, "llm_configuration_id")
     end
   end
 

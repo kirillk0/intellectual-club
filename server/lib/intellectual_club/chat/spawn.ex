@@ -303,9 +303,9 @@ defmodule IntellectualClub.Chat.Spawn do
 
   Drivers without a spawn target inherit the calling chat: its bot, the
   configuration pinned by the calling turn and copies of its chat-level
-  bindings. A bot target runs that bot with its own bindings; it uses the
-  bot's default configuration, the calling turn's configuration when the bot
-  has none and that configuration is compatible, or the chat default otherwise.
+  bindings. A bot target runs that bot with its own bindings and an explicit
+  configuration when supplied. Otherwise it uses the bot's default, the
+  calling turn's configuration when compatible, or the chat default.
   """
   @spec resolve_target(ToolInstance.t(), Chat.t(), ExecutionContext.t(), User.t()) ::
           {:ok,
@@ -339,16 +339,18 @@ defmodule IntellectualClub.Chat.Spawn do
            copy_bindings?: true
          }}
 
-      {:bot, bot_id} ->
+      {:bot, bot_id, configuration_id} ->
         case Ash.get(Bot, bot_id, actor: actor) do
           {:ok, %Bot{} = bot} ->
-            {:ok,
-             %{
-               bot_id: bot.id,
-               llm_configuration_id:
-                 bot_llm_configuration_id(bot, pinned_llm_configuration_id, actor),
-               copy_bindings?: false
-             }}
+            with {:ok, id} <-
+                   resolve_bot_configuration(
+                     bot,
+                     configuration_id,
+                     pinned_llm_configuration_id,
+                     actor
+                   ) do
+              {:ok, %{bot_id: bot.id, llm_configuration_id: id, copy_bindings?: false}}
+            end
 
           _other ->
             {:error, "Subagent bot is not available."}
@@ -364,13 +366,34 @@ defmodule IntellectualClub.Chat.Spawn do
 
     if function_exported?(driver, :spawn_target, 1) do
       case apply(driver, :spawn_target, [tool_instance]) do
-        :inherit -> :inherit
-        {:bot, bot_id} when is_integer(bot_id) and bot_id > 0 -> {:bot, bot_id}
-        {:error, reason} when is_binary(reason) -> {:error, reason}
-        other -> {:error, "Invalid spawn target: #{inspect(other)}"}
+        :inherit ->
+          :inherit
+
+        {:bot, bot_id} when is_integer(bot_id) and bot_id > 0 ->
+          {:bot, bot_id, nil}
+
+        {:bot, bot_id, id} when is_integer(bot_id) and bot_id > 0 and is_integer(id) and id > 0 ->
+          {:bot, bot_id, id}
+
+        {:error, reason} when is_binary(reason) ->
+          {:error, reason}
+
+        other ->
+          {:error, "Invalid spawn target: #{inspect(other)}"}
       end
     else
       :inherit
+    end
+  end
+
+  defp resolve_bot_configuration(bot, nil, pinned_llm_configuration_id, actor),
+    do: {:ok, bot_llm_configuration_id(bot, pinned_llm_configuration_id, actor)}
+
+  defp resolve_bot_configuration(_bot, id, _pinned_llm_configuration_id, actor) do
+    if readable_llm_configuration?(id, actor) do
+      {:ok, id}
+    else
+      {:error, "Configuration is invalid or not accessible."}
     end
   end
 

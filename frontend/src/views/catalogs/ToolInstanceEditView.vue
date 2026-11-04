@@ -234,6 +234,34 @@
                 </p>
               </template>
 
+              <template v-else-if="configWidget(field.schema) === 'llm-configuration-select'">
+                <select
+                  :value="selectedLlmConfigurationId(field.key) ?? ''"
+                  class="full"
+                  :disabled="llmConfigurationsQuery.isPending.value"
+                  @change="selectLlmConfiguration(field.key, $event)"
+                >
+                  <option value="">{{ translate('Automatic configuration') }}</option>
+                  <option
+                    v-if="selectedLlmConfigurationId(field.key) && !llmConfigurations.some(
+                      (option) => option.id === selectedLlmConfigurationId(field.key)
+                    )"
+                    :value="selectedLlmConfigurationId(field.key)"
+                  >
+                    {{ translate('Configuration #{id}', { id: selectedLlmConfigurationId(field.key) }) }}
+                  </option>
+                  <option v-for="option in llmConfigurations" :key="option.id" :value="option.id">
+                    {{ option.label }}{{ option.enabled ? '' : ` ${translate('(disabled)')}` }}
+                  </option>
+                </select>
+                <div v-if="llmConfigurationsQuery.isPending.value" class="muted">
+                  {{ translate('Loading configurations…') }}
+                </div>
+                <div v-else-if="llmConfigurationsQuery.isError.value" class="error-text">
+                  {{ translate('Failed to load configurations.') }}
+                </div>
+              </template>
+
               <template v-else>
                 <select
                   v-if="Array.isArray(field.schema.enum) && field.schema.enum.length"
@@ -1679,6 +1707,46 @@ const configFields = computed<SchemaField[]>(() => {
     .filter((f) => configWidget(f.schema) !== 'hidden')
     .sort(compareSchemaFields);
 });
+
+const llmConfigurationsQuery = useQuery({
+  queryKey: serverStateKeys.reference('llm-configurations', 'tool-selector'),
+  enabled: computed(() =>
+    configFields.value.some((field) => configWidget(field.schema) === 'llm-configuration-select')
+  ),
+  queryFn: async ({ signal }) => {
+    const params = new URLSearchParams({
+      sort: 'model_name',
+      'fields[llm-configurations]': 'model_name,note,enabled',
+    });
+    const payload = await jsonApiList('/api/ash/llm-configurations', params, { signal });
+    return (payload.data || []).flatMap((resource) => {
+      const id = toIntId(resource.id);
+      if (!id) return [];
+      const attrs = resource.attributes || {};
+      const model = String(attrs.model_name || '').trim();
+      const note = String(attrs.note || '').trim();
+      const label = model && note ? `${model} (${note})` : model || note || translate('Configuration #{id}', { id });
+      return [{ id, label, enabled: attrs.enabled === true }];
+    });
+  },
+});
+const llmConfigurations = computed(() => llmConfigurationsQuery.data.value ?? []);
+
+function selectedLlmConfigurationId(fieldKey: string) {
+  const value = form.config[fieldKey];
+  const id = typeof value === 'number' || typeof value === 'string' ? toIntId(value) : null;
+  return id && Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function selectLlmConfiguration(fieldKey: string, event: Event) {
+  const id = toIntId((event.target as HTMLSelectElement).value);
+  if (id) {
+    form.config[fieldKey] = id;
+  } else {
+    delete form.config[fieldKey];
+  }
+  clearConfigFieldErrors(fieldKey);
+}
 
 watch(
   () =>

@@ -3,9 +3,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
   Native bot subagent driver.
 
   Spawns linked subagent chats run by the bot selected in the tool instance
-  configuration. The subagent uses that bot's prompt, tools and default LLM
-  configuration instead of the calling chat's settings; when the bot has no
-  default configuration, the calling generation's configuration is kept.
+  configuration. The subagent uses that bot's prompt and tools. An explicit
+  LLM configuration takes precedence over the bot's default and the calling
+  generation's configuration.
   """
 
   @behaviour IntellectualClub.Tools.Driver
@@ -15,6 +15,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
   alias IntellectualClub.Bots.Bot
   alias IntellectualClub.Chat.Spawn, as: AgentSpawn
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Tools.Drivers.SubagentArguments
   alias IntellectualClub.Tools.ExecutionContext
   alias IntellectualClub.Tools.ToolInstance
@@ -62,10 +63,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
           "type" => "integer",
           "minimum" => 1,
           "title" => "Bot",
-          "description" =>
-            "Bot whose prompt, tools and default configuration run the subagent. " <>
-              "Without a default configuration the subagent keeps the calling chat's configuration.",
+          "description" => "Bot whose prompt and tools run the subagent.",
           "x-ui" => %{"widget" => "bot-select", "order" => 0}
+        },
+        "llm_configuration_id" => %{
+          "type" => "integer",
+          "minimum" => 1,
+          "title" => "Configuration",
+          "description" =>
+            "Overrides the bot's default configuration for this tool. Leave empty to use the usual configuration selection.",
+          "x-ui" => %{"widget" => "llm-configuration-select", "order" => 1}
         },
         "nested_subchats_limit" => %{
           "type" => "integer",
@@ -96,7 +103,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
     config = Map.new(config, fn {key, value} -> {to_string(key), value} end)
 
     config
-    |> normalize_bot_id()
+    |> normalize_id("bot_id")
+    |> normalize_llm_configuration_id()
     |> Map.put(
       "nested_subchats_limit",
       non_negative_integer(Map.get(config, "nested_subchats_limit"), 0)
@@ -111,13 +119,23 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
 
   @impl true
   def validate_config(%ToolInstance{} = tool_instance, config, actor) when is_map(config) do
-    case Map.get(config, "bot_id") do
+    actor = owner_actor(tool_instance, actor)
+
+    with :ok <- validate_bot_id(Map.get(config, "bot_id"), actor) do
+      validate_llm_configuration_id(Map.get(config, "llm_configuration_id"), actor)
+    end
+  end
+
+  def validate_config(_tool_instance, _config, _actor), do: :ok
+
+  defp validate_bot_id(bot_id, actor) do
+    case bot_id do
       nil ->
         # The required-field check reports a missing bot.
         :ok
 
       bot_id when is_integer(bot_id) and bot_id > 0 ->
-        case Ash.get(Bot, bot_id, actor: owner_actor(tool_instance, actor)) do
+        case Ash.get(Bot, bot_id, actor: actor) do
           {:ok, %Bot{}} -> :ok
           _other -> {:error, "Bot is not available."}
         end
@@ -127,7 +145,17 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
     end
   end
 
-  def validate_config(_tool_instance, _config, _actor), do: :ok
+  defp validate_llm_configuration_id(nil, _actor), do: :ok
+
+  defp validate_llm_configuration_id(id, actor) when is_integer(id) and id > 0 do
+    case Ash.get(LlmConfiguration, id, actor: actor) do
+      {:ok, %LlmConfiguration{}} -> :ok
+      _other -> {:error, "Configuration is invalid or not accessible."}
+    end
+  end
+
+  defp validate_llm_configuration_id(_id, _actor),
+    do: {:error, "Configuration is invalid or not accessible."}
 
   @impl true
   def fixed_functions(%ToolInstance{} = _tool_instance) do
@@ -135,8 +163,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
       %{
         "name" => "spawn",
         "description" =>
-          "Start a linked subagent chat run by the configured bot with its own prompt, " <>
-            "tools and configuration and no copied conversation history, and wait for it " <>
+          "Start a linked subagent chat run by the configured bot with its own prompt and " <>
+            "tools, using the selected configuration and no copied conversation history, and wait for it " <>
             "to finish.",
         "schema" => spawn_schema(),
         "enabled" => true,
@@ -163,10 +191,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
   end
 
   @impl true
-  def spawn_target(%ToolInstance{} = tool_instance) do
+  def spawn_target(%ToolInstance{config: config} = tool_instance) do
     case configured_bot_id(tool_instance) do
-      bot_id when is_integer(bot_id) -> {:bot, bot_id}
-      nil -> {:error, "Bot subagent tool has no bot configured."}
+      bot_id when is_integer(bot_id) ->
+        case Map.get(config, "llm_configuration_id") do
+          nil -> {:bot, bot_id}
+          id -> {:bot, bot_id, id}
+        end
+
+      nil ->
+        {:error, "Bot subagent tool has no bot configured."}
     end
   end
 
@@ -231,10 +265,21 @@ defmodule IntellectualClub.Tools.Drivers.NativeBotSubagent do
     SubagentArguments.schema("First user message sent to the spawned bot subagent.")
   end
 
-  defp normalize_bot_id(config) do
-    case positive_integer(Map.get(config, "bot_id")) do
-      {:ok, bot_id} -> Map.put(config, "bot_id", bot_id)
+  defp normalize_id(config, key) do
+    case positive_integer(Map.get(config, key)) do
+      {:ok, id} -> Map.put(config, key, id)
       :error -> config
+    end
+  end
+
+  defp normalize_llm_configuration_id(config) do
+    key = "llm_configuration_id"
+    value = Map.get(config, key)
+
+    if is_nil(value) or (is_binary(value) and String.trim(value) == "") do
+      Map.delete(config, key)
+    else
+      normalize_id(config, key)
     end
   end
 

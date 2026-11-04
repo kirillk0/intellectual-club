@@ -59,9 +59,10 @@ The Bot Subagent tool (`native-bot-subagent`) exposes `spawn` and
 the spawned chat is run by the bot selected in the tool instance configuration
 (`bot_id`), not by the calling chat's bot. The child uses that bot's knowledge
 blocks and tool bindings; chat-level bindings of the calling chat are not copied.
-Its configuration is the bot's default LLM configuration when it is set and
-readable; otherwise the calling turn's pinned configuration when the bot accepts
-it, and the usual chat default as a last resort. The instance also carries
+The optional `llm_configuration_id` on the tool instance overrides the LLM
+configuration for both functions. With the field empty, the subagent uses the
+bot's default when readable, the calling turn's pinned configuration when the
+bot accepts it, or the usual chat default. The instance also carries
 `nested_subchats_limit` and `allow_handoff_in_subchats`, which apply exactly as
 for Agent Management: the limit gates spawning from inside subchats, and the
 handoff flag governs the spawned lineage. Drivers declare this through the

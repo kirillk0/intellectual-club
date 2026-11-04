@@ -42,12 +42,16 @@ defmodule IntellectualClub.Tools.Driver do
   @doc """
   Returns the target of subagent chats spawned through this driver.
 
-  `:inherit` keeps the calling chat's bot and settings; `{:bot, bot_id}` runs
-  that bot with its own prompt, tools and default configuration. Drivers
-  without this callback inherit.
+  `:inherit` keeps the calling chat's bot and settings. `{:bot, bot_id}` runs
+  that bot with its own prompt, tools and default configuration.
+  `{:bot, bot_id, configuration_id}` supplies an explicit LLM configuration.
+  Drivers without this callback inherit.
   """
   @callback spawn_target(IntellectualClub.Tools.ToolInstance.t()) ::
-              :inherit | {:bot, pos_integer()} | {:error, String.t()}
+              :inherit
+              | {:bot, pos_integer()}
+              | {:bot, pos_integer(), pos_integer()}
+              | {:error, String.t()}
 
   @callback discover(IntellectualClub.Tools.ToolInstance.t()) ::
               {:ok, list(map())} | {:error, term()}
