@@ -133,7 +133,13 @@ defmodule IntellectualClub.Chat.ContentFiles do
         {:ok, content}
 
       {:ok, nil} ->
-        find_inherited_content_for_file(normalized_external_id, chat_ids, context.owner_id)
+        case find_received_content_for_file(normalized_external_id, context) do
+          {:error, :not_found} ->
+            find_inherited_content_for_file(normalized_external_id, chat_ids, context.owner_id)
+
+          result ->
+            result
+        end
 
       {:error, error} ->
         {:error, error}
@@ -141,6 +147,36 @@ defmodule IntellectualClub.Chat.ContentFiles do
   end
 
   defp find_content_for_file(_external_id, _context), do: {:error, :not_found}
+
+  defp find_received_content_for_file(external_id, context) do
+    ChatMessageContent
+    |> Ash.Query.for_read(:referencing_file, %{file_external_id: external_id})
+    |> Ash.Query.filter(
+      owner_id == ^context.owner_id and
+        chat_message_item.chat_message_step.chat_message.chat_id == ^context.chat_id
+    )
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(actor: %{id: context.owner_id})
+    |> case do
+      {:ok, %ChatMessageContent{}} -> referenced_artifact(external_id, context.owner_id)
+      {:ok, nil} -> {:error, :not_found}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp referenced_artifact(external_id, owner_id) do
+    # A receipt grants access, not ownership. Revalidate the source even if an
+    # owner has manually edited the receipt's opaque metadata.
+    ChatMessageContent
+    |> Ash.Query.for_read(:by_file_external_id, %{file_external_id: external_id})
+    |> Ash.Query.filter(owner_id == ^owner_id and item_type == :artifact)
+    |> Ash.read_one(actor: %{id: owner_id}, load: [:file])
+    |> case do
+      {:ok, %ChatMessageContent{} = content} -> {:ok, content}
+      {:ok, nil} -> {:error, :not_found}
+      {:error, error} -> {:error, error}
+    end
+  end
 
   defp find_inherited_content_for_file(normalized_external_id, chat_ids, owner_id)
        when is_integer(owner_id) do
@@ -159,8 +195,9 @@ defmodule IntellectualClub.Chat.ContentFiles do
         case ForkHistory.prefix(fork.id, actor) do
           {:ok, messages} ->
             case inherited_content(messages, normalized_external_id, owner_id) do
-              %ChatMessageContent{} = content -> {:halt, {:ok, content}}
-              nil -> {:cont, not_found}
+              {:ok, content} -> {:halt, {:ok, content}}
+              {:error, :not_found} -> {:cont, not_found}
+              {:error, _reason} = error -> {:halt, error}
             end
 
           {:error, :fork_context_unavailable} ->
@@ -175,26 +212,56 @@ defmodule IntellectualClub.Chat.ContentFiles do
 
   defp inherited_content(messages, normalized_external_id, owner_id) do
     # File tools remain owner-scoped even if a history reader can see shared chats.
-    # Synthetic boundary results contain no media, so only actual prefix contents
-    # can grant access; later results, artifacts, steps and sibling branches cannot.
+    # Only media and file references in the projected prefix grant access;
+    # later results, artifacts, steps and sibling branches cannot.
     if Enum.all?(messages, &(Map.get(&1, :owner_id) == owner_id)) do
-      messages
-      |> Stream.flat_map(&History.steps/1)
-      |> Stream.flat_map(&History.items/1)
-      |> Stream.flat_map(&History.contents/1)
-      |> Enum.find(fn
-        %ChatMessageContent{
-          kind: :media,
-          owner_id: ^owner_id,
-          file: %StoredFile{external_id: external_id}
-        } ->
-          to_string(external_id) == normalized_external_id
+      contents =
+        messages
+        |> Enum.flat_map(&History.steps/1)
+        |> Enum.flat_map(&History.items/1)
+        |> Enum.flat_map(&History.contents/1)
 
-        _content ->
-          false
-      end)
+      media =
+        Enum.find(contents, fn
+          %ChatMessageContent{
+            kind: :media,
+            owner_id: ^owner_id,
+            file: %StoredFile{external_id: external_id}
+          } ->
+            to_string(external_id) == normalized_external_id
+
+          _content ->
+            false
+        end)
+
+      cond do
+        media ->
+          {:ok, media}
+
+        Enum.any?(contents, &references_file?(&1, normalized_external_id, owner_id)) ->
+          referenced_artifact(normalized_external_id, owner_id)
+
+        true ->
+          {:error, :not_found}
+      end
+    else
+      {:error, :not_found}
     end
   end
+
+  defp references_file?(
+         %ChatMessageContent{
+           kind: :opaque,
+           item_type: :tool_result,
+           owner_id: owner_id,
+           content_json: %{"file_references" => references}
+         },
+         external_id,
+         owner_id
+       )
+       when is_list(references), do: external_id in references
+
+  defp references_file?(_content, _external_id, _owner_id), do: false
 
   defp normalize_external_id(value) when is_binary(value) do
     value = String.trim(value)

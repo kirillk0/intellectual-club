@@ -1343,6 +1343,11 @@ defmodule IntellectualClub.Generation.Persistence do
       "responses_item" => responses_item
     }
 
+    opaque =
+      if result.file_references == [],
+        do: opaque,
+        else: Map.put(opaque, "file_references", result.file_references)
+
     text_content = %{
       external_id: Ash.UUID.generate(),
       sequence: 1,
@@ -2120,7 +2125,8 @@ defmodule IntellectualClub.Generation.Persistence do
       result_raw: normalize_json_map(Map.get(opaque, "raw")),
       responses_item: if(is_map(responses_item), do: Map.new(responses_item), else: nil),
       media_contents: media_contents_for_item(item),
-      artifact_contents: []
+      artifact_contents: [],
+      file_references: normalize_list(Map.get(opaque, "file_references", []))
     }
   end
 
@@ -2147,7 +2153,8 @@ defmodule IntellectualClub.Generation.Persistence do
       text: to_string(Map.get(result, :text, "") || ""),
       result_raw: normalize_json_map(Map.get(result, :result_raw, %{})),
       media_contents: normalize_list(Map.get(result, :media_contents, [])),
-      artifact_contents: normalize_list(Map.get(result, :artifact_contents, []))
+      artifact_contents: normalize_list(Map.get(result, :artifact_contents, [])),
+      file_references: normalize_list(Map.get(result, :file_references, []))
     }
   end
 

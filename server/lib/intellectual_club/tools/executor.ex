@@ -468,7 +468,8 @@ defmodule IntellectualClub.Tools.Executor do
       text: sanitize_term(result.text),
       raw: sanitize_term(result.raw),
       media: sanitize_term(result.media),
-      artifacts: sanitize_term(result.artifacts)
+      artifacts: sanitize_term(result.artifacts),
+      file_references: sanitize_term(result.file_references)
     }
   end
 
@@ -496,7 +497,8 @@ defmodule IntellectualClub.Tools.Executor do
       text: text,
       raw: raw,
       media: result.media,
-      artifacts: result.artifacts
+      artifacts: result.artifacts,
+      file_references: result.file_references
     }
   end
 

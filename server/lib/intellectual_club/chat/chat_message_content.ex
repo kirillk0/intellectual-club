@@ -14,6 +14,8 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   alias IntellectualClub.Files.Changes.DeleteAssociatedFile
   alias IntellectualClub.Ownership.Changes.RequireRelatedOwnedByActor
 
+  require Ash.Query
+
   postgres do
     table("chat_message_contents")
     repo(IntellectualClub.Repo)
@@ -191,6 +193,16 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
       argument(:file_external_id, :uuid, allow_nil?: false)
       filter(expr(kind == :media and file.external_id == ^arg(:file_external_id)))
       prepare(build(sort: [id: :asc], limit: 1))
+    end
+
+    read :referencing_file do
+      argument(:file_external_id, :uuid, allow_nil?: false)
+      filter(expr(kind == :opaque and item_type == :tool_result))
+
+      prepare(fn query, _context ->
+        reference = %{"file_references" => [Ash.Query.get_argument(query, :file_external_id)]}
+        Ash.Query.filter(query, fragment("? @> ?", content_json, type(^reference, :map)))
+      end)
     end
 
     destroy :destroy do

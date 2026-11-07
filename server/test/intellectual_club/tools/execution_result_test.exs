@@ -22,7 +22,8 @@ defmodule IntellectualClub.Tools.ExecutionResultTest do
             "provider" => %{"file_id" => "provider-value"}
           }
         ],
-        "artifacts" => [%{"file_id" => 43, "filename" => "result.txt"}]
+        "artifacts" => [%{"file_id" => 43, "filename" => "result.txt"}],
+        "file_references" => [%{"file_external_id" => "reference-id", "filename" => "child.txt"}]
       })
 
     assert result.raw == raw
@@ -43,6 +44,7 @@ defmodule IntellectualClub.Tools.ExecutionResultTest do
            )
 
     assert result.artifacts == [%{file_id: 43, filename: "result.txt"}]
+    assert result.file_references == [%{file_external_id: "reference-id", filename: "child.txt"}]
   end
 
   test "prefers an existing atom field when both key styles are present" do

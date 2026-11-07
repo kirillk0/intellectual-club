@@ -104,6 +104,79 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
              ContentFiles.load_payload_for_execution("not-a-uuid", context)
   end
 
+  test "file references grant access only through owned tool receipts to owned artifacts" do
+    %{user: actor} = user_fixture()
+    %{user: other_actor} = user_fixture()
+    source = create_tool_call_anchor!(actor)
+    foreign_source = create_tool_call_anchor!(other_actor)
+    {:ok, file} = Files.create_from_binary("local.txt", "text/plain", sample_payload())
+    {:ok, foreign_file} = Files.create_from_binary("foreign.txt", "text/plain", "private")
+    source_item = create_item!(actor, source.step, sequence: 2, type: :artifact)
+    foreign_item = create_item!(other_actor, foreign_source.step, sequence: 2, type: :artifact)
+    create_content!(actor, source_item, kind: :media, file_id: file.id)
+    create_content!(other_actor, foreign_item, kind: :media, file_id: foreign_file.id)
+    receiving = create_tool_call_anchor!(actor)
+
+    receipt =
+      create_item!(actor, receiving.step,
+        sequence: 2,
+        type: :tool_result,
+        tool_call_item_id: receiving.item.id
+      )
+
+    context = %ExecutionContext{owner_id: actor.id, chat_id: receiving.chat.id}
+
+    metadata =
+      create_content!(actor, receipt,
+        kind: :opaque,
+        content_json: %{"raw" => %{"file_references" => [file.external_id]}}
+      )
+
+    assert {:error, :not_found} =
+             ContentFiles.load_payload_for_execution(file.external_id, context)
+
+    metadata
+    |> Ash.Changeset.for_update(
+      :update,
+      %{
+        content_json: %{"file_references" => [file.external_id, foreign_file.external_id]}
+      },
+      actor: actor
+    )
+    |> Ash.update!(actor: actor)
+
+    assert {:ok, {_content, _file, payload}} =
+             ContentFiles.load_payload_for_execution(file.external_id, context)
+
+    assert payload == sample_payload()
+
+    assert {:error, :not_found} =
+             ContentFiles.load_payload_for_execution(foreign_file.external_id, context)
+
+    assert {:error, :not_found} =
+             ContentFiles.load_path_for_execution(foreign_file.external_id, context)
+
+    assert {:error, :not_found} =
+             ContentFiles.load_payload_for_execution(
+               file.external_id,
+               %{context | owner_id: other_actor.id}
+             )
+
+    unrelated = create_tool_call_anchor!(actor)
+    answer = create_item!(actor, unrelated.step, sequence: 2, type: :answer)
+
+    create_content!(actor, answer,
+      kind: :opaque,
+      content_json: %{"file_references" => [file.external_id]}
+    )
+
+    assert {:error, :not_found} =
+             ContentFiles.load_payload_for_execution(
+               file.external_id,
+               %{context | chat_id: unrelated.chat.id}
+             )
+  end
+
   defp sample_payload do
     "hello from content files"
   end

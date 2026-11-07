@@ -18,7 +18,8 @@ defmodule IntellectualClub.Generation.ToolResult do
           result_raw: map(),
           responses_item: map() | nil,
           media_contents: list(map()),
-          artifact_contents: list(map())
+          artifact_contents: list(map()),
+          file_references: list(String.t())
         }
 
   defstruct item_id: nil,
@@ -33,7 +34,8 @@ defmodule IntellectualClub.Generation.ToolResult do
             result_raw: %{},
             responses_item: nil,
             media_contents: [],
-            artifact_contents: []
+            artifact_contents: [],
+            file_references: []
 
   @doc "Converts a driver result into the payload used by tool-result persistence."
   @spec execution_payload(ExecutionResult.t()) :: map()
@@ -44,7 +46,16 @@ defmodule IntellectualClub.Generation.ToolResult do
       text: result.text,
       result_raw: result.raw,
       media_contents: attachment_contents(result.media, 2),
-      artifact_contents: attachment_contents(result.artifacts, 1)
+      artifact_contents: attachment_contents(result.artifacts, 1),
+      file_references:
+        result.file_references
+        |> Enum.flat_map(fn reference ->
+          case Ecto.UUID.cast(Map.get(reference, :file_external_id)) do
+            {:ok, id} -> [id]
+            :error -> []
+          end
+        end)
+        |> Enum.uniq()
     }
   end
 

@@ -249,6 +249,34 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
   end
 
   describe "background task status" do
+    test "legacy subagent results grant file access without publishing their artifacts" do
+      %{user: actor} = user_fixture()
+      reference = %{file_external_id: Ash.UUID.generate(), filename: "result.txt"}
+
+      for kind <- ["spawn", "fork"] do
+        task = create_background_task!(actor, %{kind: kind, adapter: "test", status: :running})
+
+        assert {:ok, _task} =
+                 BackgroundTasks.mark_completed(task, %{
+                   "text" => "Done",
+                   "artifacts" => [reference],
+                   "media" => []
+                 })
+
+        assert {:ok, result} =
+                 NativeAgentManagement.execute(
+                   create_tool_instance!(actor, type: "native-agent-management"),
+                   "check_background_task_status",
+                   %{"background_task_id" => task.id},
+                   %ExecutionContext{owner_id: actor.id}
+                 )
+
+        assert result.artifacts == []
+        assert result.media == []
+        assert result.file_references == [reference]
+      end
+    end
+
     test "background status check preserves terminal media and artifacts" do
       %{user: actor} = user_fixture()
 

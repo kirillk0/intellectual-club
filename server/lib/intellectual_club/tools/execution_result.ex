@@ -4,6 +4,10 @@ defmodule IntellectualClub.Tools.ExecutionResult do
 
   Known attachment descriptor fields use atom keys. The result `raw` map, unknown
   attachment fields, and nested values are opaque and keep their original shape.
+
+  `artifacts` publishes attachments in the calling message. `file_references`
+  grants file-tool access without publishing attachments or sending file bodies
+  to the model. Drivers must populate references from authorized source results.
   """
 
   @attachment_fields [
@@ -16,7 +20,7 @@ defmodule IntellectualClub.Tools.ExecutionResult do
     :is_image
   ]
 
-  defstruct text: "", raw: %{}, media: [], artifacts: []
+  defstruct text: "", raw: %{}, media: [], artifacts: [], file_references: []
 
   @typedoc """
   Attachment descriptor whose known fields are normalized to atom keys.
@@ -29,7 +33,8 @@ defmodule IntellectualClub.Tools.ExecutionResult do
           text: String.t(),
           raw: map(),
           media: list(attachment_item()),
-          artifacts: list(attachment_item())
+          artifacts: list(attachment_item()),
+          file_references: list(attachment_item())
         }
 
   @spec normalize(any()) :: t()
@@ -38,7 +43,8 @@ defmodule IntellectualClub.Tools.ExecutionResult do
       text: to_string(result.text || ""),
       raw: normalize_map(result.raw),
       media: normalize_attachment_items(result.media),
-      artifacts: normalize_attachment_items(result.artifacts)
+      artifacts: normalize_attachment_items(result.artifacts),
+      file_references: normalize_attachment_items(result.file_references)
     }
   end
 
@@ -52,7 +58,11 @@ defmodule IntellectualClub.Tools.ExecutionResult do
       raw: normalize_map(Map.get(map, :raw, Map.get(map, "raw", %{}))),
       media: normalize_attachment_items(Map.get(map, :media, Map.get(map, "media", []))),
       artifacts:
-        normalize_attachment_items(Map.get(map, :artifacts, Map.get(map, "artifacts", [])))
+        normalize_attachment_items(Map.get(map, :artifacts, Map.get(map, "artifacts", []))),
+      file_references:
+        normalize_attachment_items(
+          Map.get(map, :file_references, Map.get(map, "file_references", []))
+        )
     }
   end
 

@@ -53,6 +53,27 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
     )
   end
 
+  test "forks inherit file references only from receipts in their projected prefix" do
+    fixture = fork_fixture!()
+    actor = fixture.actor
+    source = create_subchat!(actor, fixture.parent, :spawn)
+    source_step = followup_step!(actor, source)
+    earlier = attach!(actor, source_step, :artifact, 1, "received-before-fork")
+    later = attach!(actor, source_step, :artifact, 2, "received-after-fork")
+
+    for {receipt, attachment} <- [{fixture.earlier_result, earlier}, {fixture.result, later}] do
+      create_content!(actor, receipt.item,
+        sequence: 2,
+        kind: :opaque,
+        content_json: %{"file_references" => [attachment.file.external_id]}
+      )
+    end
+
+    assert_readable(context(fixture.child, actor), [earlier])
+    assert_denied(context(fixture.child, actor), [later])
+    assert_materialized(followup_step!(actor, fixture.child), [earlier], [later])
+  end
+
   test "standalone chats cannot inherit another chat's canonical or projected files" do
     fixture = fork_fixture!()
     standalone = create_empty_chat!(fixture.actor)
@@ -194,6 +215,7 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
       future_step: future_step,
       future: future,
       result: result,
+      earlier_result: earlier_result,
       allowed: [input, earlier_result, earlier_artifact, before_response, response],
       denied: [
         result,

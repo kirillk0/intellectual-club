@@ -494,7 +494,7 @@ defmodule IntellectualClub.Chat.Subagent do
       text: to_string(Map.get(result, :text, "")),
       raw: Map.get(result, :raw, %{}),
       media: [],
-      artifacts: Map.get(result, :artifacts, [])
+      file_references: Map.get(result, :file_references, [])
     }
   end
 
@@ -527,7 +527,7 @@ defmodule IntellectualClub.Chat.Subagent do
             value when is_binary(value) and value != "" ->
               value
               |> then(&final_text(%{text: &1}))
-              |> with_attachment_manifest(result.artifacts)
+              |> with_attachment_manifest(result.file_references)
 
             _other ->
               result.text
@@ -1005,7 +1005,7 @@ defmodule IntellectualClub.Chat.Subagent do
 
     %{
       text: text,
-      artifacts: final.artifacts,
+      file_references: final.artifacts,
       raw: %{
         primitive_key => payload
       }
@@ -1019,7 +1019,7 @@ defmodule IntellectualClub.Chat.Subagent do
   defp with_attachment_manifest(text, artifacts) do
     manifest =
       Enum.map_join(artifacts, "\n", fn artifact ->
-        "[Attached file file_id=#{artifact.file_external_id} " <>
+        "[Subagent file file_id=#{artifact.file_external_id} " <>
           "filename=#{inspect(artifact.filename)} mime_type=#{inspect(artifact.mime_type)} " <>
           "size_bytes=#{artifact.size_bytes}]"
       end)

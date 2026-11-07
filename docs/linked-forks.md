@@ -70,6 +70,26 @@ optional `spawn_target/1` callback; drivers without it inherit the calling chat.
 `spawn` is enabled by default; `spawn_background` is disabled by default and, once
 enabled, stays hidden unless a bound tool provides `check_background_task_status`.
 
+## Subagent files
+
+Completed fork and spawn results expose a file manifest and `file_references`.
+Receiving a result, synchronously or through `check_background_task_status`, does
+not publish the child's artifacts as attachments in the calling message.
+
+The parent writer persists reference UUIDs in the tool receipt's opaque metadata,
+separately from driver `raw` output and media contents. File tools use these
+receipts to authorize reading or downloading the original owned artifacts. This
+access survives worker restarts and output truncation. Unrelated chats and other
+owners do not gain access; linked forks inherit only receipts in their projected
+prefix. The original artifact remains the file's storage reference, so removing
+it can make the received reference unavailable.
+
+`ExecutionResult.artifacts` is reserved for publishing attachments. A parent can
+explicitly download a received file and upload it to publish it. Merely checking
+status or reading a file never publishes it. Completed background results written
+with the older artifact format are treated as file references when checked.
+Previously published attachments are not removed.
+
 ## Live semantics and follow-ups
 
 The inherited prefix is live, not a frozen snapshot. A later canonical follow-up

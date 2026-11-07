@@ -766,12 +766,16 @@ defmodule IntellectualClub.BackgroundTasks do
   defp execution_result_map(result) do
     result = ExecutionResult.normalize(result)
 
-    %{
+    payload = %{
       "text" => result.text,
       "raw" => normalize_json(result.raw),
       "media" => normalize_json(result.media),
       "artifacts" => normalize_json(result.artifacts)
     }
+
+    if result.file_references == [],
+      do: payload,
+      else: Map.put(payload, "file_references", normalize_json(result.file_references))
   end
 
   defp error_map(code, %{} = reason, outcome) do

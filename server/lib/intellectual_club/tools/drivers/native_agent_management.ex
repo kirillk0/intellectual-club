@@ -631,6 +631,15 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
 
     media = get_in(snapshot, ["result", "media"]) || []
     artifacts = get_in(snapshot, ["result", "artifacts"]) || []
+    file_references = get_in(snapshot, ["result", "file_references"]) || []
+
+    # Completed tasks persisted before file references used artifacts for access.
+    {media, artifacts, file_references} =
+      if snapshot["kind"] in ["fork", "spawn"] do
+        {[], [], file_references ++ artifacts}
+      else
+        {media, artifacts, file_references}
+      end
 
     request = %{
       "operation" => operation,
@@ -665,7 +674,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagement do
       text: text,
       raw: %{"background_task" => snapshot, "background_task_request" => request},
       media: List.wrap(media),
-      artifacts: List.wrap(artifacts)
+      artifacts: List.wrap(artifacts),
+      file_references: List.wrap(file_references)
     })
   end
 

@@ -14,12 +14,12 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
   alias IntellectualClub.Llm.Providers.Common.ChatHistory
   alias IntellectualClub.Llm.Providers.Responses.HistoryInput
   alias IntellectualClub.Tools.Drivers.{NativeAgentManagement, NativeArtifactReader}
-  alias IntellectualClub.Tools.ExecutionContext
+  alias IntellectualClub.Tools.{ExecutionContext, Executor}
 
   @payload "The control word is amber-orbit."
 
   for primitive <- [:fork, :spawn] do
-    test "#{primitive} parent writer persists returned attachments for reading and history replay" do
+    test "#{primitive} parent reads returned files without publishing attachments" do
       primitive = unquote(primitive)
       %{user: actor} = user_fixture()
       {parent, context} = parent_call!(actor, primitive)
@@ -36,7 +36,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert {:ok, snapshot} = Subagent.snapshot(reference, actor)
       assert snapshot.status == :completed
 
-      assert Enum.map(snapshot.result.artifacts, & &1.file_external_id) == [
+      assert Enum.map(snapshot.result.file_references, & &1.file_external_id) == [
                file.external_id,
                image.external_id
              ]
@@ -46,10 +46,11 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       refute snapshot.result.text =~ @payload
 
       result = Subagent.sync_execution_result_from_snapshot(snapshot, actor)
-      assert result.artifacts == snapshot.result.artifacts
+      assert result.file_references == snapshot.result.file_references
+      assert result.artifacts == []
       assert result.media == []
       assert result.text =~ "file_id=#{image.external_id}"
-      assert length(Regex.scan(~r/\[Attached file/, result.text)) == 2
+      assert length(Regex.scan(~r/\[Subagent file/, result.text)) == 2
       before_write = load_message!(context.message_id, actor)
       assert tool_result_items(before_write, context.tool_call_item_id) == []
       assert artifact_file_ids(before_write) == []
@@ -70,7 +71,9 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       persisted = load_message!(context.message_id, actor)
       assert [item] = tool_result_items(persisted, context.tool_call_item_id)
       assert item.id == receipt.item_id
-      assert artifact_file_ids(persisted) == [file.id, image.id]
+      assert artifact_file_ids(persisted) == []
+      assert receipt.file_references == [file.external_id, image.external_id]
+      assert replay.file_references == receipt.file_references
 
       for projection <- [
             HistoryInput.build_input_items([persisted], supports_image_input: true),
@@ -127,6 +130,11 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
       assert File.read!(path) == @payload
 
+      fresh_context = %ExecutionContext{owner_id: actor.id, chat_id: parent.id}
+
+      assert {:ok, {_content, _file, @payload}} =
+               ContentFiles.load_payload_for_execution(file.external_id, fresh_context)
+
       unrelated = create_empty_chat!(actor)
 
       assert {:error, :not_found} =
@@ -140,7 +148,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert child.id == message.chat_id
     end
 
-    test "#{primitive} background results retain attachments with an exhausted cursor" do
+    test "#{primitive} background results retain file access without publishing attachments on repeated checks" do
       primitive = unquote(primitive)
       %{user: actor} = user_fixture()
       {parent, context} = parent_call!(actor, :check_background_task_status)
@@ -166,12 +174,12 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       assert {:ok, task} = BackgroundTasks.set_subagent_reference(task, reference)
       assert {:ok, first} = BackgroundTasks.snapshot(task.id, nil, actor.id)
       assert first["status"] == "completed"
-      assert [%{"file_external_id" => file_id}] = first["result"]["artifacts"]
+      assert [%{"file_external_id" => file_id}] = first["result"]["file_references"]
       assert file_id == file.external_id
 
       assert {:ok, repeated} = BackgroundTasks.snapshot(task.id, first["next_cursor"], actor.id)
       assert repeated["progress"] == []
-      assert repeated["result"]["artifacts"] == first["result"]["artifacts"]
+      assert repeated["result"]["file_references"] == first["result"]["file_references"]
 
       assert {:ok, result} =
                NativeAgentManagement.execute(
@@ -181,7 +189,8 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
                  context
                )
 
-      assert [%{file_external_id: ^file_id}] = result.artifacts
+      assert [%{file_external_id: ^file_id}] = result.file_references
+      assert result.artifacts == []
       before_write = load_message!(context.message_id, actor)
       assert tool_result_items(before_write, context.tool_call_item_id) == []
       assert artifact_file_ids(before_write) == []
@@ -201,7 +210,8 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       persisted = load_message!(context.message_id, actor)
       assert [item] = tool_result_items(persisted, context.tool_call_item_id)
       assert item.id == receipt.item_id
-      assert artifact_file_ids(persisted) == [file.id]
+      assert artifact_file_ids(persisted) == []
+      assert receipt.file_references == [file.external_id]
 
       for projection <- [
             HistoryInput.build_input_items([persisted], supports_image_input: true),
@@ -214,7 +224,56 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
       assert {:ok, {_content, _file, @payload}} =
                ContentFiles.load_payload_for_execution(file.external_id, context)
+
+      next_step = create_step!(actor, context.message_id, sequence: 2, status: :waiting_tools)
+
+      next_call =
+        opaque_item!(actor, next_step, :tool_call, 1, %{
+          "call_id" => "repeat-status",
+          "name" => "agent_management__check_background_task_status"
+        })
+
+      next_context = %{context | step_id: next_step.id, tool_call_item_id: next_call.id}
+
+      assert {:ok, repeated_result} =
+               NativeAgentManagement.execute(
+                 tool!(actor, "native-agent-management"),
+                 "check_background_task_status",
+                 %{"background_task_id" => task.id, "cursor" => first["next_cursor"]},
+                 next_context
+               )
+
+      assert [call] = Persistence.list_missing_tool_calls!(next_step.id)
+      repeated_receipt = persist_parent_receipt!(next_context, call, repeated_result)
+      assert repeated_receipt.file_references == [file.external_id]
+      assert artifact_file_ids(load_message!(context.message_id, actor)) == []
     end
+  end
+
+  test "truncated results retain durable file access without publishing attachments" do
+    %{user: actor} = user_fixture()
+    {parent, context} = parent_call!(actor, :spawn)
+    {_child, _message, step, reference} = child_answer!(actor, parent, :spawn)
+    file = file!("result.txt", "text/plain", @payload)
+    attach!(actor, step, file, 2)
+    assert {:ok, snapshot} = Subagent.snapshot(reference, actor)
+
+    result =
+      snapshot
+      |> Subagent.sync_execution_result_from_snapshot(actor)
+      |> Executor.sanitize_execution_result()
+      |> Executor.limit_execution_result(0)
+
+    assert [call] = Persistence.list_missing_tool_calls!(context.step_id)
+    receipt = persist_parent_receipt!(context, call, result)
+    assert receipt.file_references == [file.external_id]
+    assert artifact_file_ids(load_message!(context.message_id, actor)) == []
+
+    assert {:ok, {_content, _file, @payload}} =
+             ContentFiles.load_payload_for_execution(
+               file.external_id,
+               %ExecutionContext{owner_id: actor.id, chat_id: parent.id}
+             )
   end
 
   test "compaction retains ordinary artifacts once and excludes checkpoint archives" do
@@ -248,7 +307,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
     assert {:ok, snapshot} = Subagent.snapshot(reference, actor)
 
-    assert Enum.map(snapshot.result.artifacts, & &1.file_external_id) == [
+    assert Enum.map(snapshot.result.file_references, & &1.file_external_id) == [
              first.external_id,
              final.external_id
            ]
@@ -280,7 +339,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     assert snapshot.result.text =~ file.external_id
 
     assert [%{file_external_id: file_id}] =
-             Subagent.sync_execution_result_from_snapshot(snapshot, actor).artifacts
+             Subagent.sync_execution_result_from_snapshot(snapshot, actor).file_references
 
     assert file_id == file.external_id
   end
