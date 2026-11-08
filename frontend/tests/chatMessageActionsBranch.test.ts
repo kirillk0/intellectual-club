@@ -251,6 +251,73 @@ describe('chat message branch options', () => {
     else expect(startPolling).toHaveBeenCalledWith(12);
   });
 
+  it.each([
+    ['user', true], ['user', false], ['assistant', true], ['retry', true],
+  ] as const)('completes %s branching when a server refresh arrives before the response (generation: %s)', async (action, generate) => {
+    const { actions, branch, startPolling, applyServerConfiguration } = createActions();
+    let resolve!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((done) => { resolve = done; }));
+    let pending: Promise<void> | undefined;
+    if (action === 'assistant') actions.startBranch(assistantMessage);
+    else if (action === 'retry') pending = actions.retryLastStep(assistantMessage);
+    else {
+      actions.startBranch(userMessage);
+      actions.editContents.value = ['Edited question'];
+      actions.branchStartGeneration.value = generate;
+      pending = actions.saveEdit();
+    }
+    await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+
+    const nextUser = action === 'user' ? { ...userMessage, id: 20 } : userMessage;
+    const nextBranch = generate
+      ? [nextUser, { ...assistantMessage, id: 21, parent_id: nextUser.id, status: 'generating' }]
+      : [nextUser];
+    branch.value = nextBranch.map((message) => ({ ...message }));
+    resolve({ branch: nextBranch, chat: { llm_configuration_id: 7 }, generation: generate ? { message_id: 21 } : null });
+    await pending;
+    await vi.waitFor(() => {
+      expect(actions.savingEdit.value).toBe(false);
+      expect(actions.branchingAssistantId.value).toBeNull();
+      expect(actions.retryingMessageId.value).toBeNull();
+    });
+
+    expect(actions.editingMessage.value).toBeNull();
+    if (generate) expect(startPolling).toHaveBeenCalledWith(21);
+    else expect(startPolling).not.toHaveBeenCalled();
+    if (action === 'user') {
+      expect(applyServerConfiguration).toHaveBeenCalledWith(7);
+      await actions.saveEdit();
+    }
+    expect(apiMocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('only accepts a refreshed ancestor if it belongs to the newly created branch (new: %s)', async (created) => {
+    const { actions, branch, startPolling } = createActions();
+    const ancestor = { ...assistantMessage, id: 5, parent_id: null };
+    const source = { ...userMessage, parent_id: ancestor.id };
+    branch.value = [ancestor, source, assistantMessage];
+    let resolve!: (value: unknown) => void;
+    apiMocks.post.mockReturnValue(new Promise((done) => { resolve = done; }));
+    actions.startBranch(source);
+    const pending = actions.saveEdit();
+    await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+
+    const nextUser = { ...source, id: 20 };
+    branch.value = created ? [ancestor, nextUser] : [ancestor];
+    const nextBranch = [ancestor, nextUser, { ...assistantMessage, id: 21, parent_id: 20 }];
+    resolve({ branch: nextBranch, generation: { message_id: 21 } });
+    await pending;
+
+    if (created) {
+      expect(branch.value).toEqual(nextBranch);
+      expect(actions.editingMessage.value).toBeNull();
+      expect(startPolling).toHaveBeenCalledWith(21);
+    } else {
+      expect(branch.value).toEqual([ancestor]);
+      expect(startPolling).not.toHaveBeenCalled();
+    }
+  });
+
   it('branches an assistant response to a new chat immediately without branch options', async () => {
     const { actions, pushChatRoute } = createActions();
     apiMocks.post.mockResolvedValue({ chat: { id: 42 }, generation: { message_id: 50 } });

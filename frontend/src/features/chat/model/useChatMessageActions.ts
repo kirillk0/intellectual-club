@@ -212,8 +212,16 @@ export function useChatMessageActions(params: Params) {
   const currentBranchGuard = () => {
     const chatId = params.chatId.value;
     const leafId = params.branch.value.at(-1)?.id ?? null;
-    return () => params.chatId.value === chatId &&
-      (params.branch.value.at(-1)?.id ?? null) === leafId;
+    const originalIds = new Set(params.branch.value.map((message) => message.id));
+    return (resultBranch?: ChatBranchMessage[]) => {
+      if (params.chatId.value !== chatId) return false;
+      const currentLeafId = params.branch.value.at(-1)?.id ?? null;
+      if (currentLeafId === leafId) return true;
+      // A server refresh can expose this mutation's new path before its response.
+      // Shared ancestors do not prove ownership after navigation to another branch.
+      return currentLeafId !== null && !originalIds.has(currentLeafId) &&
+        Boolean(resultBranch?.some((message) => message.id === currentLeafId));
+    };
   };
 
   const replaceBranch = (nextBranch: ChatBranchMessage[] | null | undefined) => {
@@ -543,7 +551,7 @@ export function useChatMessageActions(params: Params) {
         {}
       );
 
-      if (!isCurrentBranch()) return;
+      if (!isCurrentBranch(payload.branch)) return;
       replaceBranch(payload.branch);
 
       const generationId = payload.generation?.message_id;
@@ -675,7 +683,7 @@ export function useChatMessageActions(params: Params) {
         `/api/bff/chat-generation/${params.chatId.value}/generate`,
         { parent_id: msg.parent_id ?? null }
       );
-      if (!isCurrentBranch()) return;
+      if (!isCurrentBranch(payload.branch)) return;
       replaceBranch(payload.branch);
       const messageId = payload.generation?.message_id;
       if (messageId) {
@@ -902,7 +910,7 @@ export function useChatMessageActions(params: Params) {
           `/api/bff/chat-generation/${params.chatId.value}/branch`,
           branchPayload
         );
-        if (!isCurrentBranch()) return;
+        if (!isCurrentBranch(payload.branch)) return;
         resetEditState();
         await applyInChatBranch(payload);
       }
