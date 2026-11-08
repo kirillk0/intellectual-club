@@ -68,6 +68,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   documentQuery?: (context: { mode: 'load' | 'save' | 'duplicate' }) => URLSearchParams | undefined;
   documentRefetchInterval?: (payload: JsonApiSingleResponse | undefined) => number | false;
   afterSave?: (payload: JsonApiSingleResponse) => Promise<void>;
+  saveRelated?: (payload: JsonApiSingleResponse) => Promise<boolean>;
   onDocument?: (
     payload: JsonApiSingleResponse,
     context: { mode: 'load' | 'save' | 'duplicate' }
@@ -81,6 +82,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
 
   const idParam = computed(() => route.params[idKey] as string | undefined);
   const isNew = computed(() => !idParam.value || idParam.value === 'new');
+  const createdId = ref<number>();
 
   const numericId = computed(() => {
     if (isNew.value) return undefined;
@@ -249,6 +251,7 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
 
   const startSession = () => {
     sessionVersion += 1;
+    createdId.value = undefined;
     errors.clear();
     loadError.value = null;
     remoteDocument.value = null;
@@ -359,15 +362,16 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
   const save = async () => {
     if (saving.value) return false;
     const writeSession = sessionVersion;
-    const writeId = numericId.value;
+    const writeId = numericId.value ?? createdId.value;
     errors.clear();
     loadError.value = null;
     saving.value = true;
 
     try {
       const attrs = options.toAttributes(form);
+      let savedDocument: JsonApiSingleResponse;
 
-      if (isNew.value) {
+      if (isNew.value && createdId.value === undefined) {
         const created = await jsonApiCreate(options.basePath, options.type, attrs, documentQuery('save'));
         if (sessionVersion !== writeSession) return false;
         if (options.afterSave) await options.afterSave(created);
@@ -383,11 +387,9 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
           recordLayerChange({ type: options.type, id: newId, operation: 'upsert' });
         }
         applyCanonicalDocument(canonical, 'save');
-
-        if (newId) {
-          if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
-          await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
-        }
+        // Keep the persisted identity if related drafts need another save attempt.
+        createdId.value = newId ?? undefined;
+        savedDocument = canonical;
       } else {
         if (writeId === undefined) return false;
         const updated = await jsonApiUpdate(
@@ -397,13 +399,27 @@ export function useCrudEditor<TForm extends Record<string, unknown>>(options: {
           attrs,
           documentQuery('save')
         );
-        if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
+        if (sessionVersion !== writeSession || (numericId.value ?? createdId.value) !== writeId) return false;
         if (options.afterSave) await options.afterSave(updated);
-        if (sessionVersion !== writeSession || numericId.value !== writeId) return false;
+        if (sessionVersion !== writeSession || (numericId.value ?? createdId.value) !== writeId) return false;
         const canonical = refreshedUpdateDocument(writeId, updated);
-        serverStateQueryClient.setQueryData(detailQueryKey.value, canonical);
+        serverStateQueryClient.setQueryData(
+          serverStateKeys.detail(options.type, writeId, 'editor-document'),
+          canonical
+        );
         applyCanonicalDocument(canonical, 'save');
         recordLayerChange({ type: options.type, id: writeId, operation: 'upsert' });
+        savedDocument = canonical;
+      }
+
+      // Replacing an entity route remounts stacked editors and discards their drafts.
+      if (options.saveRelated && !(await options.saveRelated(savedDocument))) return false;
+      if (sessionVersion !== writeSession) return false;
+
+      if (isNew.value && createdId.value !== undefined) {
+        const newId = createdId.value;
+        if (recordsetKey.value) appendRecordsetId(recordsetKey.value, newId);
+        await stackNav.replace({ path: options.editPath(newId), query: editorQuery.value });
       }
 
       return true;

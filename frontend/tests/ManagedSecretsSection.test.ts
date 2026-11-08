@@ -15,6 +15,7 @@ const storedSecret = {
 describe('ManagedSecretsSection', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
 
@@ -98,5 +99,26 @@ describe('ManagedSecretsSection', () => {
 
     expect(wrapper.get('button[aria-label="Create secret"]').attributes('disabled')).toBeUndefined();
     expect(wrapper.text()).not.toContain('Save this item before creating secrets.');
+  });
+
+  it.each([true, false])('masks secret entry with CSS support=%s and preserves the exact value', async (supported) => {
+    vi.stubGlobal('CSS', { supports: () => supported });
+    const wrapper = mount(ManagedSecretModal, {
+      props: { open: true, secret: null, saving: false, error: null },
+      global: { stubs: { teleport: true } },
+    });
+    const inputs = wrapper.findAll('input');
+    await inputs[0]!.setValue('API token');
+    await inputs[1]!.setValue('API_TOKEN');
+    const valueInput = wrapper.get('.managed-secret-modal__value');
+    expect(valueInput.attributes('type')).toBe(supported ? 'text' : 'password');
+    expect(valueInput.attributes('autocomplete')).toBe('off');
+    expect(valueInput.attributes('spellcheck')).toBe('false');
+    await valueInput.setValue('  exact-token  ');
+    await wrapper.get('button.primary').trigger('click');
+    expect(wrapper.emitted('save')).toEqual([[{
+      name: 'API token', env_name: 'API_TOKEN', description: '', value: '  exact-token  ',
+    }]]);
+    wrapper.unmount();
   });
 });

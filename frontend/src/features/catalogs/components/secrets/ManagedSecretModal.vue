@@ -49,9 +49,13 @@
         {{ editing ? translate('New value') : translate('Value') }}
         <input
           v-model="form.value"
-          class="full"
-          type="password"
-          autocomplete="new-password"
+          class="full managed-secret-modal__value"
+          :type="supportsTextSecurity ? 'text' : 'password'"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          data-1p-ignore
+          data-lpignore="true"
           spellcheck="false"
           :disabled="saving"
         />
@@ -101,6 +105,9 @@ const form = reactive<ManagedSecretInput>({
   description: '',
   value: '',
 });
+
+// Secret values are not login credentials; retain masking on older browsers too.
+const supportsTextSecurity = globalThis.CSS?.supports?.('-webkit-text-security', 'disc') === true;
 
 const editing = computed(() => props.secret !== null);
 const title = computed(() => translate(editing.value ? 'Edit secret' : 'Create secret'));
@@ -154,6 +161,10 @@ function submit() {
   height: 84px;
   min-height: 84px;
   resize: vertical;
+}
+
+.managed-secret-modal__value {
+  -webkit-text-security: disc;
 }
 
 .managed-secret-modal__hint {

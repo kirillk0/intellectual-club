@@ -360,6 +360,7 @@ const editor = useCrudEditor<KnowledgeBlockForm>({
   onDocument: (payload) => {
     tagsDraft.applyDocument(payload);
   },
+  saveRelated: (payload) => saveRelated(toIntId(payload.data.id)),
 });
 
 const form = editor.form;
@@ -520,54 +521,51 @@ function clearField(field: 'name' | 'version') {
 const save = async () => {
   if (saving.value) return;
   const contentDraftKeyBeforeSave = knowledgeBlockContentDraftStorageKey.value;
+
+  suppressFilesAutoLoad.value = true;
+  try {
+    if (await editor.save()) knowledgeBlockContentDraft.clear(contentDraftKeyBeforeSave);
+  } finally {
+    suppressFilesAutoLoad.value = false;
+  }
+};
+
+async function saveRelated(blockId: number | null): Promise<boolean> {
+  if (!blockId) return false;
   const spec = linkSpec.value;
-  const wasNew = editor.isNew.value;
-  const shouldLinkOwner = wasNew && Boolean(spec) && !linkedAfterCreate.value;
+  const shouldLinkOwner = routeIsNew.value && Boolean(spec) && !linkedAfterCreate.value;
   const shouldSyncFiles = fileBindings.loaded.value && fileBindings.dirty.value && !sharedReadonly.value;
   const shouldSyncSecrets =
     managedSecrets.loaded.value && managedSecretsDirty.value && !sharedReadonly.value;
 
-  if (shouldSyncFiles) suppressFilesAutoLoad.value = true;
-
-  const saved = await editor.save();
-  if (!saved) {
-    suppressFilesAutoLoad.value = false;
-    return;
-  }
-
-  knowledgeBlockContentDraft.clear(contentDraftKeyBeforeSave);
-
   if (shouldLinkOwner && spec) {
-    const newId = editor.numericId.value;
-    if (newId) await linkToOwner(spec, newId);
+    await linkToOwner(spec, blockId);
   }
 
+  let saved = true;
   try {
     if (shouldSyncFiles) {
-      const blockId = editor.numericId.value;
-      if (!blockId) throw new Error('Saved knowledge block id is missing.');
       await fileBindings.sync(blockId);
     }
   } catch (error) {
     console.error(error);
+    saved = false;
     blockTab.value = 'files';
     alert(getApiErrorMessage(error, 'Failed to save file changes.'));
-  } finally {
-    suppressFilesAutoLoad.value = false;
   }
 
   try {
     if (shouldSyncSecrets) {
-      const blockId = editor.numericId.value;
-      if (!blockId) throw new Error('Saved knowledge block id is missing.');
       await managedSecrets.sync(blockId);
     }
   } catch (error) {
     console.error(error);
+    saved = false;
     blockTab.value = 'secrets';
     alert(getApiErrorMessage(error, translate('Failed to save secret changes.')));
   }
-};
+  return saved;
+}
 
 const cancelChanges = () => {
   codeEditorRef.value?.resetScroll();
