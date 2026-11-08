@@ -15,7 +15,6 @@ const storedSecret = {
 describe('ManagedSecretsSection', () => {
   afterEach(() => {
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
 
@@ -101,24 +100,45 @@ describe('ManagedSecretsSection', () => {
     expect(wrapper.text()).not.toContain('Save this item before creating secrets.');
   });
 
-  it.each([true, false])('masks secret entry with CSS support=%s and preserves the exact value', async (supported) => {
-    vi.stubGlobal('CSS', { supports: () => supported });
+  it('uses a masked textarea for secret values without creating password-manager inputs', async () => {
     const wrapper = mount(ManagedSecretModal, {
       props: { open: true, secret: null, saving: false, error: null },
       global: { stubs: { teleport: true } },
     });
-    const inputs = wrapper.findAll('input');
-    await inputs[0]!.setValue('API token');
-    await inputs[1]!.setValue('API_TOKEN');
-    const valueInput = wrapper.get('.managed-secret-modal__value');
-    expect(valueInput.attributes('type')).toBe(supported ? 'text' : 'password');
-    expect(valueInput.attributes('autocomplete')).toBe('off');
-    expect(valueInput.attributes('spellcheck')).toBe('false');
-    await valueInput.setValue('  exact-token  ');
+    for (const [index, value] of ['  exact-token  ', 'next-token\nsecond-line'].entries()) {
+      const inputs = wrapper.findAll('input');
+      await inputs[0]!.setValue(`API token ${index}`);
+      await inputs[1]!.setValue(`API_TOKEN_${index}`);
+      const valueInput = wrapper.get('textarea.managed-secret-modal__value');
+      expect(wrapper.find('input[type="password"]').exists()).toBe(false);
+      expect(valueInput.attributes('autocomplete')).toBe('off');
+      expect(valueInput.attributes('spellcheck')).toBe('false');
+      expect((valueInput.element as HTMLTextAreaElement).value).toBe('');
+      await valueInput.setValue(value);
+      await wrapper.get('button.primary').trigger('click');
+      expect(wrapper.emitted('save')?.[index]).toEqual([{
+        name: `API token ${index}`, env_name: `API_TOKEN_${index}`, description: '', value,
+      }]);
+      await wrapper.setProps({ open: false });
+      await wrapper.setProps({ open: true });
+    }
+    wrapper.unmount();
+  });
+
+  it('keeps the entered value when validation fails and leaves existing secret values unchanged when blank', async () => {
+    const wrapper = mount(ManagedSecretModal, {
+      props: { open: true, secret: storedSecret, saving: false, error: null },
+      global: { stubs: { teleport: true } },
+    });
     await wrapper.get('button.primary').trigger('click');
-    expect(wrapper.emitted('save')).toEqual([[{
-      name: 'API token', env_name: 'API_TOKEN', description: '', value: '  exact-token  ',
-    }]]);
+    expect(wrapper.emitted('save')?.[0]).toEqual([{
+      name: storedSecret.name, env_name: storedSecret.env_name, description: storedSecret.description,
+    }]);
+
+    const valueInput = wrapper.get('textarea.managed-secret-modal__value');
+    await valueInput.setValue('replacement');
+    await wrapper.setProps({ error: 'Environment variable name must be unique.' });
+    expect((valueInput.element as HTMLTextAreaElement).value).toBe('replacement');
     wrapper.unmount();
   });
 });

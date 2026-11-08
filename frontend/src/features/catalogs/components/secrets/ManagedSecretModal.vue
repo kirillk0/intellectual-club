@@ -47,10 +47,11 @@
 
       <label>
         {{ editing ? translate('New value') : translate('Value') }}
-        <input
+        <textarea
           v-model="form.value"
           class="full managed-secret-modal__value"
-          :type="supportsTextSecurity ? 'text' : 'password'"
+          rows="1"
+          wrap="off"
           autocomplete="off"
           autocapitalize="off"
           autocorrect="off"
@@ -106,9 +107,6 @@ const form = reactive<ManagedSecretInput>({
   value: '',
 });
 
-// Secret values are not login credentials; retain masking on older browsers too.
-const supportsTextSecurity = globalThis.CSS?.supports?.('-webkit-text-security', 'disc') === true;
-
 const editing = computed(() => props.secret !== null);
 const title = computed(() => translate(editing.value ? 'Edit secret' : 'Create secret'));
 const envNameValid = computed(() => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(form.env_name.trim()));
@@ -128,11 +126,11 @@ const validationError = computed(() => {
 watch(
   () => [props.open, props.secret] as const,
   ([open, secret]) => {
+    form.value = '';
     if (!open) return;
     form.name = secret?.name || '';
     form.env_name = secret?.env_name || '';
     form.description = secret?.description || '';
-    form.value = '';
   },
   { immediate: true }
 );
@@ -164,7 +162,11 @@ function submit() {
 }
 
 .managed-secret-modal__value {
+  /* Safari treats masked input elements as passwords, including type="text". */
   -webkit-text-security: disc;
+  height: auto;
+  min-height: 0;
+  resize: vertical;
 }
 
 .managed-secret-modal__hint {
