@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
-    RemoveContainerOptions, StartContainerOptions,
+    RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecResults};
@@ -18,7 +18,7 @@ use bollard::Docker;
 use fs2::FileExt;
 use futures_util::{StreamExt, TryStreamExt};
 use outlet_core::ExecutionOutcomeUnknown;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
 use crate::process;
@@ -71,6 +71,7 @@ pub struct ContainerManager {
     runner_id: String,
     store: StdMutex<Store>,
     lifecycle: Mutex<()>,
+    workspace_locks: StdMutex<HashMap<i64, Arc<Mutex<()>>>>,
     failed: AtomicBool,
     shutting_down: AtomicBool,
     _lock: File,
@@ -82,6 +83,9 @@ pub struct ContainerLease {
     pub generation: i64,
     pub recreated: bool,
     pub reset_reason: Option<String>,
+    pub run_epoch: i64,
+    pub restarted: bool,
+    pub restart_reason: Option<String>,
     manager: Arc<ContainerManager>,
     finished: bool,
     // The command currently running for this lease; set before its exec is created.
@@ -92,8 +96,8 @@ pub struct ContainerLease {
 pub enum ExecStop {
     /// Only the command's own processes were stopped; the workspace is intact.
     Stopped,
-    /// The targeted stop failed, so the whole container was removed as a last resort.
-    ContainerDestroyed(String),
+    /// All commands stopped through a restart of the same container; its files survive.
+    ContainerRestarted(String),
 }
 
 impl ContainerLease {
@@ -131,9 +135,14 @@ impl ContainerLease {
         let result = now_millis().and_then(|now| {
             self.manager.with_store(|store| {
                 if acknowledge_notice {
-                    store.release(self.root_chat_id, self.generation, now)
+                    store.release(self.root_chat_id, self.generation, self.run_epoch, now)
                 } else {
-                    store.release_without_notice(self.root_chat_id, self.generation, now)
+                    store.release_without_notice(
+                        self.root_chat_id,
+                        self.generation,
+                        self.run_epoch,
+                        now,
+                    )
                 }
             })
         });
@@ -168,13 +177,19 @@ impl Drop for ContainerLease {
         let manager = Arc::clone(&self.manager);
         let root_chat_id = self.root_chat_id;
         let generation = self.generation;
+        let run_epoch = self.run_epoch;
         let container_id = self.container_id.clone();
         runtime.spawn(async move {
+            let Ok(_guard) = manager.workspace_guard(root_chat_id).await else { return };
+            // Cleanup from an old run must never stop commands in the restarted container.
+            if !manager.is_current(root_chat_id, generation, run_epoch).unwrap_or(false) {
+                return;
+            }
             match manager.stop_execs(&container_id, std::slice::from_ref(&exec_id)).await {
                 Ok(()) => {
                     let released = manager.with_store(|store| {
                         store.exec_finished(&exec_id)?;
-                        store.release_without_notice(root_chat_id, generation, now_millis()?)
+                        store.release_without_notice(root_chat_id, generation, run_epoch, now_millis()?)
                     });
                     if let Err(error) = released {
                         manager.failed.store(true, Ordering::SeqCst);
@@ -182,12 +197,11 @@ impl Drop for ContainerLease {
                     }
                 }
                 Err(stop_error) => {
-                    warn!(root_chat_id, error = %format!("{stop_error:#}"), "cannot stop the processes of an abandoned call; removing its task container");
-                    let _guard = manager.lifecycle.lock().await;
+                    warn!(root_chat_id, error = %format!("{stop_error:#}"), "cannot stop the processes of an abandoned call; restarting its task container");
                     let result: Result<()> = async {
                         if let Some(row) = manager.with_store(|store| store.get(root_chat_id))? {
-                            if row.generation == generation && row.status != "destroyed" {
-                                manager.remove_record(&row, "call_aborted").await?;
+                            if row.generation == generation && row.run_epoch == run_epoch {
+                                manager.restart_record(&row, "call_aborted").await?;
                             }
                         }
                         Ok(())
@@ -235,6 +249,7 @@ impl ContainerManager {
             runner_id: store.runner_id.clone(),
             store: StdMutex::new(store),
             lifecycle: Mutex::new(()),
+            workspace_locks: StdMutex::new(HashMap::new()),
             failed: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             _lock: lock,
@@ -274,6 +289,45 @@ impl ContainerManager {
         Ok(())
     }
 
+    async fn workspace_guard(&self, root_chat_id: i64) -> Result<OwnedMutexGuard<()>> {
+        let lock = self
+            .workspace_locks
+            .lock()
+            .map_err(|_| anyhow!("workspace lock map is poisoned"))?
+            .entry(root_chat_id)
+            .or_default()
+            .clone();
+        Ok(lock.lock_owned().await)
+    }
+
+    fn is_current(&self, root: i64, generation: i64, epoch: i64) -> Result<bool> {
+        Ok(self
+            .with_store(|store| store.get(root))?
+            .is_some_and(|row| {
+                row.generation == generation
+                    && row.run_epoch == epoch
+                    && row.status == "ready"
+                    && !row.restart_pending
+            }))
+    }
+
+    pub fn ensure_current(&self, lease: &ContainerLease) -> Result<()> {
+        if !self.is_current(lease.root_chat_id, lease.generation, lease.run_epoch)? {
+            return Err(anyhow!(ExecutionOutcomeUnknown(
+                "The workspace was restarted while this call was in flight. Files were preserved, but the command outcome is unknown; do not automatically retry it.".to_string()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Serialize exec startup and archive transfers against recovery of this workspace.
+    pub async fn operation_guard(&self, lease: &ContainerLease) -> Result<OwnedMutexGuard<()>> {
+        let guard = self.workspace_guard(lease.root_chat_id).await?;
+        self.healthy()?;
+        self.ensure_current(lease)?;
+        Ok(guard)
+    }
+
     pub async fn acquire(
         self: &Arc<Self>,
         root_chat_id: i64,
@@ -283,40 +337,25 @@ impl ContainerManager {
             bail!("a positive server-issued root_chat_id and user_id are required");
         }
         let mut resolved_image = None;
+        let _workspace_guard = self.workspace_guard(root_chat_id).await?;
         loop {
             let _guard = self.lifecycle.lock().await;
             self.healthy()?;
-            let previous = self.with_store(|store| store.get(root_chat_id))?;
+            let mut previous = self.with_store(|store| store.get(root_chat_id))?;
             if let Some(row) = previous.as_ref() {
                 if row.user_id != user_id {
                     bail!("workspace belongs to a different user");
                 }
-                match row.status.as_str() {
-                    "ready" => match self.inspect_owned(row).await? {
-                        Some(container) if running(&container) => return self.lease(row),
-                        Some(_) => self.remove_record(row, "container_stopped").await?,
-                        None => self.with_store(|store| {
-                            store.destroyed(
-                                root_chat_id,
-                                row.generation,
-                                "container_missing",
-                                now_millis()?,
-                            )
-                        })?,
-                    },
-                    "creating" | "deleting" => {
-                        let reason = row
-                            .reset_reason
-                            .as_deref()
-                            .unwrap_or("interrupted_container_creation");
-                        self.remove_record(row, reason).await?;
+                if row.status != "destroyed" {
+                    self.reconcile(row, false).await?;
+                    previous = self.with_store(|store| store.get(root_chat_id))?;
+                    if let Some(row) = previous.as_ref().filter(|row| row.status == "ready") {
+                        return self.lease(row);
                     }
-                    "destroyed" => {}
-                    _ => bail!("invalid container lifecycle state"),
                 }
             }
             if resolved_image.is_none() {
-                // Pulling may take minutes; never block emergency deletion of another workspace.
+                // Pulling may take minutes; never block allocation of another workspace.
                 drop(_guard);
                 resolved_image = Some(
                     tokio::time::timeout(Duration::from_secs(900), self.resolve_image())
@@ -329,8 +368,13 @@ impl ContainerManager {
                 .as_ref()
                 .expect("image resolved before creation");
             self.maintain().await?;
-            let row = self
-                .with_store(|store| store.reserve_creation(root_chat_id, user_id, now_millis()?))?;
+            // An interrupted create with no Docker object resumes its reserved identity.
+            let row = match previous.filter(|row| row.status == "creating") {
+                Some(row) => row,
+                None => self.with_store(|store| {
+                    store.reserve_creation(root_chat_id, user_id, now_millis()?)
+                })?,
+            };
             let labels = HashMap::from([
                 (RUNNER_LABEL.to_string(), self.runner_id.clone()),
                 (ROOT_LABEL.to_string(), root_chat_id.to_string()),
@@ -401,6 +445,12 @@ impl ContainerManager {
             generation: row.generation,
             recreated: row.notice_pending,
             reset_reason: row.notice_pending.then_some(row.reset_reason).flatten(),
+            run_epoch: row.run_epoch,
+            restarted: row.restart_notice_pending,
+            restart_reason: row
+                .restart_notice_pending
+                .then_some(row.restart_reason)
+                .flatten(),
             manager: Arc::clone(self),
             finished: false,
             active_exec: StdMutex::new(None),
@@ -409,11 +459,13 @@ impl ContainerManager {
 
     /// Persist a new command for `lease` before its exec is created.
     pub fn begin_exec(&self, lease: &ContainerLease) -> Result<String> {
+        self.ensure_current(lease)?;
         let exec_id = process::new_exec_id();
         let persisted = self.with_store(|store| {
             store.exec_started(
                 lease.root_chat_id,
                 lease.generation,
+                lease.run_epoch,
                 &exec_id,
                 now_millis()?,
             )
@@ -439,14 +491,18 @@ impl ContainerManager {
         }
     }
 
-    /// Stop exactly one interrupted command. Only if that cannot be confirmed is the whole
-    /// container removed; an unconfirmed removal is an unknown execution outcome.
+    /// Stop one interrupted command, falling back to restarting the same container.
     pub async fn stop_exec(
         &self,
         lease: &ContainerLease,
         exec_id: &str,
         reason: &str,
     ) -> Result<ExecStop> {
+        let _guard = self.workspace_guard(lease.root_chat_id).await?;
+        if !self.is_current(lease.root_chat_id, lease.generation, lease.run_epoch)? {
+            lease.clear_exec(exec_id);
+            self.ensure_current(lease)?;
+        }
         match self
             .stop_execs(&lease.container_id, &[exec_id.to_string()])
             .await
@@ -457,14 +513,17 @@ impl ContainerManager {
             }
             Err(stop_error) => {
                 let stop_error = format!("{stop_error:#}");
-                warn!(root_chat_id = lease.root_chat_id, error = %stop_error, "targeted command stop failed; removing the task container");
-                self.destroy(lease, reason).await.map_err(|error| {
+                warn!(root_chat_id = lease.root_chat_id, error = %stop_error, "targeted command stop failed; restarting the task container");
+                let row = self
+                    .with_store(|store| store.get(lease.root_chat_id))?
+                    .context("missing container record during emergency restart")?;
+                self.restart_record(&row, reason).await.map_err(|error| {
                     anyhow!(ExecutionOutcomeUnknown(format!(
-                        "Cannot stop the command ({stop_error}) or confirm emergency container removal; execution outcome is unknown. Administrator intervention may be required: {error:#}"
+                        "Cannot stop the command ({stop_error}) or confirm emergency container restart; execution outcome is unknown. The container and its files were retained, and new commands are blocked until recovery succeeds: {error:#}"
                     )))
                 })?;
                 lease.clear_exec(exec_id);
-                Ok(ExecStop::ContainerDestroyed(stop_error))
+                Ok(ExecStop::ContainerRestarted(stop_error))
             }
         }
     }
@@ -515,47 +574,71 @@ impl ContainerManager {
             .context("process stop helper timed out")?
     }
 
-    pub async fn destroy(&self, lease: &ContainerLease, reason: &str) -> Result<()> {
-        let _guard = self.lifecycle.lock().await;
-        if let Some(row) = self.with_store(|store| store.get(lease.root_chat_id))? {
-            if row.generation == lease.generation && row.status != "destroyed" {
-                self.remove_record(&row, reason).await?;
+    /// The durable restart intent fences old calls even if Docker or the runner fails midway.
+    /// Caller holds the workspace gate; no command can start until recovery is committed.
+    async fn restart_record(&self, row: &ContainerRecord, reason: &str) -> Result<()> {
+        let row = self
+            .with_store(|store| store.restarting(row, reason, now_millis()?))
+            .inspect_err(|_| self.failed.store(true, Ordering::SeqCst))?;
+        let restart = async {
+            let container = self
+                .inspect_owned(&row)
+                .await?
+                .context("container disappeared during restart")?;
+            let id = container
+                .id
+                .as_deref()
+                .context("Docker inspect response has no container id")?;
+            if running(&container) {
+                self.docker
+                    .stop_container(id, Some(StopContainerOptions { t: 2 }))
+                    .await
+                    .context("failed to stop task container; files retained")?;
             }
-        }
-        Ok(())
+            let stopped = self
+                .inspect_owned(&row)
+                .await?
+                .context("container disappeared after stop")?;
+            if running(&stopped) {
+                bail!("Docker has not confirmed that all container processes stopped");
+            }
+            self.docker
+                .start_container(id, None::<StartContainerOptions<String>>)
+                .await
+                .context("failed to start task container; files retained")?;
+            let started = self
+                .inspect_owned(&row)
+                .await?
+                .context("container disappeared after start")?;
+            if !running(&started) {
+                bail!("Docker has not confirmed the container is running; files retained");
+            }
+            self.with_store(|store| store.restarted(&row, now_millis()?))
+                .inspect_err(|_| self.failed.store(true, Ordering::SeqCst))?;
+            info!(
+                root_chat_id = row.root_chat_id,
+                generation = row.generation,
+                run_epoch = row.run_epoch,
+                container_id = id,
+                reason,
+                "task container restarted; workspace files preserved"
+            );
+            Ok(())
+        };
+        tokio::time::timeout(STOP_DEADLINE, restart)
+            .await
+            .context("task container restart timed out; files retained and recovery pending")?
     }
 
     pub async fn shutdown(&self) -> Result<()> {
         self.shutting_down.store(true, Ordering::SeqCst);
-        let _guard = self.lifecycle.lock().await;
-        let rows = self.with_store(|store| store.records())?;
-        for row in rows {
-            match row.status.as_str() {
-                "destroyed" => {}
-                "ready" => {
-                    // Stop orphaned commands, not the workspace: files and idle daemons survive.
-                    let exec_ids = self.with_store(|store| {
-                        store.unconfirmed_execs(row.root_chat_id, row.generation)
-                    })?;
-                    let Some(container_id) = row.container_id.as_deref() else {
-                        continue;
-                    };
-                    match self.stop_execs(container_id, &exec_ids).await {
-                        Ok(()) => self.with_store(|store| {
-                            exec_ids.iter().try_for_each(|id| store.exec_finished(id))
-                        })?,
-                        Err(error) => {
-                            warn!(root_chat_id = row.root_chat_id, error = %format!("{error:#}"), "cannot stop running commands at shutdown; removing the task container");
-                            self.remove_record(&row, "runner_shutdown_during_call")
-                                .await?;
-                        }
-                    }
-                }
-                _ => {
-                    self.remove_record(&row, "runner_shutdown_during_lifecycle_change")
-                        .await?
-                }
-            }
+        for row in self.with_store(|store| store.records())? {
+            let _workspace_guard = self.workspace_guard(row.root_chat_id).await?;
+            let _guard = self.lifecycle.lock().await;
+            let Some(row) = self.with_store(|store| store.get(row.root_chat_id))? else {
+                continue;
+            };
+            self.reconcile(&row, true).await?;
         }
         Ok(())
     }
@@ -563,38 +646,7 @@ impl ContainerManager {
     async fn recover(&self) -> Result<()> {
         let _guard = self.lifecycle.lock().await;
         for row in self.with_store(|store| store.records())? {
-            if row.status == "destroyed" {
-                continue;
-            }
-            let unconfirmed = row.status == "ready"
-                && !self
-                    .with_store(|store| store.unconfirmed_execs(row.root_chat_id, row.generation))?
-                    .is_empty();
-            if row.status == "ready" && (row.active_calls > 0 || unconfirmed) {
-                self.recover_interrupted_calls(&row).await?;
-            } else if row.status == "creating" {
-                self.remove_record(&row, "runner_restarted_during_creation")
-                    .await?;
-            } else if row.status == "deleting" {
-                let reason = row
-                    .reset_reason
-                    .as_deref()
-                    .unwrap_or("interrupted_container_deletion");
-                self.remove_record(&row, reason).await?;
-            } else {
-                match self.inspect_owned(&row).await? {
-                    Some(container) if running(&container) => {}
-                    Some(_) => self.remove_record(&row, "container_stopped").await?,
-                    None => self.with_store(|store| {
-                        store.destroyed(
-                            row.root_chat_id,
-                            row.generation,
-                            "container_missing",
-                            now_millis()?,
-                        )
-                    })?,
-                }
-            }
+            self.reconcile(&row, true).await?;
         }
         let known_ids: std::collections::HashSet<String> = self
             .with_store(|store| store.records())?
@@ -610,47 +662,91 @@ impl ContainerManager {
         Ok(())
     }
 
-    /// Calls of a previous runner process cannot complete any more. Stop their commands but
-    /// keep the workspace; remove it only if the commands cannot be stopped.
-    async fn recover_interrupted_calls(&self, row: &ContainerRecord) -> Result<()> {
-        let container = match self.inspect_owned(row).await? {
-            Some(container) if running(&container) => container,
-            Some(_) => return self.remove_record(row, "container_stopped").await,
-            None => {
-                return self.with_store(|store| {
+    /// Reconcile durable state without discarding an existing Docker filesystem.
+    async fn reconcile(&self, row: &ContainerRecord, recover_calls: bool) -> Result<()> {
+        if row.status == "destroyed" {
+            return Ok(());
+        }
+        let Some(container) = self.inspect_owned(row).await? else {
+            // A create with no Docker object can resume using its original reserved name.
+            if row.status != "creating" {
+                self.with_store(|store| {
                     store.destroyed(
                         row.root_chat_id,
                         row.generation,
                         "container_missing",
                         now_millis()?,
                     )
-                })
-            }
-        };
-        let container_id = container
-            .id
-            .ok_or_else(|| anyhow!("Docker inspect response has no container id"))?;
-        let exec_ids =
-            self.with_store(|store| store.unconfirmed_execs(row.root_chat_id, row.generation))?;
-        match self.stop_execs(&container_id, &exec_ids).await {
-            Ok(()) => {
-                self.with_store(|store| {
-                    store.interrupted_calls_stopped(row.root_chat_id, row.generation)
                 })?;
-                info!(
-                    root_chat_id = row.root_chat_id,
-                    generation = row.generation,
-                    stopped_commands = exec_ids.len(),
-                    "stopped commands interrupted by a runner restart; workspace kept"
-                );
-                Ok(())
             }
-            Err(error) => {
-                warn!(root_chat_id = row.root_chat_id, error = %format!("{error:#}"), "cannot stop commands interrupted by a runner restart; removing the task container");
-                self.remove_record(row, "runner_restarted_during_call")
+            return Ok(());
+        };
+        let id = container
+            .id
+            .as_deref()
+            .context("Docker inspect response has no container id")?;
+        if row.status == "creating" {
+            if !running(&container) {
+                self.docker
+                    .start_container(id, None::<StartContainerOptions<String>>)
                     .await
+                    .context("failed to resume container creation; files retained")?;
+            }
+            self.with_store(|store| {
+                store.ready(
+                    row.root_chat_id,
+                    row.generation,
+                    id,
+                    container.image.as_deref().unwrap_or_default(),
+                )
+            })?;
+            return Ok(());
+        }
+        let mut row = row.clone();
+        let was_deleting = row.status == "deleting";
+        if was_deleting {
+            // Legacy emergency deletions and interrupted evictions both need a fresh policy check.
+            self.with_store(|store| {
+                store.cancel_deletion(
+                    row.root_chat_id,
+                    row.generation,
+                    id,
+                    container.image.as_deref().unwrap_or_default(),
+                )
+            })?;
+            row = self
+                .with_store(|store| store.get(row.root_chat_id))?
+                .context("missing restored container")?;
+        }
+        if was_deleting || row.restart_pending || !running(&container) {
+            return self
+                .restart_record(
+                    &row,
+                    if was_deleting {
+                        "interrupted_container_deletion"
+                    } else {
+                        "container_stopped"
+                    },
+                )
+                .await;
+        }
+        if recover_calls {
+            let exec_ids =
+                self.with_store(|store| store.unconfirmed_execs(row.root_chat_id, row.generation))?;
+            if row.active_calls > 0 || !exec_ids.is_empty() {
+                match self.stop_execs(id, &exec_ids).await {
+                    Ok(()) => self.with_store(|store| {
+                        store.interrupted_calls_stopped(row.root_chat_id, row.generation)
+                    })?,
+                    Err(error) => {
+                        warn!(root_chat_id = row.root_chat_id, error = %format!("{error:#}"),
+                            "cannot stop interrupted commands; restarting task container with files preserved");
+                        self.restart_record(&row, "runner_interrupted_call").await?;
+                    }
+                }
             }
         }
+        Ok(())
     }
 
     async fn inspect_owned(
@@ -686,7 +782,15 @@ impl ContainerManager {
         }
     }
 
-    async fn remove_record(&self, row: &ContainerRecord, reason: &str) -> Result<()> {
+    async fn evict_record(&self, row: &ContainerRecord) -> Result<()> {
+        if !eviction_eligible(row, now_millis()?, self.config.guaranteed_ttl)
+            || !self
+                .with_store(|store| store.unconfirmed_execs(row.root_chat_id, row.generation))?
+                .is_empty()
+        {
+            bail!("cannot evict a busy, protected, or recovering workspace");
+        }
+        let reason = "idle_eviction";
         // Inspect first: the database must never authorize removing a foreign Docker object.
         let container = self.inspect_owned(row).await?;
         self.with_store(|store| store.deleting(row.root_chat_id, row.generation, reason))?;
@@ -709,8 +813,9 @@ impl ContainerManager {
                 Ok(()) => {}
                 Err(error) if not_found(&error) => {}
                 Err(error) => {
-                    return Err(error)
-                        .context("failed to remove task container; deletion will be retried")
+                    return Err(error).context(
+                        "failed to evict task container; retention policy must be checked again",
+                    )
                 }
             }
         }
@@ -807,7 +912,11 @@ impl ContainerManager {
             if !over_target(sizes.len(), total_bytes, &self.config) {
                 break;
             }
-            if !eviction_eligible(&row, now, self.config.guaranteed_ttl) {
+            if !eviction_eligible(&row, now, self.config.guaranteed_ttl)
+                || !self
+                    .with_store(|store| store.unconfirmed_execs(row.root_chat_id, row.generation))?
+                    .is_empty()
+            {
                 continue;
             }
             let bytes = row
@@ -815,7 +924,7 @@ impl ContainerManager {
                 .as_ref()
                 .and_then(|id| sizes.get(id))
                 .copied();
-            self.remove_record(&row, "idle_eviction").await?;
+            self.evict_record(&row).await?;
             if let Some(id) = row.container_id {
                 sizes.remove(&id);
             }
@@ -889,16 +998,14 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn abandoned_lease_releases_idle_allocation_but_keeps_running_command_for_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = config(dir.path().to_path_buf());
-        let mut store = Store::open(&dir.path().join("containers.sqlite3"), "s", "t").unwrap();
+    fn offline_manager(dir: &std::path::Path) -> Arc<ContainerManager> {
+        let cfg = config(dir.to_path_buf());
+        let mut store = Store::open(&dir.join("containers.sqlite3"), "s", "t").unwrap();
         let row = store.reserve_creation(1, 7, 10).unwrap();
         store
             .ready(1, row.generation, "fake-container", "fake-image")
             .unwrap();
-        let manager = Arc::new(ContainerManager {
+        Arc::new(ContainerManager {
             docker: Docker::connect_with_http(
                 "http://127.0.0.1:1",
                 1,
@@ -909,10 +1016,17 @@ mod tests {
             config: cfg,
             store: StdMutex::new(store),
             lifecycle: Mutex::new(()),
+            workspace_locks: StdMutex::new(HashMap::new()),
             failed: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
-            _lock: File::create(dir.path().join("runner.lock")).unwrap(),
-        });
+            _lock: File::create(dir.join("runner.lock")).unwrap(),
+        })
+    }
+
+    #[test]
+    fn abandoned_lease_releases_idle_allocation_but_keeps_running_command_for_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = offline_manager(dir.path());
         let row = manager.with_store(|store| store.get(1)).unwrap().unwrap();
         let mut completed = manager.lease(&row).unwrap();
         let exec_id = manager.begin_exec(&completed).unwrap();
@@ -940,6 +1054,37 @@ mod tests {
                 .unwrap(),
             vec![exec_id]
         );
+    }
+
+    #[tokio::test]
+    async fn failed_restart_retains_container_and_blocks_work_until_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = offline_manager(dir.path());
+        let original = manager.with_store(|store| store.get(1)).unwrap().unwrap();
+        let lease = manager.lease(&original).unwrap();
+        let exec = manager.begin_exec(&lease).unwrap();
+        assert!(manager
+            .restart_record(&original, "command_timeout")
+            .await
+            .is_err());
+        let pending = manager.with_store(|store| store.get(1)).unwrap().unwrap();
+        assert_eq!(pending.container_id, original.container_id);
+        assert_eq!(pending.container_name, original.container_name);
+        assert_eq!(pending.generation, original.generation);
+        assert_eq!(pending.status, "ready");
+        assert!(pending.restart_pending);
+        assert!(!eviction_eligible(&pending, i64::MAX, Duration::ZERO));
+        assert!(manager.lease(&pending).is_err());
+        assert!(manager.begin_exec(&lease).is_err());
+        assert_eq!(
+            manager
+                .with_store(|store| store.unconfirmed_execs(1, 1))
+                .unwrap(),
+            [exec]
+        );
+        drop(lease);
+        let store = Store::open(&dir.path().join("containers.sqlite3"), "s", "t").unwrap();
+        assert!(store.get(1).unwrap().unwrap().restart_pending);
     }
 
     fn test_docker() -> Docker {
@@ -1042,6 +1187,202 @@ mod tests {
         Ok(table.lines().filter(|line| line.contains(needle)).count())
     }
 
+    async fn start_tracked_sleep(
+        manager: &ContainerManager,
+        lease: &ContainerLease,
+    ) -> Result<(String, String)> {
+        let _guard = manager.operation_guard(lease).await?;
+        let tracked = manager.begin_exec(lease)?;
+        let exec = manager
+            .docker
+            .create_exec(
+                &lease.container_id,
+                CreateExecOptions {
+                    attach_stdout: Some(true),
+                    env: Some(vec![format!("{}={tracked}", process::EXEC_ID_ENV)]),
+                    cmd: Some(process::wrap_command(vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf ready; exec sleep 3181".into(),
+                    ])),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let StartExecResults::Attached { mut output, .. } =
+            manager.docker.start_exec(&exec.id, None).await?
+        else {
+            bail!("exec detached");
+        };
+        let marker = tokio::time::timeout(Duration::from_secs(10), output.next())
+            .await?
+            .context("missing ready marker")??;
+        anyhow::ensure!(marker.into_bytes().as_ref() == b"ready");
+        Ok((tracked, exec.id))
+    }
+
+    // Fail only the selective stop helper, leaving all normal commands and the entrypoint usable.
+    const FAIL_STOP_HELPER: &str = r#"rm /bin/sh; printf '%s\n' '#!/bin/dash' 'if [ "$3" = outlet-stop ]; then exit 77; fi' 'exec /bin/dash "$@"' > /bin/sh; chmod 755 /bin/sh"#;
+
+    #[tokio::test]
+    #[ignore = "requires a Linux Docker Engine; uses only a temporary labelled namespace"]
+    async fn docker_failed_selective_stop_restarts_and_fences_old_leases() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ContainerManager::open(test_docker(), config(dir.path().into()), "s", "t")
+            .await
+            .unwrap();
+        let result: Result<()> = async {
+            let mut first = manager.acquire(1, 7).await?;
+            let old = manager.acquire(1, 7).await?;
+            exec_output(
+                manager.docker(),
+                &first.container_id,
+                "printf retained > /workspace/file",
+            )
+            .await?;
+            exec_output(manager.docker(), &first.container_id, FAIL_STOP_HELPER).await?;
+            let (first_tracked, first_exec) = start_tracked_sleep(&manager, &first).await?;
+            let (_, old_exec) = start_tracked_sleep(&manager, &old).await?;
+            anyhow::ensure!(matches!(
+                manager
+                    .stop_exec(&first, &first_tracked, "command_timeout")
+                    .await?,
+                ExecStop::ContainerRestarted(_)
+            ));
+            anyhow::ensure!(manager.docker.inspect_exec(&first_exec).await?.running != Some(true));
+            anyhow::ensure!(manager.docker.inspect_exec(&old_exec).await?.running != Some(true));
+            let mut current = manager.acquire(1, 7).await?;
+            anyhow::ensure!(
+                current.container_id == first.container_id
+                    && current.generation == first.generation
+            );
+            anyhow::ensure!(current.restarted && !current.recreated && current.run_epoch == 1);
+            anyhow::ensure!(
+                exec_output(
+                    manager.docker(),
+                    &current.container_id,
+                    "cat /workspace/file"
+                )
+                .await?
+                    == "retained"
+            );
+            anyhow::ensure!(manager.begin_exec(&old).is_err());
+            let (current_tracked, current_exec) = start_tracked_sleep(&manager, &current).await?;
+            first.finish()?;
+            drop(first);
+            drop(old);
+            // Wait for abandoned-lease cleanup to release its Arc, without a timing assumption.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while Arc::strong_count(&manager) > 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            anyhow::ensure!(
+                manager.docker.inspect_exec(&current_exec).await?.running == Some(true),
+                "old cleanup stopped new work"
+            );
+            let row = manager.with_store(|store| store.get(1))?.context("row")?;
+            anyhow::ensure!(row.active_calls == 1 && row.restart_notice_pending);
+            exec_output(
+                manager.docker(),
+                &current.container_id,
+                "rm /bin/sh; ln -s dash /bin/sh",
+            )
+            .await?;
+            anyhow::ensure!(matches!(
+                manager
+                    .stop_exec(&current, &current_tracked, "test_finished")
+                    .await?,
+                ExecStop::Stopped
+            ));
+            current.finish()?;
+            Ok(())
+        }
+        .await;
+        cleanup(&manager).await;
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a Linux Docker Engine; uses only a temporary labelled namespace"]
+    async fn docker_recovery_retains_stopped_creating_deleting_and_interrupted_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config(dir.path().into());
+        cfg.max_containers = 10;
+        let docker = test_docker();
+        let manager = ContainerManager::open(docker.clone(), cfg.clone(), "s", "t")
+            .await
+            .unwrap();
+        let result: Result<_> = async {
+            let mut ids = Vec::new();
+            for root in 1..=4 {
+                let mut lease = manager.acquire(root, 7).await?;
+                exec_output(
+                    &docker,
+                    &lease.container_id,
+                    "printf retained > /workspace/file",
+                )
+                .await?;
+                ids.push(lease.container_id.clone());
+                if root == 4 {
+                    exec_output(&docker, &lease.container_id, FAIL_STOP_HELPER).await?;
+                    start_tracked_sleep(&manager, &lease).await?;
+                    // Persist an interrupted call without allowing Drop to clean it up.
+                    lease.finished = true;
+                } else {
+                    lease.finish()?;
+                }
+            }
+            docker
+                .stop_container(&ids[0], Some(StopContainerOptions { t: 0 }))
+                .await?;
+            // Simulate durable states written by the previous runner just before its crash.
+            manager.with_store(|store| {
+                store.test_mark_creating(2)?;
+                store.test_mark_creating(3)?;
+                store.deleting(3, 1, "command_timeout")
+            })?;
+            Ok(ids)
+        }
+        .await;
+        if result.is_err() {
+            cleanup(&manager).await;
+        }
+        let ids = result.unwrap();
+        drop(manager);
+        let manager = ContainerManager::open(docker.clone(), cfg, "s", "t")
+            .await
+            .unwrap();
+        let result: Result<()> = async {
+            for (offset, id) in ids.iter().enumerate() {
+                let root = offset as i64 + 1;
+                let mut lease = manager.acquire(root, 7).await?;
+                anyhow::ensure!(
+                    lease.container_id == *id && lease.generation == 1 && !lease.recreated
+                );
+                anyhow::ensure!(
+                    exec_output(&docker, id, "cat /workspace/file").await? == "retained"
+                );
+                lease.finish()?;
+            }
+            anyhow::ensure!(count_processes(&docker, &ids[3], "sleep 3181").await? == 0);
+            // Shutdown must use the same non-destructive fallback.
+            let mut lease = manager.acquire(4, 7).await?;
+            start_tracked_sleep(&manager, &lease).await?;
+            manager.shutdown().await?;
+            anyhow::ensure!(
+                exec_output(&docker, &ids[3], "cat /workspace/file").await? == "retained"
+            );
+            anyhow::ensure!(count_processes(&docker, &ids[3], "sleep 3181").await? == 0);
+            lease.finish()?;
+            Ok(())
+        }
+        .await;
+        cleanup(&manager).await;
+        result.unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "requires a local Docker Engine; uses only a temporary labelled namespace"]
     async fn docker_restart_stops_orphaned_commands_and_keeps_workspaces() {
@@ -1067,7 +1408,7 @@ mod tests {
         manager
             .with_store(|store| {
                 store.acquire(2, 1, now_millis()?)?;
-                store.exec_started(2, 1, &orphan, now_millis()?)
+                store.exec_started(2, 1, 0, &orphan, now_millis()?)
             })
             .unwrap();
         let exec = docker

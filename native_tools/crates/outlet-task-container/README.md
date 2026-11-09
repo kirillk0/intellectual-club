@@ -100,7 +100,9 @@ snapshot per branch. Do not concurrently overwrite the same file unless intended
 See `docs/outlets.md` for lineage changes, the 100-hop bound and legacy-context behavior.
 
 `containers.sqlite3` stores stable runner identity, outlet binding, container generations,
-creation/deletion intents, active leases, `last_used_at` and destroyed-state tombstones.
+creation/deletion/restart intents, active leases, `last_used_at` and destroyed-state tombstones.
+A separate run epoch fences commands and leases from before a container restart; the
+container generation and Docker identity change only when the old container is absent.
 It uses WAL and FULL synchronous durability. A data-directory lock prevents two processes
 using one state database. Reuse the directory across restarts, and use a separate one
 for each outlet. The database is bound to server URL and a token fingerprint; changing
@@ -109,8 +111,9 @@ runner. Back up the SQLite database with its backup API, or stop the runner and 
 the entire directory including any WAL files.
 
 Labels only mark ownership. Names include runner ID, root chat and generation. Only
-verified owned containers are removed. Missing/stopped containers are recreated on the
-next call; replies include a warning, reset reason and workspace generation. A Docker
+verified owned containers eligible for idle eviction are removed. A stopped container is
+started again with its writable layer intact. Only an actually missing container gets a
+replacement; replies include a warning, reset reason and workspace generation. A Docker
 communication error is **not** interpreted as a missing container. No command is silently
 replayed after an uncertain result.
 
@@ -118,9 +121,11 @@ Idle containers and their timestamps survive a clean restart. Each command is re
 in SQLite before it starts and forgotten once its exit is confirmed. A clean shutdown
 stops the commands still running; after a crash, startup stops the recorded commands of
 the previous process. Both keep the workspace files and the daemons of commands that
-had completed; only if the processes cannot be stopped is that container removed (its
-next call reports the lost workspace). An aborted call future stops its own command the
-same way. Background result/progress records remain in `outlet-core` memory and do not
+had completed. If selective stopping fails, the same container is stopped and started:
+all its processes terminate, while installed packages and workspace files remain. An
+aborted call future uses the same recovery. Interrupted creates resume the same container;
+legacy deletion intents are canceled when the container still exists, with eviction
+requiring a fresh retention check. Background result/progress records remain in `outlet-core` memory and do not
 survive a runner process restart; SQLite does not pretend to recover a command result it
 cannot know.
 
@@ -154,7 +159,7 @@ Docker metadata and SQLite. Container logging is disabled to avoid unbounded Doc
 Lazy cleanup cannot enforce a hard disk budget while existing containers keep writing.
 Monitor actual host free space; do not use the soft target as a filesystem quota.
 
-A **command timeout or `background_cancel` stops only that command**: Docker cannot
+A **command timeout or `background_cancel` first stops only that command**: Docker cannot
 signal an exec, so every command runs under a small wrapper shell that stays its session
 leader and carries a unique `OUTLET_EXEC_ID` environment value (reserved; user `env`
 cannot set it). A separate helper exec sends `SIGTERM`, then `SIGKILL` after 2 seconds, to
@@ -162,20 +167,25 @@ all processes that carry the id, run in a session led by one of them, or descend
 them, so `nohup`, `setsid`, double-forked and cleared-environment children are included.
 Concurrent commands, files and daemons started by other commands are unaffected; the
 result reports `processes_stopped`. Only if the stop cannot be confirmed (helper failure,
-unkillable process) is the whole container removed as a last resort
-(`container_destroyed`). A process that both clears its environment and leaves the
+unkillable process) is the same container restarted (`container_restarted`,
+`files_preserved`); all concurrent commands stop, but files remain. The restart warning
+and `run_epoch` are also reported on the next call. If Docker cannot confirm recovery,
+the container is retained and new commands are blocked until recovery succeeds. No
+error path deletes a container to make it usable again. A process that both clears its environment and leaves the
 session of its command would escape; this is not a security boundary. An interrupted file
 transfer may leave a partial destination file but does not reset the workspace.
 OOM/process/CPU limits are emergency host protection, not tenant policies. OOM may kill only the offending exec rather than PID 1;
 a surviving container can retain its files. There is no global resource watchdog: size
 memory limits for your host and use a dedicated machine for untrusted workloads.
-The TTL guarantee covers housekeeping, not OOM, manual removal, failures or cancellation.
+Automatic deletion requires both retention pressure and expiration of the idle TTL.
+OOM, failure, cancellation and runner shutdown do not authorize deletion. External
+manual removal and host storage loss can still destroy files.
 
 Stopping a foreground chat generation does **not** cancel a command already dispatched
 to an outlet: the current transport has no foreground-cancel operation. It runs until
 completion or its runner-side timeout. Use the background wrapper for long work needing
 explicit cancellation. Image preparation precedes the command timeout and has a separate
-15-minute deadline; image pulls do not block emergency deletion of other workspaces.
+15-minute deadline; image pulls do not block recovery of other workspaces.
 
 ## Administration
 

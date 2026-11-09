@@ -18,6 +18,10 @@ pub(crate) struct ContainerRecord {
     pub active_calls: i64,
     pub reset_reason: Option<String>,
     pub notice_pending: bool,
+    pub run_epoch: i64,
+    pub restart_pending: bool,
+    pub restart_reason: Option<String>,
+    pub restart_notice_pending: bool,
 }
 
 pub(crate) struct Store {
@@ -26,6 +30,15 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
+    pub fn test_mark_creating(&self, root: i64) -> Result<()> {
+        self.connection.execute(
+            "UPDATE containers SET status='creating',container_id=NULL WHERE root_chat_id=?1",
+            [root],
+        )?;
+        Ok(())
+    }
+
     pub fn open(path: &Path, server_url: &str, token: &str) -> Result<Self> {
         let mut connection = Connection::open(path).context("failed to open container database")?;
         connection.busy_timeout(Duration::from_secs(5))?;
@@ -55,6 +68,24 @@ impl Store {
                started_at INTEGER NOT NULL
              );",
         )?;
+        // Preserve existing workspaces when upgrading databases from older runners.
+        for (column, definition) in [
+            ("run_epoch", "INTEGER NOT NULL DEFAULT 0"),
+            ("restart_pending", "INTEGER NOT NULL DEFAULT 0"),
+            ("restart_reason", "TEXT"),
+            ("restart_notice_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('containers') WHERE name=?1)",
+                [column],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                connection.execute_batch(&format!(
+                    "ALTER TABLE containers ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
         let binding = format!(
             "{}\n{:x}",
             server_url.trim().trim_end_matches('/'),
@@ -102,7 +133,8 @@ impl Store {
             .connection
             .query_row(
                 "SELECT root_chat_id,user_id,generation,container_id,container_name,status,
-                    last_used_at,active_calls,reset_reason,notice_pending
+                    last_used_at,active_calls,reset_reason,notice_pending,
+                    run_epoch,restart_pending,restart_reason,restart_notice_pending
              FROM containers WHERE root_chat_id=?1",
                 [root_chat_id],
                 decode_record,
@@ -113,7 +145,8 @@ impl Store {
     pub fn records(&self) -> Result<Vec<ContainerRecord>> {
         let mut statement = self.connection.prepare(
             "SELECT root_chat_id,user_id,generation,container_id,container_name,status,
-                    last_used_at,active_calls,reset_reason,notice_pending
+                    last_used_at,active_calls,reset_reason,notice_pending,
+                    run_epoch,restart_pending,restart_reason,restart_notice_pending
              FROM containers ORDER BY last_used_at, root_chat_id",
         )?;
         let records = statement
@@ -151,7 +184,8 @@ impl Store {
              ON CONFLICT(root_chat_id) DO UPDATE SET
                generation=excluded.generation,container_id=NULL,container_name=excluded.container_name,
                image_id=NULL,status='creating',created_at=excluded.created_at,last_used_at=excluded.last_used_at,
-               active_calls=0,destroyed_at=NULL,reset_reason=excluded.reset_reason,notice_pending=excluded.notice_pending",
+               active_calls=0,destroyed_at=NULL,reset_reason=excluded.reset_reason,notice_pending=excluded.notice_pending,
+               run_epoch=0,restart_pending=0,restart_reason=NULL,restart_notice_pending=0",
             params![root_chat_id,user_id,generation,name,now,reset_reason,previous.is_some()],
         )?;
         self.get(root_chat_id)?
@@ -176,7 +210,7 @@ impl Store {
     pub fn acquire(&self, root_chat_id: i64, generation: i64, now: i64) -> Result<ContainerRecord> {
         let changed = self.connection.execute(
             "UPDATE containers SET active_calls=active_calls+1,last_used_at=MAX(last_used_at,?3)
-             WHERE root_chat_id=?1 AND generation=?2 AND status='ready'",
+             WHERE root_chat_id=?1 AND generation=?2 AND status='ready' AND restart_pending=0",
             params![root_chat_id, generation, now],
         )?;
         ensure_changed(changed)?;
@@ -184,32 +218,41 @@ impl Store {
             .ok_or_else(|| anyhow!("missing acquired container record"))
     }
 
-    pub fn release(&self, root_chat_id: i64, generation: i64, now: i64) -> Result<()> {
-        self.release_with_notice(root_chat_id, generation, now, true)
+    pub fn release(
+        &self,
+        root_chat_id: i64,
+        generation: i64,
+        run_epoch: i64,
+        now: i64,
+    ) -> Result<()> {
+        self.release_with_notice(root_chat_id, generation, run_epoch, now, true)
     }
 
     pub fn release_without_notice(
         &self,
         root_chat_id: i64,
         generation: i64,
+        run_epoch: i64,
         now: i64,
     ) -> Result<()> {
-        self.release_with_notice(root_chat_id, generation, now, false)
+        self.release_with_notice(root_chat_id, generation, run_epoch, now, false)
     }
 
     fn release_with_notice(
         &self,
         root_chat_id: i64,
         generation: i64,
+        run_epoch: i64,
         now: i64,
         acknowledge_notice: bool,
     ) -> Result<()> {
-        // A lease from a destroyed generation must never alter a replacement workspace.
+        // Old calls must not alter accounting or acknowledge notices after a restart.
         self.connection.execute(
             "UPDATE containers SET active_calls=MAX(0,active_calls-1),
-               last_used_at=MAX(last_used_at,?3),notice_pending=CASE WHEN ?4 THEN 0 ELSE notice_pending END
-             WHERE root_chat_id=?1 AND generation=?2 AND status='ready'",
-            params![root_chat_id, generation, now, acknowledge_notice],
+               last_used_at=MAX(last_used_at,?3),notice_pending=CASE WHEN ?4 THEN 0 ELSE notice_pending END,
+               restart_notice_pending=CASE WHEN ?4 THEN 0 ELSE restart_notice_pending END
+             WHERE root_chat_id=?1 AND generation=?2 AND status='ready' AND run_epoch=?5 AND restart_pending=0",
+            params![root_chat_id, generation, now, acknowledge_notice, run_epoch],
         )?;
         Ok(())
     }
@@ -221,6 +264,71 @@ impl Store {
             params![root_chat_id, generation, reason],
         )?;
         ensure_changed(changed)
+    }
+
+    /// An interrupted deletion is never resumed blindly, including legacy emergency deletions.
+    pub fn cancel_deletion(
+        &self,
+        root_chat_id: i64,
+        generation: i64,
+        container_id: &str,
+        image_id: &str,
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE containers SET status='ready',reset_reason=NULL,notice_pending=0,
+               container_id=?3,image_id=?4
+             WHERE root_chat_id=?1 AND generation=?2 AND status='deleting'",
+            params![root_chat_id, generation, container_id, image_id],
+        )?;
+        ensure_changed(changed)
+    }
+
+    /// Invalidate old leases before touching Docker. Pending restarts cannot accept work or evict.
+    pub fn restarting(
+        &self,
+        row: &ContainerRecord,
+        reason: &str,
+        now: i64,
+    ) -> Result<ContainerRecord> {
+        if !row.restart_pending {
+            let epoch = row
+                .run_epoch
+                .checked_add(1)
+                .context("container run epoch overflow")?;
+            let changed = self.connection.execute(
+                "UPDATE containers SET run_epoch=?3,restart_pending=1,restart_reason=?4,
+                   restart_notice_pending=1,active_calls=0,last_used_at=MAX(last_used_at,?5)
+                 WHERE root_chat_id=?1 AND generation=?2 AND run_epoch=?6 AND status='ready'",
+                params![
+                    row.root_chat_id,
+                    row.generation,
+                    epoch,
+                    reason,
+                    now,
+                    row.run_epoch
+                ],
+            )?;
+            ensure_changed(changed)?;
+        }
+        self.get(row.root_chat_id)?
+            .context("missing restarting container record")
+    }
+
+    /// Called only after Docker confirms that all old processes stopped and the same container runs.
+    pub fn restarted(&mut self, row: &ContainerRecord, now: i64) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE containers SET restart_pending=0,last_used_at=MAX(last_used_at,?4)
+             WHERE root_chat_id=?1 AND generation=?2 AND run_epoch=?3 AND restart_pending=1",
+            params![row.root_chat_id, row.generation, row.run_epoch, now],
+        )?;
+        ensure_changed(changed)?;
+        transaction.execute(
+            "DELETE FROM execs WHERE root_chat_id=?1",
+            [row.root_chat_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn destroyed(
@@ -249,14 +357,15 @@ impl Store {
         &self,
         root_chat_id: i64,
         generation: i64,
+        run_epoch: i64,
         exec_id: &str,
         now: i64,
     ) -> Result<()> {
         let changed = self.connection.execute(
             "INSERT INTO execs(exec_id,root_chat_id,generation,started_at)
              SELECT ?3,root_chat_id,generation,?4 FROM containers
-             WHERE root_chat_id=?1 AND generation=?2 AND status='ready'",
-            params![root_chat_id, generation, exec_id, now],
+             WHERE root_chat_id=?1 AND generation=?2 AND status='ready' AND run_epoch=?5 AND restart_pending=0",
+            params![root_chat_id, generation, exec_id, now, run_epoch],
         )?;
         ensure_changed(changed)
     }
@@ -317,6 +426,10 @@ fn decode_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerRecord> {
         active_calls: row.get(7)?,
         reset_reason: row.get(8)?,
         notice_pending: row.get(9)?,
+        run_epoch: row.get(10)?,
+        restart_pending: row.get(11)?,
+        restart_reason: row.get(12)?,
+        restart_notice_pending: row.get(13)?,
     })
 }
 
@@ -331,6 +444,7 @@ pub(crate) fn now_millis() -> Result<i64> {
 pub(crate) fn eviction_eligible(record: &ContainerRecord, now: i64, ttl: Duration) -> bool {
     let ttl_ms = i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX);
     record.status == "ready"
+        && !record.restart_pending
         && record.active_calls == 0
         && now.saturating_sub(record.last_used_at) >= ttl_ms
         && now >= record.last_used_at
@@ -339,6 +453,79 @@ pub(crate) fn eviction_eligible(record: &ContainerRecord, now: i64, ttl: Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_fences_old_calls_and_preserves_identity_until_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let mut store = Store::open(&path, "s", "t").unwrap();
+        ready(&mut store, 42, 10);
+        let old = store.acquire(42, 1, 20).unwrap();
+        store.exec_started(42, 1, old.run_epoch, "old", 21).unwrap();
+        let pending = store.restarting(&old, "command_timeout", 30).unwrap();
+        assert_eq!(pending.container_id, old.container_id);
+        assert_eq!(pending.generation, old.generation);
+        assert_eq!(pending.run_epoch, old.run_epoch + 1);
+        assert!(pending.restart_pending);
+        assert!(!eviction_eligible(&pending, 1_000_000, Duration::ZERO));
+        assert!(store.acquire(42, 1, 40).is_err());
+        assert!(store.exec_started(42, 1, 0, "stale", 40).is_err());
+        assert_eq!(store.unconfirmed_execs(42, 1).unwrap(), ["old"]);
+        drop(store);
+
+        let mut store = Store::open(&path, "s", "t").unwrap();
+        let pending = store.get(42).unwrap().unwrap();
+        let resumed = store.restarting(&pending, "runner_restart", 50).unwrap();
+        assert_eq!(resumed.run_epoch, pending.run_epoch);
+        assert_eq!(resumed.restart_reason.as_deref(), Some("command_timeout"));
+        store.restarted(&resumed, 60).unwrap();
+        let current = store.acquire(42, 1, 70).unwrap();
+        store
+            .exec_started(42, 1, current.run_epoch, "new", 71)
+            .unwrap();
+        store.release(42, 1, old.run_epoch, 99_999).unwrap();
+        let current = store.get(42).unwrap().unwrap();
+        assert_eq!(current.active_calls, 1);
+        assert_eq!(current.last_used_at, 70);
+        assert!(current.restart_notice_pending);
+        assert!(!current.notice_pending);
+        assert_eq!(store.unconfirmed_execs(42, 1).unwrap(), ["new"]);
+        store.exec_finished("new").unwrap();
+        store.release(42, 1, current.run_epoch, 80).unwrap();
+        let idle = store.get(42).unwrap().unwrap();
+        assert_eq!(idle.active_calls, 0);
+        assert!(!idle.restart_notice_pending);
+    }
+
+    #[test]
+    fn old_database_migration_retains_workspaces_and_unconfirmed_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite3");
+        let mut store = Store::open(&path, "s", "t").unwrap();
+        let original = ready(&mut store, 42, 10);
+        store.exec_started(42, 1, 0, "orphan", 11).unwrap();
+        for column in [
+            "run_epoch",
+            "restart_pending",
+            "restart_reason",
+            "restart_notice_pending",
+        ] {
+            store
+                .connection
+                .execute_batch(&format!("ALTER TABLE containers DROP COLUMN {column}"))
+                .unwrap();
+        }
+        drop(store);
+        for _ in 0..2 {
+            let store = Store::open(&path, "s", "t").unwrap();
+            let row = store.get(42).unwrap().unwrap();
+            assert_eq!(row.container_id, original.container_id);
+            assert_eq!(row.status, "ready");
+            assert_eq!(row.run_epoch, 0);
+            assert!(!row.restart_pending);
+            assert_eq!(store.unconfirmed_execs(42, 1).unwrap(), ["orphan"]);
+        }
+    }
 
     fn ready(store: &mut Store, root: i64, now: i64) -> ContainerRecord {
         let row = store.reserve_creation(root, 7, now).unwrap();
@@ -358,7 +545,7 @@ mod tests {
             runner_id = store.runner_id.clone();
             let row = ready(&mut store, 42, 100);
             store.acquire(42, row.generation, 200).unwrap();
-            store.release(42, row.generation, 300).unwrap();
+            store.release(42, row.generation, 0, 300).unwrap();
         }
         let mut store = Store::open(&path, "http://server", "token").unwrap();
         assert_eq!(store.runner_id, runner_id);
@@ -394,9 +581,9 @@ mod tests {
         store.acquire(42, 1, 110).unwrap();
         let row = store.get(42).unwrap().unwrap();
         assert!(!eviction_eligible(&row, 100_000, Duration::from_secs(1)));
-        store.release(42, 1, 100_001).unwrap();
+        store.release(42, 1, 0, 100_001).unwrap();
         assert_eq!(store.get(42).unwrap().unwrap().active_calls, 1);
-        store.release(42, 1, 100_002).unwrap();
+        store.release(42, 1, 0, 100_002).unwrap();
         let row = store.get(42).unwrap().unwrap();
         assert!(!eviction_eligible(&row, 100_100, Duration::from_secs(1)));
         assert!(eviction_eligible(&row, 101_002, Duration::from_secs(1)));
@@ -416,7 +603,7 @@ mod tests {
             .ready(42, row.generation, "replacement", "image")
             .unwrap();
         store.acquire(42, 2, 300).unwrap();
-        store.release(42, 1, 999).unwrap();
+        store.release(42, 1, 0, 999).unwrap();
         let row = store.get(42).unwrap().unwrap();
         assert_eq!(row.active_calls, 1);
         assert_eq!(row.last_used_at, 300);
@@ -434,13 +621,13 @@ mod tests {
             .ready(42, row.generation, "replacement", "image")
             .unwrap();
         store.acquire(42, 2, 400).unwrap();
-        store.release_without_notice(42, 2, 500).unwrap();
+        store.release_without_notice(42, 2, 0, 500).unwrap();
         let row = store.get(42).unwrap().unwrap();
         assert_eq!(row.active_calls, 0);
         assert_eq!(row.last_used_at, 500);
         assert!(row.notice_pending);
         store.acquire(42, 2, 600).unwrap();
-        store.release(42, 2, 700).unwrap();
+        store.release(42, 2, 0, 700).unwrap();
         assert!(!store.get(42).unwrap().unwrap().notice_pending);
     }
 
@@ -452,7 +639,7 @@ mod tests {
         ready(&mut store, 1, 10);
         ready(&mut store, 2, 20);
         store.acquire(1, 1, 30).unwrap();
-        store.release(1, 1, 40).unwrap();
+        store.release(1, 1, 0, 40).unwrap();
         store.reserve_creation(3, 7, 50).unwrap();
         drop(store);
         let store = Store::open(&path, "s", "t").unwrap();
@@ -475,10 +662,12 @@ mod tests {
             let mut store = Store::open(&path, "s", "t").unwrap();
             ready(&mut store, 42, 0);
             store.acquire(42, 1, 10).unwrap();
-            store.exec_started(42, 1, "a", 11).unwrap();
-            store.exec_started(42, 1, "b", 12).unwrap();
+            store.exec_started(42, 1, 0, "a", 11).unwrap();
+            store.exec_started(42, 1, 0, "b", 12).unwrap();
             store.exec_finished("a").unwrap();
-            assert!(store.exec_started(42, 2, "stale-generation", 13).is_err());
+            assert!(store
+                .exec_started(42, 2, 0, "stale-generation", 13)
+                .is_err());
         }
         let mut store = Store::open(&path, "s", "t").unwrap();
         assert_eq!(
@@ -492,9 +681,9 @@ mod tests {
             ("ready", 0, false)
         );
         assert!(store.unconfirmed_execs(42, 1).unwrap().is_empty());
-        store.exec_started(42, 1, "c", 20).unwrap();
+        store.exec_started(42, 1, 0, "c", 20).unwrap();
         store.destroyed(42, 1, "command_timeout", 30).unwrap();
         assert!(store.unconfirmed_execs(42, 1).unwrap().is_empty());
-        assert!(store.exec_started(42, 1, "after-destroy", 31).is_err());
+        assert!(store.exec_started(42, 1, 0, "after-destroy", 31).is_err());
     }
 }

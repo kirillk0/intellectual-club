@@ -14,7 +14,7 @@ use bollard::container::{ListContainersOptions, RemoveContainerOptions};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures_util::FutureExt;
 use outlet_core::{BackgroundPool, CallContext, ExecutionContext, ToolProvider, ToolResult};
-use outlet_task_container::manager::{ContainerConfig, ContainerManager, ROOT_LABEL, RUNNER_LABEL};
+use outlet_task_container::manager::{ContainerConfig, ContainerManager, RUNNER_LABEL};
 use outlet_task_container::ContainerOutlet;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -118,45 +118,20 @@ async fn cleanup_namespace(
     namespace: &str,
     config: &ContainerConfig,
 ) -> Result<()> {
-    match ContainerManager::open(docker.clone(), config.clone(), SERVER, TOKEN).await {
-        Ok(manager) => {
-            ensure!(
-                manager.runner_id() == namespace,
-                "test database changed namespace during cleanup"
-            );
-            for id in namespace_containers(docker, namespace).await? {
-                let info = docker.inspect_container(&id, None).await?;
-                let root = info
-                    .config
-                    .and_then(|config| config.labels)
-                    .and_then(|labels| labels.get(ROOT_LABEL).cloned())
-                    .context("test container root label")?
-                    .parse::<i64>()?;
-                let lease = manager.acquire(root, USER).await?;
-                manager.destroy(&lease, "integration_test_cleanup").await?;
-            }
-        }
-        Err(_) => {
-            // A failed assertion may leave a background future holding the DB lock. Killing only
-            // the exact test namespace stops that future and avoids leaking its running command.
-            for id in namespace_containers(docker, namespace).await? {
-                docker
-                    .remove_container(
-                        &id,
-                        Some(RemoveContainerOptions {
-                            force: true,
-                            v: true,
-                            ..Default::default()
-                        }),
-                    )
-                    .await?;
-            }
-        }
+    // Test teardown explicitly removes only containers in this test's private namespace.
+    let _ = config;
+    for id in namespace_containers(docker, namespace).await? {
+        docker
+            .remove_container(
+                &id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    v: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
     }
-    ensure!(
-        namespace_containers(docker, namespace).await?.is_empty(),
-        "test namespace was not completely cleaned"
-    );
     Ok(())
 }
 
@@ -253,6 +228,49 @@ async fn command_io_and_chat_family_routing() {
         let wrong_user = CallContext::new(reqwest::Client::new(), SERVER, TOKEN, CALL)
             .with_execution_context(Some(ExecutionContext { user_id: Some(USER + 1), ..routing(104, 101) }));
         ensure!(provider.call("run_command", json!({"command":"true"}), wrong_user).await.is_err(), "root ownership changed silently");
+        Ok(())
+    }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly selected Linux Docker Engine"]
+async fn emergency_restart_preserves_files_and_reports_interrupted_concurrent_work() {
+    run_case(|fixture| async move {
+        let outlet = Arc::new(provider(fixture.manager.clone())?);
+        let setup = run(&outlet, 701, 701, json!({"command":
+            "printf retained > /workspace/document; rm /bin/sh; printf '%s\\n' '#!/bin/dash' 'if [ \"$3\" = outlet-stop ]; then exit 77; fi' 'exec /bin/dash \"$@\"' > /bin/sh; chmod 755 /bin/sh"
+        })).await?;
+        successful(&setup)?;
+        let id = setup.raw["workspace"]["container_id"].clone();
+        let pool = BackgroundPool::with_default_client(outlet.clone(), SERVER, TOKEN, 3, Duration::from_secs(60));
+        for iteration in 0..3 {
+            let task = format!("interrupted-by-restart-{iteration}");
+            pool.start_background_with_context(&task, "run_command",
+                json!({"command":"printf ready-marker; exec sleep 3190"}), None, Some(routing(702, 701))).await?;
+            wait_background(&pool, &task, |snapshot| snapshot.raw["progress"].as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| entry["text"].as_str().unwrap_or_default().contains("ready-marker")))).await?;
+            let timeout = run(&outlet, 701, 701, json!({"command":"sleep 3191", "timeout_seconds":1})).await?;
+            ensure!(timeout.raw["timed_out"] == true && timeout.raw["container_restarted"] == true
+                && timeout.raw["files_preserved"] == true && timeout.raw["container_destroyed"] == false,
+                "emergency restart was not reported: {}", timeout.text);
+            let interrupted = wait_background(&pool, &task, |snapshot| snapshot.raw["status"] == "failed").await?;
+            ensure!(interrupted.raw["error"]["code"] == "execution_outcome_unknown", "concurrent outcome was misreported: {}", interrupted.text);
+            let retained = run(&outlet, 701, 701, json!({"command":"cat /workspace/document"})).await?;
+            successful(&retained)?;
+            ensure!(retained.raw["stdout"] == "retained" && retained.raw["workspace"]["container_id"] == id
+                && retained.raw["workspace"]["generation"] == 1 && retained.raw["workspace"]["restarted"] == true
+                && retained.raw["workspace"]["recreated"] == false);
+        }
+        let task = "cancel-with-failed-helper";
+        pool.start_background_with_context(task, "run_command", json!({"command":"printf cancel-ready; exec sleep 3192"}),
+            None, Some(routing(701, 701))).await?;
+        wait_background(&pool, task, |snapshot| snapshot.raw["progress"].as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry["text"].as_str().unwrap_or_default().contains("cancel-ready")))).await?;
+        pool.cancel_background(task, "0").await?;
+        wait_background(&pool, task, |snapshot| snapshot.raw["status"] == "canceled").await?;
+        let retained = run(&outlet, 701, 701, json!({"command":"cat /workspace/document"})).await?;
+        successful(&retained)?;
+        ensure!(retained.raw["workspace"]["container_id"] == id && retained.raw["stdout"] == "retained");
         Ok(())
     }).await;
 }

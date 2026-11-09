@@ -80,6 +80,7 @@ impl ContainerOutlet {
         let mut stderr = Capture::new(&secrets);
         let mut stdin_error = None;
         // Tag the command so an interruption can stop exactly its processes.
+        let startup_guard = self.manager.operation_guard(lease).await?;
         let exec_id = self.manager.begin_exec(lease)?;
         env.insert(process::EXEC_ID_ENV.to_string(), exec_id.clone());
         let run = async {
@@ -121,6 +122,7 @@ impl ContainerOutlet {
             else {
                 bail!("Docker exec unexpectedly detached");
             };
+            drop(startup_guard);
             // Write stdin and drain both outputs concurrently to avoid pipe deadlocks.
             let write = async {
                 if let Some(stdin) = &args.stdin {
@@ -170,6 +172,7 @@ impl ContainerOutlet {
         let stop = match &outcome {
             CommandOutcome::Exited(_) => {
                 self.manager.end_exec(lease, &exec_id);
+                self.manager.ensure_current(lease)?;
                 None
             }
             interrupted => {
@@ -183,8 +186,8 @@ impl ContainerOutlet {
             }
         };
         let processes_stopped = matches!(stop, Some(ExecStop::Stopped));
-        let destroyed_after = match &stop {
-            Some(ExecStop::ContainerDestroyed(error)) => Some(error.clone()),
+        let restarted_after = match &stop {
+            Some(ExecStop::ContainerRestarted(error)) => Some(error.clone()),
             _ => None,
         };
         let (out, out_truncated) = stdout.finish(&secrets);
@@ -203,7 +206,8 @@ impl ContainerOutlet {
             "canceled": matches!(outcome, CommandOutcome::Canceled),
             "output_truncated": out_truncated || err_truncated,
             "processes_stopped": processes_stopped,
-            "container_destroyed": destroyed_after.is_some(), "exec_id": exec_id,
+            "container_destroyed": false, "container_restarted": restarted_after.is_some(),
+            "files_preserved": true, "exec_id": exec_id,
             "error": error, "stdin_error": stdin_error,
         });
         let mut text = format!(
@@ -218,8 +222,8 @@ impl ContainerOutlet {
                 _ => "\nCommand outcome is unknown; its remaining processes were stopped. Other commands and workspace files are unaffected.".to_string(),
             });
         }
-        if let Some(stop_error) = &destroyed_after {
-            text.push_str(&format!("\nWARNING: The interrupted command could not be stopped selectively ({stop_error}); the entire shared task container was destroyed. Files and concurrent work are lost. The next call creates a fresh container."));
+        if let Some(stop_error) = &restarted_after {
+            text.push_str(&format!("\nWARNING: The interrupted command could not be stopped selectively ({stop_error}); the same shared task container was restarted. All concurrent commands were stopped; workspace files were preserved. Interrupted commands may have partial effects; do not automatically retry them."));
         }
         if let Some(error) = error {
             text.push_str(&format!("\nError: {error}"));
@@ -238,12 +242,12 @@ impl ContainerOutlet {
     async fn interrupted_transfer(&self, lease: &ContainerLease) -> Result<ToolResult> {
         // The dropped operation may have been running its destination-directory helper.
         if let Some(exec_id) = lease.active_exec() {
-            if let ExecStop::ContainerDestroyed(error) = self
+            if let ExecStop::ContainerRestarted(error) = self
                 .manager
                 .stop_exec(lease, &exec_id, "file_transfer_interrupted")
                 .await?
             {
-                bail!("File transfer interrupted; its helper command could not be stopped ({error}), so the task container was destroyed. The next call creates a fresh workspace.");
+                bail!("File transfer interrupted; its helper command could not be stopped ({error}), so the same task container was restarted. All commands stopped; files were preserved, but the destination may contain a partial file.");
             }
         }
         bail!("File transfer interrupted or timed out; the destination may contain a partial file. Other commands and workspace files are unaffected.")
@@ -296,6 +300,7 @@ impl ContainerOutlet {
             };
             std::future::ready(value)
         });
+        let _transfer_guard = self.manager.operation_guard(lease).await?;
         self.manager
             .docker()
             .upload_to_container_streaming(
@@ -331,6 +336,7 @@ impl ContainerOutlet {
         let temp = TempDir::new().context("Cannot create private file transfer directory")?;
         let archive_path = temp.path().join("archive.tar");
         let mut archive = tokio::fs::File::create(&archive_path).await?;
+        let transfer_guard = self.manager.operation_guard(lease).await?;
         let mut stream = self.manager.docker().download_from_container(
             &lease.container_id,
             Some(DownloadFromContainerOptions { path: path.clone() }),
@@ -350,6 +356,7 @@ impl ContainerOutlet {
             archive.write_all(&chunk).await?;
         }
         archive.flush().await?;
+        drop(transfer_guard);
         drop(archive);
         let output_path = temp.path().join("file");
         let target = output_path.clone();
@@ -405,14 +412,14 @@ impl ToolProvider for ContainerOutlet {
             json!({"type": "string", "description": "Chat file external UUID."});
         download_schema["required"] = json!(["file_id", "local_path"]);
         vec![
-            ToolSpec::new("run_command", "Run a command in the Linux container shared by this chat and its subagents. Files persist between calls until eviction or failure. argv takes precedence over command (/bin/sh -c). Default cwd: /workspace. Use the background wrapper for long cancellable work; stopping foreground chat generation does not cancel a dispatched exec. A timeout or background cancel stops only this command's processes (including its background children); concurrent commands and files are unaffected. Inspect workspace generation and reset warnings in every result. Never automatically retry a command with unknown outcome.", json!({
+            ToolSpec::new("run_command", "Run a command in the Linux container shared by this chat and its subagents. Files persist between calls. Automatic deletion is limited to idle TTL eviction when retention limits are exceeded. argv takes precedence over command (/bin/sh -c). Default cwd: /workspace. Use the background wrapper for long cancellable work; stopping foreground chat generation does not cancel a dispatched exec. A timeout or background cancel first stops this command's processes, including background children. If selective stopping fails, the same container restarts: all concurrent commands stop, but files remain. Inspect workspace generation and reset warnings in every result. Never automatically retry a command with unknown outcome.", json!({
                 "type": "object", "properties": {
                     "command": {"type": "string"},
                     "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "cwd": {"type": "string"},
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                     "stdin": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "description": format!("Command timeout; default {} seconds. On timeout only this command's processes are stopped.", self.default_timeout.as_secs())},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "description": format!("Command timeout; default {} seconds. On timeout this command is stopped; if selective stopping fails, the container restarts with files preserved.", self.default_timeout.as_secs())},
                     "use_secrets": {"type": "array", "items": {"type": "string"}, "description": "Managed secret names to inject into this exec only. Raw progress is suppressed and exact values are redacted from the final output."}
                 }, "additionalProperties": false
             })).with_background_support(),
@@ -455,9 +462,12 @@ impl ToolProvider for ContainerOutlet {
             bail!("Call canceled before command execution");
         }
         let workspace = json!({"root_chat_id": root, "container_id": lease.container_id,
-            "generation": lease.generation, "recreated": lease.recreated, "reset_reason": lease.reset_reason});
+            "generation": lease.generation, "recreated": lease.recreated, "reset_reason": lease.reset_reason,
+            "run_epoch": lease.run_epoch, "restarted": lease.restarted, "restart_reason": lease.restart_reason});
         let notice = if lease.recreated {
             format!("WARNING: The previous task container was lost ({}) and a new one was created (generation {}). Previous files/processes are gone.\n", lease.reset_reason.as_deref().unwrap_or("container_missing"), lease.generation)
+        } else if lease.restarted {
+            format!("WARNING: The shared task container was restarted ({}). Workspace files were preserved; previous commands were stopped and may have partial effects. Do not automatically retry them.\n", lease.restart_reason.as_deref().unwrap_or("container_stopped"))
         } else {
             String::new()
         };
@@ -490,7 +500,7 @@ impl ToolProvider for ContainerOutlet {
             }
         };
         // Only a completed operation may clear its durable busy marker. A dropped future
-        // or unconfirmed emergency stop leaves deletion intent for recovery.
+        // or unconfirmed emergency stop leaves restart intent for recovery.
         if result
             .as_ref()
             .err()
