@@ -21,3 +21,11 @@ server/doc
 server/priv/static/assets
 server/priv/static/cache_manifest.json
 server/tmp
+server/vendor/**/.elixir_ls
+server/vendor/**/_build
+server/vendor/**/cover
+server/vendor/**/deps
+server/vendor/**/doc
+server/vendor/**/erl_crash.dump
+server/vendor/**/test
+server/vendor/**/tmp

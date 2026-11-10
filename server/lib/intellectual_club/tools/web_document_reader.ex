@@ -73,6 +73,8 @@ defmodule IntellectualClub.Tools.WebDocumentReader do
            "text" => text,
            "cached" => cached,
            "content_type" => Map.get(meta, "content_type"),
+           "partial" => get_in(meta, ["metadata", "partial"]) == true,
+           "extraction_metadata" => Map.get(meta, "metadata", %{}),
            "truncated" =>
              get_in(meta, ["metadata", "truncated"]) == true or
                String.length(text) >= cfg.max_extract_chars
@@ -107,6 +109,7 @@ defmodule IntellectualClub.Tools.WebDocumentReader do
 
   defp download_to_binary(url, cfg) when is_binary(url) and is_map(cfg) do
     timeout_ms = cfg.http_timeout_seconds |> Kernel.*(1000) |> trunc() |> max(1)
+    max_bytes = min(cfg.max_download_bytes, DocumentReader.max_input_bytes())
 
     headers = [
       {"user-agent", cfg.user_agent},
@@ -121,13 +124,13 @@ defmodule IntellectualClub.Tools.WebDocumentReader do
         headers: headers,
         redirect: true,
         decode_body: false,
-        into: limited_body_stream(cfg.max_download_bytes),
+        into: limited_body_stream(max_bytes),
         receive_timeout: timeout_ms,
         retry: Map.get(cfg, :http_retry, :safe_transient)
       )
 
     with {:ok, resp} <- finalize_streamed_body(resp),
-         {:ok, body} <- decode_http_body(resp, cfg.max_download_bytes) do
+         {:ok, body} <- decode_http_body(resp, max_bytes) do
       if resp.status >= 400 do
         body_text = body_to_string(body)
 

@@ -20,9 +20,6 @@ $script:VipsVersion = '8.18.2'
 $script:VipsArchiveName = 'vips-dev-x64-web-8.18.2.zip'
 $script:VipsUrl = "https://github.com/libvips/build-win64-mxe/releases/download/v$($script:VipsVersion)/$($script:VipsArchiveName)"
 $script:VipsSha256 = '08effbafe12c6700345882b011cefeb41bcb305b959f5c0812a56cd1b0ddb752'
-$script:PdfNifName = 'pdf_elixide_nif-v0.4.0-nif-2.15-x86_64-pc-windows-msvc.dll.tar.gz'
-$script:PdfNifUrl = "https://github.com/r8/pdf_elixide/releases/download/v0.4.0/$($script:PdfNifName)"
-$script:PdfNifSha256 = '754fe266fc780fd9004ccc191bd42afb0a6a7fdf1053b3d8cf26027864b838e2'
 $script:TailwindVersion = '4.1.12'
 $script:TailwindExecutableName = "tailwindcss-windows-x64-$($script:TailwindVersion).exe"
 $script:TailwindUrl = "https://github.com/tailwindlabs/tailwindcss/releases/download/v$($script:TailwindVersion)/tailwindcss-windows-x64.exe"
@@ -321,10 +318,6 @@ function Ensure-Dependencies {
   }
   $vipsRoot = Find-PayloadRoot $vipsExtract 'vips.exe'
 
-  $rustlerCache = Join-Path $dependencyRoot 'rustler-precompiled-cache'
-  New-Item -ItemType Directory -Force -Path $rustlerCache | Out-Null
-  Ensure-Download $script:PdfNifUrl (Join-Path $rustlerCache $script:PdfNifName) $script:PdfNifSha256
-
   $tailwindBin = Join-Path $dependencyRoot $script:TailwindExecutableName
   Ensure-Download $script:TailwindUrl $tailwindBin $script:TailwindSha256
 
@@ -341,7 +334,6 @@ function Ensure-Dependencies {
   [pscustomobject]@{
     PostgresRoot = $postgresRoot
     VipsRoot = $vipsRoot
-    RustlerCache = $rustlerCache
     TailwindBin = $tailwindBin
     EsbuildBin = $esbuildBin
   }
@@ -1054,9 +1046,8 @@ $BuildDirectory = Get-FullPath $BuildDirectory
 $OutputDirectory = Get-FullPath $OutputDirectory
 New-Item -ItemType Directory -Force -Path $BuildDirectory, $OutputDirectory | Out-Null
 
-Write-Step 'Preparing pinned PostgreSQL, libvips, and PDF NIF payloads'
+Write-Step 'Preparing pinned PostgreSQL, libvips, and asset tool payloads'
 $dependencies = Ensure-Dependencies $BuildDirectory
-$env:RUSTLER_PRECOMPILED_GLOBAL_CACHE_PATH = $dependencies.RustlerCache
 $env:IC_VIPS_BIN = Join-Path $dependencies.VipsRoot 'bin\vips.exe'
 $env:MIX_TAILWIND_PATH = $dependencies.TailwindBin
 $env:MIX_ESBUILD_PATH = $dependencies.EsbuildBin
@@ -1090,6 +1081,11 @@ if (-not $SkipTests) {
   Write-Step 'Checking and testing the Rust workspace'
   Invoke-Native 'cargo' @('check', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
   Invoke-Native 'cargo' @('test', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
+
+  # Application tests do not run the suites of path dependencies.
+  Write-Step 'Testing the pure Elixir PDF library'
+  $env:MIX_ENV = 'test'
+  Invoke-Native 'mix' @('test') (Join-Path $script:RepositoryRoot 'server/vendor/pdf_text')
 
   Write-Step 'Checking and testing the Elixir application against portable PostgreSQL'
   Invoke-WithTestPostgres $dependencies.PostgresRoot $BuildDirectory {

@@ -32,6 +32,7 @@ RUN mix local.hex --force && mix local.rebar --force
 
 COPY server/mix.exs server/mix.lock ./
 COPY server/config ./config
+COPY server/vendor ./vendor
 
 RUN mix deps.get --only prod
 RUN mix deps.compile

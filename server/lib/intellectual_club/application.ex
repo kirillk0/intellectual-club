@@ -29,6 +29,7 @@ defmodule IntellectualClub.Application do
       {IntellectualClub.Outlets.Runtime, []},
       {IntellectualClub.Tools.RateLimiter, []},
       {Task.Supervisor, name: IntellectualClub.Tools.WebSearchTaskSupervisor},
+      IntellectualClub.Tools.DocumentWorker,
       {IntellectualClub.Notifications.ActiveWebPushClients, []},
       {IntellectualClub.Notifications.Dispatcher, []},
       {Registry, keys: :unique, name: IntellectualClub.BackgroundTasks.ProcessRegistry},

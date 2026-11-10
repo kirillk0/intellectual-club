@@ -75,6 +75,26 @@ Prebuilt mode fails for a missing, incomplete, modified, or different-commit
 artifact instead of silently rebuilding assets. Artifacts belong to a single
 workflow run; they are not selected from another run by a mutable branch name.
 
+## Vendored PDF library
+
+`server/vendor/pdf_text` is a separate, pure Elixir Mix package referenced by a
+path dependency. Docker copies `server/vendor` before fetching and compiling
+dependencies; `.dockerignore` excludes vendor build outputs, downloaded
+dependencies, tests, and other development artifacts. macOS and Windows build
+scripts run Mix directly from the checked-out `server` directory, so the same
+path dependency is available without a separate copy step. Mix includes the
+compiled library in each application release; no PDF NIF download is needed.
+
+Application tests do not run dependency test suites. Whole-suite invocations of
+`bin/server-test` (including CI's `--all`) run the PDF library tests once before
+starting application partitions. Invocations with explicit server test paths
+skip the library suite. Windows packaging runs the library suite separately
+unless `-SkipTests` is set. To run only the library tests without PostgreSQL:
+
+```sh
+(cd server/vendor/pdf_text && mix test)
+```
+
 ## Runtime code loading
 
 Releases start in interactive mode (`server/rel/env.sh.eex` and `env.bat.eex`):

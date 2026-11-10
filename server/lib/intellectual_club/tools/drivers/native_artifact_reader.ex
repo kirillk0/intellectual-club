@@ -219,10 +219,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
     with {:ok, file_external_id} <- required_file_id(args),
          {:ok, page} <- DocumentReader.parse_page(args),
-         {:ok, {_content, file, payload}} <-
-           ContentFiles.load_payload_for_execution(file_external_id, execution_context)
+         {:ok, {_content, file, path}} <-
+           ContentFiles.load_path_for_execution(file_external_id, execution_context)
            |> normalize_payload_error(),
-         {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, file, payload, cfg) do
+         {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, file, path, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
       used_page = page
 
@@ -231,6 +231,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
           text =
             [
               source_line(file),
+              DocumentReader.extraction_notice(meta),
               "Cached: #{if(cached, do: "true", else: "false")}",
               "Error: document has no readable content."
             ]
@@ -243,7 +244,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
               "file_id" => file.external_id,
               "cached" => cached,
               "page" => used_page,
-              "pages_total" => total_pages
+              "pages_total" => total_pages,
+              "metadata" => Map.get(meta, "metadata", %{})
             }}}
 
         used_page < 1 or used_page > total_pages ->
@@ -255,6 +257,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
               text =
                 [
                   source_line(file),
+                  DocumentReader.extraction_notice(meta),
                   "Cached: #{if(cached, do: "true", else: "false")}",
                   "Page: #{used_page} / #{total_pages}",
                   "",
@@ -275,6 +278,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
                 "size_bytes" => file.size_bytes,
                 "page" => used_page,
                 "pages_total" => total_pages,
+                "metadata" => Map.get(meta, "metadata", %{}),
                 "config" => config_raw(cfg)
               }
 
@@ -304,10 +308,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
            ),
          {:ok, snippet_len_chars} <- DocumentReader.parse_snippet_len(args),
          {:ok, max_snippets} <- DocumentReader.parse_max_snippets(args),
-         {:ok, {_content, file, payload}} <-
-           ContentFiles.load_payload_for_execution(file_external_id, execution_context)
+         {:ok, {_content, file, path}} <-
+           ContentFiles.load_path_for_execution(file_external_id, execution_context)
            |> normalize_payload_error(),
-         {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, file, payload, cfg) do
+         {:ok, {doc_dir, meta, cached}} <- ensure_cache_ready(tool_instance, file, path, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
       regex_flags = DocumentReader.read_string_arg(args, "regex_flags", "im")
 
@@ -315,6 +319,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
         text =
           [
             source_line(file),
+            DocumentReader.extraction_notice(meta),
             "Cached: #{if(cached, do: "true", else: "false")}",
             "Pages: #{total_pages}",
             "Regex: /#{regex_text}/",
@@ -335,7 +340,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
           "match_pages" => [],
           "snippets" => [],
           "snippet_len_chars" => snippet_len_chars,
-          "max_snippets" => max_snippets
+          "max_snippets" => max_snippets,
+          "metadata" => Map.get(meta, "metadata", %{})
         }
 
         {:ok, {text, raw}}
@@ -351,6 +357,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
         header_lines = [
           source_line(file),
+          DocumentReader.extraction_notice(meta),
           "Cached: #{if(cached, do: "true", else: "false")}",
           "Pages: #{total_pages}",
           "Regex: /#{regex_text}/",
@@ -387,6 +394,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
             end),
           "snippet_len_chars" => snippet_len_chars,
           "max_snippets" => max_snippets,
+          "metadata" => Map.get(meta, "metadata", %{}),
           "config" => config_raw(cfg)
         }
 
@@ -456,26 +464,52 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
 
   def detect_image_mime(_payload), do: {:error, "File content is not a valid image."}
 
-  defp ensure_cache_ready(%ToolInstance{} = tool_instance, file, payload, cfg)
-       when is_binary(payload) and is_map(cfg) do
+  defp ensure_cache_ready(%ToolInstance{} = tool_instance, file, path, cfg)
+       when is_binary(path) and is_map(cfg) do
     cache_root = cache_root(tool_instance)
     doc_id = DocumentReader.doc_id(to_string(file.external_id))
 
     ToolExecution.interruptible(fn ->
       DocumentReader.ensure_cache_ready(cache_root, tool_instance.id, doc_id, cfg, fn ->
-        {:ok,
-         {payload,
-          %{
-            "tool_type" => type(),
-            "file_id" => file.external_id,
-            "filename" => file.filename,
-            "mime_type" => file.mime_type,
-            "size_bytes" => file.size_bytes,
-            "sha256" => file.sha256,
-            "source_extension" => Path.extname(file.filename || "")
-          }}}
+        with {:ok, payload} <- read_document_payload(path) do
+          {:ok,
+           {payload,
+            %{
+              "tool_type" => type(),
+              "file_id" => file.external_id,
+              "filename" => file.filename,
+              "mime_type" => file.mime_type,
+              "size_bytes" => file.size_bytes,
+              "sha256" => file.sha256,
+              "source_extension" => Path.extname(file.filename || "")
+            }}}
+        end
       end)
     end)
+  end
+
+  defp read_document_payload(path) do
+    limit = DocumentReader.max_input_bytes()
+
+    with {:ok, %{type: :regular, size: size}} when size <= limit <- File.stat(path),
+         {:ok, file} <- :file.open(String.to_charlist(path), [:read, :binary, :raw]) do
+      try do
+        case :file.read(file, limit + 1) do
+          {:ok, bytes} when byte_size(bytes) <= limit -> {:ok, bytes}
+          :eof -> {:ok, ""}
+          {:ok, _bytes} -> {:error, "Document exceeds the 50 MiB input limit."}
+          {:error, _reason} -> {:error, "Could not read document payload."}
+        end
+      after
+        :file.close(file)
+      end
+    else
+      {:ok, _stat} ->
+        {:error, "Document is not a regular file or exceeds the 50 MiB input limit."}
+
+      {:error, _reason} ->
+        {:error, "Could not open document payload."}
+    end
   end
 
   defp required_file_id(args) when is_map(args) do

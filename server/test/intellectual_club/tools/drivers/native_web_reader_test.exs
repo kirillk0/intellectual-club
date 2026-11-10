@@ -1,6 +1,8 @@
 defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
   use IntellectualClub.DataCase, async: true
 
+  import IntellectualClub.FilesFixtures, only: [text_pdf_fixture: 0, text_pdf_fixture: 2]
+
   alias IntellectualClub.Tools.DocumentReader
   alias IntellectualClub.Tools.Drivers.NativeWebReader
 
@@ -360,6 +362,76 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReaderTest do
     assert text =~ "Source: http://127.0.0.1:#{server.port}/text"
     assert text =~ "Page: 1 /"
     assert raw["pages_total"] >= 1
+  end
+
+  describe "PDF extraction" do
+    test "reads PDF text through the bounded extractor and searches cached results" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
+      {:ok, server} = start_raw_http_server(200, "application/pdf", text_pdf_fixture())
+      on_exit(fn -> stop_raw_http_server(server) end)
+      url = "http://127.0.0.1:#{server.port}/manual.pdf"
+
+      assert {:ok, {text, raw}} = NativeWebReader.execute(tool, "read_url", %{"url" => url})
+      assert text =~ "Hello PDF needle text"
+      assert raw["metadata"]["extractor"] == "pdf_text"
+      refute raw["metadata"]["partial"]
+
+      for limit <- [0, 1] do
+        assert {:ok, {_text, found}} =
+                 NativeWebReader.execute(tool, "search_url", %{
+                   "url" => url,
+                   "regex" => "needle",
+                   "max_snippets" => limit
+                 })
+
+        assert found["cached"]
+        assert found["metadata"]["extractor"] == "pdf_text"
+        assert length(found["snippets"]) == limit
+      end
+    end
+
+    test "marks a character-limited PDF as partial and truncated" do
+      %{user: actor} = user_fixture()
+
+      tool =
+        create_tool_instance!(actor,
+          name: "Web Reader",
+          type: "native-web-reader",
+          config: %{"max_extract_chars" => 5}
+        )
+
+      {:ok, server} = start_raw_http_server(200, "application/pdf", text_pdf_fixture())
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:ok, {text, raw}} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/short.pdf"
+               })
+
+      assert text =~ "truncated"
+      assert text =~ "Hello"
+      assert raw["metadata"]["partial"]
+      assert raw["metadata"]["truncated"]
+      assert raw["metadata"]["warnings"] != []
+    end
+
+    test "rejects encrypted PDFs without a native fallback" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, name: "Web Reader", type: "native-web-reader")
+
+      {:ok, server} =
+        start_raw_http_server(200, "application/pdf", text_pdf_fixture("secret", encrypted: true))
+
+      on_exit(fn -> stop_raw_http_server(server) end)
+
+      assert {:error, reason} =
+               NativeWebReader.execute(tool, "read_url", %{
+                 "url" => "http://127.0.0.1:#{server.port}/encrypted.pdf"
+               })
+
+      assert reason =~ "encrypted_pdf"
+    end
   end
 
   test "read_url extracts DOCX text responses" do

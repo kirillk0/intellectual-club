@@ -6,6 +6,10 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Tools.Drivers.NativeArtifactReader
   alias IntellectualClub.Tools.ExecutionContext
+  alias IntellectualClub.Tools.DocumentReader
+
+  import IntellectualClub.FilesFixtures,
+    only: [text_pdf_fixture: 0, text_pdf_fixture: 2]
 
   test "read_file paginates text files available in the execution context" do
     %{user: actor} = user_fixture()
@@ -78,7 +82,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
         config: %{"chunk_size_tokens" => 10}
       )
 
-    {file, context} = create_context_file!(actor, "sample.pdf", "application/pdf", pdf_payload())
+    {file, context} =
+      create_context_file!(actor, "sample.pdf", "application/pdf", text_pdf_fixture())
 
     assert {:ok, {text, raw}} =
              NativeArtifactReader.execute(
@@ -93,8 +98,132 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
 
     assert text =~ "File: sample.pdf"
     assert text =~ "Hello PDF needle text"
+    assert raw["metadata"]["extractor"] == "pdf_text"
     assert raw["file_id"] == file.external_id
     assert raw["pages_total"] >= 1
+  end
+
+  test "PDF extraction reports its engine and character truncation" do
+    %{user: actor} = user_fixture()
+
+    tool =
+      create_tool_instance!(actor,
+        type: "native-artifact-reader",
+        name: "Artifact Reader",
+        config: %{"max_extract_chars" => 5}
+      )
+
+    {file, context} =
+      create_context_file!(actor, "sample.pdf", "application/pdf", text_pdf_fixture())
+
+    assert {:ok, {text, raw}} =
+             NativeArtifactReader.execute(
+               tool,
+               "read_file",
+               %{"file_id" => file.external_id},
+               context
+             )
+
+    assert text =~ "Hello"
+    assert text =~ "truncated"
+    assert raw["metadata"]["extractor"] == "pdf_text"
+    assert raw["metadata"]["pdf_page_count"] == 1
+    assert raw["metadata"]["truncated"] == true
+  end
+
+  test "PDF settings above package ceilings are clamped instead of rejecting every document" do
+    %{user: actor} = user_fixture()
+
+    tool =
+      create_tool_instance!(actor,
+        type: "native-artifact-reader",
+        name: "Artifact Reader",
+        config: %{"max_extract_chars" => 3_000_000, "extract_timeout_seconds" => 180}
+      )
+
+    {file, context} =
+      create_context_file!(actor, "sample.pdf", "application/pdf", text_pdf_fixture())
+
+    assert {:ok, {text, raw}} =
+             NativeArtifactReader.execute(
+               tool,
+               "read_file",
+               %{"file_id" => file.external_id},
+               context
+             )
+
+    assert text =~ "Hello PDF needle text"
+    assert raw["metadata"]["extractor"] == "pdf_text"
+  end
+
+  test "encrypted PDFs return an explicit unsupported error" do
+    %{user: actor} = user_fixture()
+    tool = create_tool_instance!(actor, type: "native-artifact-reader", name: "Artifact Reader")
+
+    {file, context} =
+      create_context_file!(
+        actor,
+        "encrypted.pdf",
+        "application/pdf",
+        text_pdf_fixture("secret", encrypted: true)
+      )
+
+    assert {:error, reason} =
+             NativeArtifactReader.execute(
+               tool,
+               "read_file",
+               %{"file_id" => file.external_id},
+               context
+             )
+
+    assert reason =~ "encrypted"
+  end
+
+  @tag :tmp_dir
+  test "failed PDF extraction is not cached and a retry can succeed", %{tmp_dir: root} do
+    cfg = DocumentReader.config_from_map(%{})
+    source = %{"mime_type" => "application/pdf"}
+
+    assert {:error, _} =
+             DocumentReader.ensure_cache_ready(root, self(), "document", cfg, fn ->
+               {:ok, {text_pdf_fixture("secret", encrypted: true), source}}
+             end)
+
+    refute File.exists?(Path.join([root, "document", "READY"]))
+
+    assert {:ok, {dir, meta, false}} =
+             DocumentReader.ensure_cache_ready(root, self(), "document", cfg, fn ->
+               {:ok, {text_pdf_fixture(), source}}
+             end)
+
+    assert meta["metadata"]["extractor"] == "pdf_text"
+    assert File.exists?(Path.join(dir, "READY"))
+
+    assert {:ok, {^dir, _meta, true}} =
+             DocumentReader.ensure_cache_ready(root, self(), "document", cfg, fn ->
+               flunk("A cached document must not load its source again")
+             end)
+  end
+
+  @tag :tmp_dir
+  test "old native PDF cache entries are rebuilt", %{tmp_dir: root} do
+    dir = Path.join(root, "document")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "READY"), "ok")
+
+    File.write!(
+      Path.join(dir, "meta.json"),
+      Jason.encode!(%{"metadata" => %{"extractor" => "pdf_elixide"}})
+    )
+
+    cfg = DocumentReader.config_from_map(%{})
+
+    assert {:ok, {^dir, meta, false}} =
+             DocumentReader.ensure_cache_ready(root, self(), "document", cfg, fn ->
+               {:ok, {text_pdf_fixture(), %{"mime_type" => "application/pdf"}}}
+             end)
+
+    assert meta["metadata"]["extractor"] == "pdf_text"
   end
 
   test "read_file extracts paragraphs from DOCX artifacts" do
@@ -232,24 +361,6 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
 
     final paragraph with more words to force another page
     """
-  end
-
-  defp pdf_payload do
-    [
-      "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIg",
-      "MCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBv",
-      "YmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVz",
-      "b3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2Jq",
-      "CjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNh",
-      "ID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTMgPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiA3",
-      "MiA3MjAgVGQgKEhlbGxvIFBERiBuZWVkbGUgdGV4dCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVm",
-      "CjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAw",
-      "MDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMxMSAw",
-      "MDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQxMwolJUVP",
-      "Rgo="
-    ]
-    |> IO.iodata_to_binary()
-    |> Base.decode64!()
   end
 
   defp docx_payload do

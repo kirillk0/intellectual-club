@@ -206,6 +206,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
           text =
             [
               "Source: #{final_url}",
+              DocumentReader.extraction_notice(meta),
               "Cached: #{if(cached, do: "true", else: "false")}",
               "Error: document has no readable content."
             ]
@@ -218,7 +219,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
               "url" => final_url,
               "cached" => cached,
               "page" => used_page,
-              "pages_total" => total_pages
+              "pages_total" => total_pages,
+              "metadata" => Map.get(meta, "metadata", %{})
             }}}
 
         used_page < 1 or used_page > total_pages ->
@@ -230,6 +232,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
               text =
                 [
                   "Source: #{final_url}",
+                  DocumentReader.extraction_notice(meta),
                   "Cached: #{if(cached, do: "true", else: "false")}",
                   "Page: #{used_page} / #{total_pages}",
                   "",
@@ -246,6 +249,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
                 "doc_id" => Path.basename(doc_dir),
                 "cached" => cached,
                 "content_type" => Map.get(meta, "content_type"),
+                "metadata" => Map.get(meta, "metadata", %{}),
                 "page" => used_page,
                 "pages_total" => total_pages,
                 "config" => WebDocumentReader.config_raw(cfg)
@@ -284,6 +288,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
         text =
           [
             "Source: #{final_url}",
+            DocumentReader.extraction_notice(meta),
             "Cached: #{if(cached, do: "true", else: "false")}",
             "Pages: #{total_pages}",
             "Regex: /#{regex_text}/",
@@ -297,6 +302,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
           "doc_id" => Path.basename(doc_dir),
           "cached" => cached,
           "content_type" => Map.get(meta, "content_type"),
+          "metadata" => Map.get(meta, "metadata", %{}),
           "pages_total" => total_pages,
           "regex" => regex_text,
           "regex_flags" => regex_flags,
@@ -319,6 +325,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
 
         header_lines = [
           "Source: #{final_url}",
+          DocumentReader.extraction_notice(meta),
           "Cached: #{if(cached, do: "true", else: "false")}",
           "Pages: #{total_pages}",
           "Regex: /#{regex_text}/",
@@ -344,6 +351,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeWebReader do
           "doc_id" => Path.basename(doc_dir),
           "cached" => cached,
           "content_type" => Map.get(meta, "content_type"),
+          "metadata" => Map.get(meta, "metadata", %{}),
           "pages_total" => total_pages,
           "regex" => regex_text,
           "regex_flags" => regex_flags,

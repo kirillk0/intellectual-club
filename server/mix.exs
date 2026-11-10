@@ -80,7 +80,7 @@ defmodule IntellectualClub.MixProject do
       {:web_push_elixir, "~> 0.8.0"},
       {:mint_web_socket, "~> 1.0"},
       {:ex_image_info, "~> 1.0"},
-      {:pdf_elixide, "~> 0.4.0"},
+      {:pdf_text, path: "vendor/pdf_text"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
     ] ++ image_dependencies()
@@ -144,7 +144,7 @@ defmodule IntellectualClub.MixProject do
       precommit:
         ["compile"] ++
           unused_dependency_check() ++
-          ["format", "cmd mix test"]
+          ["format", "cmd --cd vendor/pdf_text mix test", "cmd mix test"]
     ]
   end
 

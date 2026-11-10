@@ -4,7 +4,9 @@ defmodule IntellectualClub.Tools.DocumentReader do
   """
 
   alias IntellectualClub.TokenCounter
-  alias PdfElixide.Document, as: PdfDocument
+  alias IntellectualClub.Tools.DocumentWorker
+
+  @max_input_bytes 50 * 1024 * 1024
 
   @default_chunk_size_tokens 5_000
   @default_cache_ttl_seconds 86_400
@@ -14,6 +16,8 @@ defmodule IntellectualClub.Tools.DocumentReader do
   @html_link ~r/(<a\b(?<attributes>(?:[^"'<>]|"[^"]*"|'[^']*')*)>(?<content>.*?)<\/a\s*>)/isu
   @html_base ~r/<base\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>/iu
   @html_attribute ~r/(?:^|\s)([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/u
+
+  def max_input_bytes, do: @max_input_bytes
 
   def default_chunk_size_tokens, do: @default_chunk_size_tokens
   def default_cache_ttl_seconds, do: @default_cache_ttl_seconds
@@ -46,23 +50,26 @@ defmodule IntellectualClub.Tools.DocumentReader do
       if cache_valid?(doc_dir, cfg.cache_ttl_seconds) do
         {:ok, {doc_dir, read_meta(doc_dir), true}}
       else
-        with_doc_lock(lock_id, doc_id, fn ->
-          if cache_valid?(doc_dir, cfg.cache_ttl_seconds) do
-            {:ok, {doc_dir, read_meta(doc_dir), true}}
-          else
-            cleanup_cache(cache_root, cfg.cache_ttl_seconds, cfg.cache_max_bytes)
+        run_in_worker(cfg, fn ->
+          # The writer owns the lock, so caller cancellation cannot release it
+          # while a previously admitted worker still writes the same cache.
+          with_doc_lock(lock_id, doc_id, fn ->
+            if cache_valid?(doc_dir, cfg.cache_ttl_seconds) do
+              {:ok, {doc_dir, read_meta(doc_dir), true}}
+            else
+              cleanup_cache(cache_root, cfg.cache_ttl_seconds, cfg.cache_max_bytes)
+              _ = File.rm_rf(doc_dir)
 
-            _ = File.rm_rf(doc_dir)
+              case build_cache(doc_dir, cfg, source_fun) do
+                {:ok, meta} ->
+                  {:ok, {doc_dir, meta, false}}
 
-            case build_cache(doc_dir, cfg, source_fun) do
-              {:ok, meta} ->
-                {:ok, {doc_dir, meta, false}}
-
-              {:error, reason} ->
-                _ = File.rm_rf(doc_dir)
-                {:error, reason}
+                {:error, reason} ->
+                  _ = File.rm_rf(doc_dir)
+                  {:error, reason}
+              end
             end
-          end
+          end)
         end)
       end
     else
@@ -263,6 +270,24 @@ defmodule IntellectualClub.Tools.DocumentReader do
     end
   end
 
+  def extraction_notice(meta) when is_map(meta) do
+    metadata = Map.get(meta, "metadata", %{})
+
+    cond do
+      metadata["partial"] == true and metadata["truncated"] == true ->
+        "Extraction: partial and truncated; some PDF content is omitted."
+
+      metadata["partial"] == true ->
+        "Extraction: partial; some PDF content could not be decoded."
+
+      metadata["truncated"] == true ->
+        "Extraction: truncated at the configured limit."
+
+      true ->
+        nil
+    end
+  end
+
   def doc_id(value) when is_binary(value) do
     :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
   end
@@ -367,48 +392,28 @@ defmodule IntellectualClub.Tools.DocumentReader do
 
   defp extract_text(bytes, source_meta, cfg)
        when is_binary(bytes) and is_map(source_meta) and is_map(cfg) do
-    timeout_ms = cfg.extract_timeout_seconds |> Kernel.*(1000) |> trunc() |> max(1)
-
-    case extract_with_timeout(bytes, source_meta, cfg, timeout_ms) do
-      {:ok, {:ok, {text, metadata}}} ->
-        metadata = if is_map(metadata), do: metadata, else: %{}
-
-        extraction_meta =
-          %{}
-          |> maybe_put("metadata", metadata)
-
-        {:ok, {text, extraction_meta}}
-
-      {:ok, {:error, reason}} ->
-        {:error, "Document extraction failed: #{format_reason(reason)}"}
-
-      {:error, :timeout} ->
-        seconds = Float.round(timeout_ms / 1000.0, 1)
-        {:error, "Document extraction timed out after #{seconds} seconds."}
-
-      {:error, {:exit, reason}} ->
-        {:error, "Document extraction exited: #{Exception.format_exit(reason)}"}
+    if byte_size(bytes) > @max_input_bytes do
+      {:error, "Document exceeds the 50 MiB input limit."}
+    else
+      case extract_bytes(bytes, source_meta, cfg) do
+        {:ok, {text, metadata}} -> {:ok, {text, %{"metadata" => metadata}}}
+        {:error, reason} -> {:error, "Document extraction failed: #{format_reason(reason)}"}
+      end
     end
-  rescue
-    exception ->
-      {:error, Exception.message(exception)}
   end
 
-  defp extract_with_timeout(bytes, source_meta, cfg, timeout_ms)
-       when is_binary(bytes) and is_map(source_meta) and is_map(cfg) and is_integer(timeout_ms) do
-    task = Task.async(fn -> extract_bytes(bytes, source_meta, cfg) end)
+  defp run_in_worker(cfg, fun) do
+    # Include loading and cache writes in the deadline, not just the PDF parser.
+    seconds = cfg.extract_timeout_seconds + Map.get(cfg, :http_timeout_seconds, 0) + 5
+    timeout_ms = max(1, round(seconds * 1_000))
 
-    case Task.yield(task, timeout_ms) do
-      {:ok, result} ->
-        {:ok, result}
-
-      nil ->
-        _ = Task.shutdown(task, :brutal_kill)
-        {:error, :timeout}
+    case DocumentWorker.run(fun, timeout_ms) do
+      {:ok, result} -> result
+      {:error, :busy} -> {:error, "Document processing is busy. Retry later."}
+      {:error, :timeout} -> {:error, "Document loading or extraction timed out."}
+      {:error, :memory_limit} -> {:error, "Document extraction exceeded its memory limit."}
+      {:error, _reason} -> {:error, "Document extraction worker failed or was cancelled."}
     end
-  catch
-    :exit, reason ->
-      {:error, {:exit, reason}}
   end
 
   defp extract_bytes(bytes, source_meta, cfg)
@@ -443,26 +448,23 @@ defmodule IntellectualClub.Tools.DocumentReader do
   end
 
   defp extract_pdf_text(bytes, cfg) when is_binary(bytes) and is_map(cfg) do
-    with {:ok, doc} <- PdfDocument.from_binary(bytes),
-         {:ok, page_count} <- PdfDocument.page_count(doc),
-         {:ok, {pages, truncated?}} <- extract_pdf_pages(doc, page_count, cfg.max_extract_chars) do
-      text =
-        pages
-        |> Enum.join("\n\n")
-        |> normalize_text()
-        |> limit_chars(cfg.max_extract_chars)
+    with {:ok, result} <-
+           PdfText.extract(bytes,
+             max_chars: min(cfg.max_extract_chars, 2_000_000),
+             timeout_ms: min(120_000, max(1, round(cfg.extract_timeout_seconds * 1_000))),
+             max_input_bytes: @max_input_bytes
+           ) do
+      metadata = %{
+        "extractor" => "pdf_text",
+        "pdf_page_count" => result.page_count,
+        "pdf_pages_extracted" => result.pages_extracted,
+        "pdf_extractor_version" => result.version,
+        "truncated" => result.truncated,
+        "partial" => result.partial,
+        "warnings" => Enum.map(result.warnings, &format_reason/1)
+      }
 
-      metadata =
-        %{
-          "extractor" => "pdf_elixide",
-          "pdf_page_count" => page_count,
-          "pdf_version" => format_pdf_version(PdfDocument.version(doc))
-        }
-        |> maybe_put("truncated", if(truncated?, do: true, else: nil))
-
-      {:ok, {text, metadata}}
-    else
-      {:error, reason} -> {:error, reason}
+      {:ok, {normalize_text(result.text), metadata}}
     end
   end
 
@@ -611,51 +613,6 @@ defmodule IntellectualClub.Tools.DocumentReader do
     |> String.split(":")
     |> List.last()
     |> Kernel.==(expected)
-  end
-
-  defp extract_pdf_pages(_doc, page_count, _max_chars) when page_count <= 0 do
-    {:ok, {[], false}}
-  end
-
-  defp extract_pdf_pages(doc, page_count, max_chars)
-       when is_integer(page_count) and is_integer(max_chars) do
-    0..(page_count - 1)
-    |> Enum.reduce_while({:ok, {[], 0, false}}, fn page_index, {:ok, {pages, char_count, _}} ->
-      remaining = max(0, max_chars - char_count)
-
-      if remaining == 0 do
-        {:halt, {:ok, {pages, char_count, true}}}
-      else
-        case PdfDocument.extract_text(doc, page_index) do
-          {:ok, page_text} ->
-            text =
-              page_text
-              |> to_string()
-              |> normalize_text()
-
-            clipped = limit_chars(text, remaining)
-            new_char_count = char_count + String.length(clipped)
-            pages = pages ++ [clipped]
-
-            truncated? =
-              String.length(text) > String.length(clipped) or
-                (new_char_count >= max_chars and page_index < page_count - 1)
-
-            if truncated? or new_char_count >= max_chars do
-              {:halt, {:ok, {pages, new_char_count, truncated?}}}
-            else
-              {:cont, {:ok, {pages, new_char_count, false}}}
-            end
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end
-    end)
-    |> case do
-      {:ok, {pages, _char_count, truncated?}} -> {:ok, {pages, truncated?}}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
   defp extract_html_text(bytes, source_meta) when is_binary(bytes) and is_map(source_meta) do
@@ -891,12 +848,6 @@ defmodule IntellectualClub.Tools.DocumentReader do
     binary_part(bytes, 0, min(byte_size(bytes), max(0, max_bytes)))
   end
 
-  defp format_pdf_version({major, minor}) when is_integer(major) and is_integer(minor) do
-    "#{major}.#{minor}"
-  end
-
-  defp format_pdf_version(other), do: inspect(other)
-
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)
 
@@ -1055,7 +1006,8 @@ defmodule IntellectualClub.Tools.DocumentReader do
       true ->
         now = System.system_time(:second)
         ts = freshness_timestamp(doc_dir)
-        now - ts <= ttl_seconds
+        extractor = get_in(read_meta(doc_dir), ["metadata", "extractor"])
+        now - ts <= ttl_seconds and extractor not in ["pdf_elixide", "pdf_oxide_spans"]
     end
   end
 

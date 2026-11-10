@@ -309,7 +309,8 @@ jobs:
       - name: Run tests
         working-directory: server
         # Partitions run in parallel on separate databases; --all includes the
-        # whitebox tests that local runs exclude by default.
+        # whitebox tests that local runs exclude by default. The PDF library
+        # suite runs once before the application partitions.
         run: ../bin/server-test --all
 
   build-macos:
@@ -665,7 +666,6 @@ jobs:
           path: |
             server/deps
             server/_build
-            build/windows/dependencies/rustler-precompiled-cache
           key: windows-x64-elixir-1.20.2-otp-29.0-${{ hashFiles('server/mix.lock') }}
           restore-keys: |
             windows-x64-elixir-1.20.2-otp-29.0-
