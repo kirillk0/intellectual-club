@@ -268,11 +268,7 @@ if config_env() == :prod do
   # "priv/ssl/server.key". For all supported SSL configuration
   # options, see https://hexdocs.pm/plug/Plug.SSL.html#configure/1
   #
-  # We also recommend setting `force_ssl` in your config/prod.exs,
-  # ensuring no data is ever sent via http, always redirecting to https:
-  #
-  #     config :intellectual_club, IntellectualClubWeb.Endpoint,
-  #       force_ssl: [hsts: true]
-  #
-  # Check `Plug.SSL` for all available options in `force_ssl`.
+  # When deploying behind a reverse proxy, configure TLS, HTTP-to-HTTPS redirects,
+  # and HSTS at the proxy. Direct HTTPS hosting requires explicit configuration;
+  # do not force HTTPS by default for desktop and local HTTP deployments.
 end
