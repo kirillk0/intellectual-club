@@ -3,6 +3,23 @@ defmodule IntellectualClub.ImageProcessor do
 
   @windows? match?({:win32, _name}, :os.type())
 
+  @max_decoded_pixels 100_000_000
+
+  @spec validate(binary()) :: :ok | {:error, term()}
+  def validate(payload) when is_binary(payload) do
+    case ExImageInfo.info(payload) do
+      {mime_type, width, height, _variant}
+      when is_binary(mime_type) and is_integer(width) and is_integer(height) and
+             width > 0 and height > 0 ->
+        validate_backend(payload, normalize_mime_type(mime_type), width, height)
+
+      _ ->
+        {:error, :invalid_image_payload}
+    end
+  rescue
+    _error -> {:error, :invalid_image_payload}
+  end
+
   @spec resize_down(binary(), String.t(), pos_integer()) ::
           {:ok, binary(), String.t()} | {:error, term()}
   def resize_down(payload, mime_type, max_edge)
@@ -22,6 +39,9 @@ defmodule IntellectualClub.ImageProcessor do
   end
 
   if @windows? do
+    # Windows keeps header-only validation until its CLI backend gains validation.
+    defp validate_backend(_payload, _mime_type, _width, _height), do: :ok
+
     defp resize_backend(payload, mime_type, max_edge) do
       with {:ok, suffix} <- image_suffix(mime_type),
            {:ok, executable} <- vips_executable() do
@@ -100,11 +120,42 @@ defmodule IntellectualClub.ImageProcessor do
   else
     @vips_cache_disabled_key {__MODULE__, :vips_cache_disabled}
 
+    defp validate_backend(payload, mime_type, width, height) do
+      :ok = disable_vips_operation_cache()
+
+      # Image.from_binary drops :access; use Vix directly for a sequential scan.
+      # GIF reports some malformed later frames as warnings, so reject those too.
+      failure = if mime_type == "image/gif", do: :VIPS_FAIL_ON_WARNING, else: :VIPS_FAIL_ON_ERROR
+      options = [access: :VIPS_ACCESS_SEQUENTIAL, "fail-on": failure]
+
+      options =
+        if mime_type in ["image/gif", "image/webp"],
+          do: Keyword.put(options, :n, -1),
+          else: options
+
+      with :ok <- validate_pixel_count(width, height),
+           {:ok, image} <- Vix.Vips.Image.new_from_buffer(payload, options),
+           :ok <- validate_pixel_count(Image.width(image), Image.height(image)),
+           # Loading is lazy. avg traverses every pixel without returning a full
+           # decoded pixel buffer to the BEAM or re-encoding the image.
+           {:ok, _average} <- Vix.Vips.Operation.avg(image) do
+        :ok
+      else
+        {:error, :image_pixel_limit_exceeded} = error -> error
+        _ -> {:error, :invalid_image_payload}
+      end
+    end
+
+    defp validate_pixel_count(width, height) when width * height <= @max_decoded_pixels,
+      do: :ok
+
+    defp validate_pixel_count(_width, _height), do: {:error, :image_pixel_limit_exceeded}
+
     defp resize_backend(payload, mime_type, max_edge) do
       :ok = disable_vips_operation_cache()
 
       with {:ok, suffix} <- image_suffix(mime_type),
-           {:ok, image} <- Image.from_binary(payload),
+           {:ok, image} <- Image.from_binary(payload, fail_on: :error),
            {:ok, resized_image} <- Image.thumbnail(image, max_edge, resize: :down),
            {:ok, resized_payload} when is_binary(resized_payload) <-
              Image.write(resized_image, :memory, suffix: suffix),
@@ -123,9 +174,8 @@ defmodule IntellectualClub.ImageProcessor do
 
     # libvips keeps recently built operations alive together with their inputs and
     # pixel buffers in a process-wide cache (up to 100 MB of native memory, invisible
-    # to the BEAM allocators). Every resize starts from a new payload, so the cache
-    # never hits. Configured on first use rather than at boot, so instances that
-    # never resize images do not load libvips at all.
+    # to the BEAM allocators). Validation and resizing start from new payloads, so
+    # the cache never hits. Configure it on first use rather than at boot.
     defp disable_vips_operation_cache do
       if :persistent_term.get(@vips_cache_disabled_key, false) do
         :ok

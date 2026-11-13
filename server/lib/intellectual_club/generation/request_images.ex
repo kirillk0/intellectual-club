@@ -791,7 +791,8 @@ defmodule IntellectualClub.Generation.RequestImages do
          {mime_type, width, height, _variant}
          when is_binary(mime_type) and is_integer(width) and is_integer(height) and width > 0 and
                 height > 0 <- ExImageInfo.info(payload),
-         true <- image_mime_type?(mime_type) do
+         true <- image_mime_type?(mime_type),
+         :ok <- IntellectualClub.ImageProcessor.validate(payload) do
       {:ok,
        %{
          file: file,
@@ -899,6 +900,7 @@ defmodule IntellectualClub.Generation.RequestImages do
           when reason in [
                  :payload_not_found,
                  :invalid_image_payload,
+                 :image_pixel_limit_exceeded,
                  :not_an_image,
                  :request_image_payload_integrity_mismatch
                ] ->

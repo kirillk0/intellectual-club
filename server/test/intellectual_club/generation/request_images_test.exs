@@ -178,7 +178,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert_wire_payload(wire, fixture.payload, "image/jpeg")
     end
 
-    test "uses resize fallback in all shapes before publication" do
+    test "omits header-only oversized images in all shapes before publication" do
       fixture =
         request_fixture!(oversized_bmp_header_payload(),
           mime_type: "image/bmp",
@@ -189,9 +189,30 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
                prepare(four_shape_request(fixture.file), scope(fixture))
 
       assert prepared.bindings.items == []
-      assert_fallback(prepared.request, @resize_fallback)
+
+      fallback =
+        if match?({:win32, _name}, :os.type()), do: @resize_fallback, else: @invalid_fallback
+
+      assert_fallback(prepared.request, fallback)
       step = publish!(fixture, prepared)
       assert saved_step(step.id).raw_request == prepared.request
+    end
+
+    unless match?({:win32, _name}, :os.type()) do
+      test "truncated images with matching hashes become text before publication" do
+        fixture = request_fixture!(truncated_png())
+        raw = four_shape_request(fixture.file, anthropic_cache_control?: true)
+        assert {"image/png", 20, 10, _} = ExImageInfo.info(fixture.payload)
+
+        assert {:ok, prepared} = prepare(raw, scope(fixture))
+        assert prepared.bindings.items == []
+        assert_fallback(prepared.request, @invalid_fallback, anthropic_cache_control?: true)
+        assert count_files() == 1
+        step = publish!(fixture, prepared)
+        assert {:ok, wire} = hydrate(prepared.request, step.id)
+        refute Jason.encode!(wire) =~ "$intellectual_club_file"
+        assert_fallback(wire, @invalid_fallback, anthropic_cache_control?: true)
+      end
     end
 
     test "invalid new images become provider-native text and preserve Anthropic cache control" do
@@ -449,6 +470,50 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
         assert saved_step(source.id).raw_request == raw
         assert [_binding] = bindings_for_step(source.id)
       end)
+    end
+
+    unless match?({:win32, _name}, :os.type()) do
+      test "over-budget reusable pins do not prevent preparing a valid canonical image" do
+        fixture = request_fixture!(png_1x1())
+        raw = responses_request(fixture.file)
+        ref = to_string(fixture.file.external_id)
+        source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+
+        assert {:ok, file} =
+                 Files.create_from_binary("large.png", "image/png", png_header(100_001, 1_000))
+
+        create_binding!(source.id, file.id, ref, ref, "identity:v1")
+
+        assert {:error, :image_pixel_limit_exceeded} =
+                 prepare(raw, scope(fixture), source_step_id: source.id)
+
+        assert {:ok, prepared} = prepare(raw, scope(fixture))
+        assert [item] = prepared.bindings.items
+        assert {:ok, {_file, bytes}} = Files.load_payload(item.file_id)
+        assert bytes == fixture.payload
+        assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+      end
+
+      test "saved truncated pins fail validation, hydration and inheritance without canonical fallback" do
+        fixture = request_fixture!(png_1x1())
+        raw = responses_request(fixture.file)
+        ref = to_string(fixture.file.external_id)
+        source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+
+        assert {:ok, file} =
+                 Files.create_from_binary("truncated.png", "image/png", truncated_png())
+
+        create_binding!(source.id, file.id, ref, ref, "identity:v1")
+
+        assert {:error, :invalid_image_payload} = validate_snapshot(raw, source.id)
+        assert {:error, :invalid_image_payload} = hydrate(raw, source.id)
+
+        assert {:error, :invalid_image_payload} =
+                 prepare(raw, scope(fixture), source_step_id: source.id)
+
+        assert saved_step(source.id).raw_request == raw
+        assert [_binding] = bindings_for_step(source.id)
+      end
     end
 
     test "a missing inherited rendition payload fails even when canonical bytes are available" do

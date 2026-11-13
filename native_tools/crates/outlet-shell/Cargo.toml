@@ -20,3 +20,6 @@ shellexpand.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 which.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true

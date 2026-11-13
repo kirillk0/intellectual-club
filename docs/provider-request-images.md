@@ -82,6 +82,30 @@ WSS envelope/continuation comparison. Those separate public input paths were not
 globally changed by the final-preparation deduplication.
 
 
+## Image payload validation
+
+Cold image loads verify the stored byte size and SHA-256 as well as the format
+and dimensions. On Linux and macOS, `ImageProcessor.validate/1` additionally
+loads through Vix with libvips sequential access and `fail_on: :error`, then
+forces every pixel to be decoded through `avg`. Merely opening an image is
+insufficient because libvips loads lazily. This applies to small images too,
+even when no thumbnail is required. GIF and WebP validation loads all frames;
+GIF uses `fail_on: :warning` to reject malformed later frames reported as warnings.
+The decoded image is limited to 100 million pixels, including stacked animation
+frames; dimensions are checked before opening and again before decoding.
+This is a pixel budget, not a hard process memory or CPU limit. Validation does
+not materialize a full pixel binary in BEAM, and the libvips operation cache
+remains disabled. Decoder validation does not guarantee strict conformance of
+every container field or trailing metadata; other multipage formats retain their
+default-page behavior.
+
+Windows retains header-only validation for now. Its existing CLI resize path is
+unchanged. Linux/macOS resizing also uses the strict decoder error mode.
+Invalid new attachments become provider-native text through the existing image
+fallback. Invalid inherited pins and saved snapshots fail closed rather than
+silently substituting canonical bytes. Unusable non-inherited reuse candidates
+may fall back to canonical validation. The immutable source file is not rewritten.
+
 ## Worker cache and publication
 
 The Worker retains the compact logical request, its image descriptors, and a

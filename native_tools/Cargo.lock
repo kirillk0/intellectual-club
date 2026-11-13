@@ -3225,6 +3225,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "outlet-core",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",

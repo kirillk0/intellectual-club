@@ -299,12 +299,13 @@ impl ShellOutlet {
             .context("failed to read image file")?;
         let mime_type = detect_image_mime(&payload)
             .ok_or_else(|| anyhow!("File content is not a valid image."))?;
-        let sha256 = sha256_file_hex(&path).await?;
+        // Upload the validated snapshot, not a file that may change before transmission.
+        let sha256 = hex::encode(Sha256::digest(&payload));
         let uploaded = context
-            .upload_call_file_path(
+            .upload_call_file(
                 file_name(&path).as_deref().unwrap_or("image"),
                 mime_type,
-                &path,
+                payload,
             )
             .await?;
 
@@ -1659,6 +1660,141 @@ mod tests {
     #[test]
     fn image_detector_rejects_html_payload() {
         assert_eq!(detect_image_mime(b"<html>404</html>"), None);
+    }
+
+    #[test]
+    fn image_detector_rejects_truncated_png_with_valid_header() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let payload = encoded.into_inner();
+
+        assert_eq!(detect_image_mime(&payload), Some("image/png"));
+        assert_eq!(detect_image_mime(&payload[..33]), None);
+    }
+
+    #[tokio::test]
+    async fn read_image_uploads_validated_snapshot_when_file_changes_before_transmission() {
+        use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        struct ReplacingResolver {
+            path: PathBuf,
+            address: std::net::SocketAddr,
+        }
+
+        impl Resolve for ReplacingResolver {
+            fn resolve(&self, _name: Name) -> Resolving {
+                let path = self.path.clone();
+                let address = self.address;
+                Box::pin(async move {
+                    // DNS resolution happens after validation, before the upload body is read.
+                    tokio::fs::write(path, b"not an image anymore").await?;
+                    Ok(Box::new(std::iter::once(address)) as Addrs)
+                })
+            }
+        }
+
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let payload = encoded.into_inner();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "outlet-shell-image-{}-{suffix}.png",
+            std::process::id()
+        ));
+        tokio::fs::write(&path, &payload).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(stream.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            assert!(headers.starts_with("POST /api/outlet/calls/image-call/files?"));
+            assert!(headers.contains("mime_type=image%2Fpng"));
+            let mut body = Vec::new();
+            if let Some(length) = headers.lines().find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .map(|value| value.parse::<usize>().unwrap())
+            }) {
+                body.resize(length, 0);
+                stream.read_exact(&mut body).await.unwrap();
+            } else {
+                assert!(headers
+                    .to_ascii_lowercase()
+                    .contains("transfer-encoding: chunked"));
+                loop {
+                    let mut line = String::new();
+                    stream.read_line(&mut line).await.unwrap();
+                    let length = usize::from_str_radix(line.trim(), 16).unwrap();
+                    if length == 0 {
+                        break;
+                    }
+                    let start = body.len();
+                    body.resize(start + length, 0);
+                    stream.read_exact(&mut body[start..]).await.unwrap();
+                    let mut terminator = [0; 2];
+                    stream.read_exact(&mut terminator).await.unwrap();
+                    assert_eq!(terminator, *b"\r\n");
+                }
+            }
+            let response = r#"{"file":{"file_external_id":"snapshot-image"}}"#;
+            stream
+                .get_mut()
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        response.len(),
+                        response
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            body
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .dns_resolver(Arc::new(ReplacingResolver {
+                path: path.clone(),
+                address,
+            }))
+            .build()
+            .unwrap();
+        let context = CallContext::new(
+            client,
+            format!("http://snapshot.test:{}", address.port()),
+            "token",
+            "image-call",
+        );
+        let result = ShellOutlet::new()
+            .read_image(context, json!({"local_path": path}))
+            .await
+            .unwrap();
+        let uploaded = server.await.unwrap();
+        let changed = tokio::fs::read(&path).await.unwrap();
+        tokio::fs::remove_file(&path).await.unwrap();
+
+        assert_eq!(changed, b"not an image anymore");
+        assert_eq!(uploaded, payload);
+        assert_eq!(result.raw["sha256"], hex::encode(Sha256::digest(&uploaded)));
+        assert_eq!(result.media[0]["file_external_id"], "snapshot-image");
     }
 
     #[test]

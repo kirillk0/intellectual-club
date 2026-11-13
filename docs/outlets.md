@@ -381,6 +381,12 @@ Runners upload artifacts with `POST /api/outlet/calls/:call_id/files`, passing U
 body parser consume the document before the streaming file endpoint. The response's
 `file` object can be returned as an artifact or image media item.
 
+Shell outlet `read_image` reads the local file once. Image validation, SHA-256 and
+upload all use that same byte snapshot, never a later read of the path. A writer
+may still change a file while it is being read; incomplete image snapshots are
+rejected by the decoder. Callers must await file creation before invoking
+`read_image`, or publish completed files with an atomic rename.
+
 `GET /api/outlet/calls/:call_id/files/:file_id` downloads an authorized attachment.
 Both operations use the outlet bearer token and the server's immutable call context;
 routing ids are not a substitute for file authorization. Background providers use the

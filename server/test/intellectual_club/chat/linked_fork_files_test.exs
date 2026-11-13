@@ -10,9 +10,7 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
 
   require Ash.Query
 
-  @png Base.decode64!(
-         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6lq8AAAAASUVORK5CYII="
-       )
+  @png IntellectualClub.ImageFixtures.png_1x1()
   @invalid_fallback "[Image omitted: attached file could not be validated as an image.]"
   @task "Read only the inherited files."
 
