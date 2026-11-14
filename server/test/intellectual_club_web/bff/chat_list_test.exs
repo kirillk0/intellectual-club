@@ -247,7 +247,10 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         grouped = conn |> get("/api/bff/chat-list", params) |> json_response(200)
         ids = Enum.map(grouped["chats"], & &1["id"])
         assert length(ids) == length(Enum.uniq(ids))
-        refute Jason.encode!(grouped) =~ "private unfinished text"
+
+        for chat <- grouped["chats"], chat["message_count"] > 0 do
+          assert is_nil(chat["draft_preview"])
+        end
 
         for section <- ~w(drafts unread working other) do
           number = if section in ~w(drafts other), do: page, else: 1
@@ -439,6 +442,68 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   end
 
   describe "personal draft section" do
+    test "empty chats show bounded private draft previews until their first message", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      chat = create_subchat!(actor, parent, :spawn)
+
+      conn
+      |> put("/api/bff/chat-drafts/#{chat.id}", %{
+        text: "  Первый\nчерновик  ",
+        expected_revision: 0
+      })
+      |> json_response(200)
+
+      grouped =
+        conn
+        |> get("/api/bff/chat-list", %{sections: "drafts,other", preview_len: 6})
+        |> json_response(200)
+
+      draft = Enum.find(grouped["chats"], &(&1["id"] == chat.id))
+      assert draft["draft_preview"] == "Первый..."
+      assert draft["message_count"] == 0
+      assert is_nil(draft["first_message_preview"])
+      parent_row = Enum.find(grouped["chats"], &(&1["id"] == parent.id))
+      assert [%{"draft_preview" => "Первый..."}] = parent_row["subchats"]
+
+      paged =
+        conn
+        |> get("/api/bff/chat-list", %{section: "drafts", preview_len: 20})
+        |> json_response(200)
+
+      assert [%{"draft_preview" => "Первый черновик"}] = paged["chats"]
+
+      summary =
+        conn
+        |> get("/api/bff/chat-list/#{chat.id}/summary", %{preview_len: 6})
+        |> json_response(200)
+
+      assert summary["chat"]["draft_preview"] == "Первый..."
+
+      {:ok, _message} = Threads.add_message_to_end(chat, :user, "Sent first", actor: actor)
+
+      sent = conn |> get("/api/bff/chat-list/#{chat.id}/summary") |> json_response(200)
+      assert sent["chat"]["has_draft"]
+      assert is_nil(sent["chat"]["draft_preview"])
+      assert sent["chat"]["first_message_preview"] == "Sent first"
+    end
+
+    test "whitespace-only drafts have no preview", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+
+      conn
+      |> put("/api/bff/chat-drafts/#{chat.id}", %{text: " \n\t ", expected_revision: 0})
+      |> json_response(200)
+
+      summary = conn |> get("/api/bff/chat-list/#{chat.id}/summary") |> json_response(200)
+      assert is_nil(summary["chat"]["draft_preview"])
+    end
+
     test "filters before pagination and orders by saved draft rather than chat activity", %{
       conn: conn
     } do
@@ -472,7 +537,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       assert id == first.id
       assert is_binary(saved_at)
-      refute Jason.encode!(page) =~ "private unfinished text"
+      assert hd(page["chats"])["draft_preview"] == "private unfinished text"
       next = section_page(conn, "/api/bff/chat-list", Map.put(params, :page, 2))
       assert [%{"id" => second_id}] = next["chats"]
       assert second_id == second.id
@@ -518,6 +583,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         |> Map.fetch!("chat")
 
       assert after_save["has_draft"]
+      assert after_save["draft_preview"] == "unfinished"
       assert after_save["last_activity_at"] == before["last_activity_at"]
       assert after_save["read_state"] == before["read_state"]
 
@@ -551,6 +617,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
 
       refute summary["has_draft"]
       assert is_nil(summary["draft_updated_at"])
+      assert Map.fetch!(summary, "draft_preview") == nil
     end
 
     test "draft sections are private and include nested chats with unfinished text", %{conn: conn} do

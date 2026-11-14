@@ -8,7 +8,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     domain: IntellectualClub.Chat,
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Chat.{Chat, ChatDraftAttachment, ReadStateEvents}
+  alias IntellectualClub.Chat.{Chat, ChatDraftAttachment, Previews, ReadStateEvents}
   alias IntellectualClub.Repo
   require Ash.Query
   require Logger
@@ -196,18 +196,31 @@ defmodule IntellectualClub.Chat.ChatDraft do
       :ok
   end
 
-  def load_many([], _actor), do: %{}
+  def load_many(chats, actor, preview_len \\ nil)
 
-  def load_many(chats, actor) do
+  def load_many([], _actor, _preview_len), do: %{}
+
+  def load_many(chats, actor, preview_len) do
     ids = Enum.map(chats, & &1.id)
+    empty_chat_ids = chats |> Enum.filter(&is_nil(&1.last_message_id)) |> MapSet.new(& &1.id)
+    fields = if is_integer(preview_len), do: [:text], else: []
 
     __MODULE__
     |> Ash.Query.filter(chat_id in ^ids and (text != "" or attachment_count > 0))
-    |> Ash.Query.select([:chat_id, :updated_at])
+    |> Ash.Query.select([:chat_id, :updated_at] ++ fields)
     |> Ash.read!(actor: actor)
-    |> Map.new(
-      &{&1.chat_id, %{has_draft: true, draft_updated_at: DateTime.to_iso8601(&1.updated_at)}}
-    )
+    |> Map.new(fn draft ->
+      preview =
+        if is_integer(preview_len) and MapSet.member?(empty_chat_ids, draft.chat_id),
+          do: Previews.format_preview(draft.text, preview_len)
+
+      {draft.chat_id,
+       %{
+         has_draft: true,
+         draft_updated_at: DateTime.to_iso8601(draft.updated_at),
+         draft_preview: preview
+       }}
+    end)
   end
 
   def list_marker(actor) do

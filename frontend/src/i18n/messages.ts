@@ -48,6 +48,7 @@ export const ruMessages: Record<string, string> = {
   'Chat state changed. Please try again.': 'Состояние чата изменилось. Попробуйте ещё раз.',
   'Failed to update chat state.': 'Не удалось обновить состояние чата.',
   'Drafts': 'Черновики',
+  'Draft:': 'Черновик:',
   'Unread': 'Непрочитанные',
   'Working chats': 'Работающие чаты',
   'Other chats': 'Остальные чаты',

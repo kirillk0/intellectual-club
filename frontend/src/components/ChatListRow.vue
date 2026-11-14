@@ -21,6 +21,7 @@
             <div v-if="secondaryMeta" class="chat-result-secondary muted">{{ secondaryMeta }}</div>
             <div v-if="previewText" class="chat-first-preview">
               <div class="chat-first-preview-bubble" :class="previewToneClass">
+                <span v-if="previewIsDraft">{{ t('Draft:') }} </span>
                 {{ previewText }}
               </div>
             </div>
@@ -73,6 +74,7 @@ interface Props {
   secondaryMeta?: string | null;
   previewText?: string | null;
   previewRole?: 'user' | 'assistant' | null;
+  previewIsDraft?: boolean;
   generationState?: GenerationState | null;
   readState?: ChatReadState;
   actions?: boolean;
@@ -85,6 +87,7 @@ const props = withDefaults(defineProps<Props>(), {
   secondaryMeta: null,
   previewText: null,
   previewRole: null,
+  previewIsDraft: false,
   generationState: null,
   actions: false,
   actionsOpen: false,
@@ -151,8 +154,9 @@ const rowToneClass = computed(() => ({
 }));
 
 const previewToneClass = computed(() => ({
-  'chat-preview--user': props.previewRole === 'user',
-  'chat-preview--assistant': props.previewRole === 'assistant',
+  'chat-preview--user': !props.previewIsDraft && props.previewRole === 'user',
+  'chat-preview--assistant': !props.previewIsDraft && props.previewRole === 'assistant',
+  'chat-preview--draft': props.previewIsDraft,
 }));
 </script>
 
@@ -284,6 +288,10 @@ const previewToneClass = computed(() => ({
 
 .chat-first-preview-bubble.chat-preview--assistant {
   background: var(--color-chat-assistant-bg);
+}
+
+.chat-first-preview-bubble.chat-preview--draft {
+  color: var(--color-text-muted);
 }
 
 .chat-list-row__primary:hover .chat-first-preview-bubble {

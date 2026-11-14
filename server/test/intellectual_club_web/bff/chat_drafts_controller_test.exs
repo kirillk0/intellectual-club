@@ -94,6 +94,12 @@ defmodule IntellectualClubWeb.Bff.ChatDraftsControllerTest do
            |> json_response(404)
 
     assert ChatDraft.load_many([chat], viewer) == %{}
+    assert ChatDraft.load_many([chat], viewer, 200) == %{}
+
+    summary = conn |> get("/api/bff/chat-list/#{chat.id}/summary") |> json_response(200)
+    refute summary["chat"]["has_draft"]
+    assert is_nil(summary["chat"]["draft_preview"])
+    refute Jason.encode!(summary) =~ "private"
   end
 
   test "invalid revisions and invalid text do not create drafts", %{conn: conn} do

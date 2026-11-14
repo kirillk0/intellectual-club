@@ -116,6 +116,58 @@ describe('ChatsIndexView stack navigation', () => {
     }
   });
 
+  it('distinguishes first drafts from message previews in chat rows', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (!path.startsWith('/api/bff/chat-list?')) return undefined;
+      return {
+        chats: [
+          { id: 1, draft_preview: 'Unsent first message', message_count: 0 },
+          { id: 2, first_message_preview: 'Sent first message', first_message_role: 'user', has_draft: true, message_count: 1 },
+          { id: 3, has_draft: true, draft_preview: null, message_count: 0 },
+        ],
+        sections: Object.fromEntries(['drafts', 'unread', 'working', 'other'].map((section) => {
+          const ids = section === 'other' ? [1, 2, 3] : [];
+          return [section, { ids, page: { number: 1, per_page: 20, total: ids.length, has_next: false } }];
+        })),
+        idle_revision: 'revision-1',
+      };
+    });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/chats/:id?', component: { template: '<div />' } }],
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await router.push('/chats');
+    await router.isReady();
+    const wrapper = mount(ChatsIndexView, {
+      global: {
+        plugins: [router, [VueQueryPlugin, { queryClient }]],
+        stubs: {
+          BotSelectorModal: true,
+          ChatBotFiltersPanel: true,
+          InitialRoutePlaceholder: true,
+          PullToRefresh: { template: '<div><slot /></div>' },
+          StackToolbarTeleport: { template: '<div><slot /></div>' },
+          SvgIcon: true,
+        },
+      },
+    });
+
+    try {
+      await flushPromises();
+      const rows = wrapper.findAll('.chat-list-row');
+      expect(rows).toHaveLength(3);
+      expect(rows[0].find('.chat-preview--draft').text()).toBe('Draft: Unsent first message');
+      expect(rows[0].find('.chat-preview--user').exists()).toBe(false);
+      expect(rows[1].find('.chat-preview--user').text()).toBe('Sent first message');
+      expect(rows[1].find('.chat-preview--draft').exists()).toBe(false);
+      expect(rows[2].find('.chat-first-preview').exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      queryClient.clear();
+    }
+  });
+
   it('fully reloads the list when it becomes active after closing a chat', async () => {
     const active = ref(true);
     const presented = ref(true);

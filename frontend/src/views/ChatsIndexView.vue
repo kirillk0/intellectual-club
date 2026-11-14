@@ -101,8 +101,9 @@
                         :config-label="entry.chat.llm_configuration_label || null"
                         :meta-text="chatMetaText(entry.chat)"
                         :secondary-meta="relationMeta(entry.chat)"
-                        :preview-text="!hasChatSearch && entry.chat.first_message_preview ? formatPreview(entry.chat.first_message_preview) : null"
+                        :preview-text="chatPreviewText(entry.chat)"
                         :preview-role="!hasChatSearch ? entry.chat.first_message_role : null"
+                        :preview-is-draft="Boolean(entry.chat.draft_preview)"
                         :generation-state="generationStateForChat(entry.chat)"
                         :read-state="entry.chat.read_state"
                         :actions="true"
@@ -162,8 +163,9 @@
                           :config-label="subchat.llm_configuration_label || null"
                           :meta-text="chatMetaText(subchat)"
                           :secondary-meta="relationMeta(subchat)"
-                          :preview-text="!hasChatSearch && subchat.first_message_preview ? formatPreview(subchat.first_message_preview) : null"
+                          :preview-text="chatPreviewText(subchat)"
                           :preview-role="!hasChatSearch ? subchat.first_message_role : null"
+                          :preview-is-draft="Boolean(subchat.draft_preview)"
                           :generation-state="generationStateForChat(subchat)"
                           :read-state="subchat.read_state"
                           :actions="true"
@@ -1458,7 +1460,10 @@ async function deleteChatFromMenu() {
   }
 }
 
-function formatPreview(text: string) {
+function chatPreviewText(chat: ChatSummary) {
+  const text = chat.draft_preview || chat.first_message_preview;
+  if (hasChatSearch.value || !text) return null;
+
   const limit = previewLength.value;
   if (text.length <= limit) return text;
   const normalized = text.endsWith('...') ? text.slice(0, -3) : text;

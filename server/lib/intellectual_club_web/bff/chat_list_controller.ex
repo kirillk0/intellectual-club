@@ -155,7 +155,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   end
 
   defp list_entries_payload(chats, actor, preview_len) do
-    drafts = ChatDraft.load_many(chats, actor)
+    drafts = ChatDraft.load_many(chats, actor, preview_len)
     active_branch_summaries = Listing.active_branch_summaries(chats, actor)
 
     first_message_previews =
@@ -179,7 +179,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
           child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
           subchats: Map.get(subchats_by_parent, chat.id, [])
         )
-        |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
+        |> Map.merge(
+          Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil, draft_preview: nil})
+        )
         |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
         |> Map.put(:first_message_preview, first_message_preview)
         |> Map.put(:first_message_role, first_message_role)
@@ -321,7 +323,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
         child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
         subchats: Map.get(subchats_by_parent, chat.id, [])
       )
-      |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
+      |> Map.merge(
+        Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil, draft_preview: nil})
+      )
       |> Map.put(:message_count, Map.get(result.message_counts, chat.id, 0))
     end)
   end
@@ -368,7 +372,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       {first_message_preview, first_message_role} =
         Map.get(first_message_previews, chat.id, {nil, nil})
 
-      drafts = ChatDraft.load_many([chat], actor)
+      drafts = ChatDraft.load_many([chat], actor, preview_len)
 
       payload =
         chat
@@ -381,7 +385,9 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
             subchats: Map.get(subchats_by_parent, chat.id, [])
           )
         )
-        |> Map.merge(Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil}))
+        |> Map.merge(
+          Map.get(drafts, chat.id, %{has_draft: false, draft_updated_at: nil, draft_preview: nil})
+        )
         |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
         |> Map.put(:first_message_preview, first_message_preview)
         |> Map.put(:first_message_role, first_message_role)
@@ -601,6 +607,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       |> with_read_states(subchats)
 
     active_branch_summaries = Listing.active_branch_summaries(subchats, actor)
+    drafts = ChatDraft.load_many(subchats, actor, preview_len)
 
     first_message_previews =
       Listing.active_root_message_previews(subchats, active_branch_summaries, preview_len, actor)
@@ -625,6 +632,13 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
               child_subchat_count: Map.get(child_subchat_counts, chat.id, 0),
               subchats: []
             )
+          )
+          |> Map.merge(
+            Map.get(drafts, chat.id, %{
+              has_draft: false,
+              draft_updated_at: nil,
+              draft_preview: nil
+            })
           )
           |> Map.put(:message_count, Map.get(active_branch_summary, :message_count, 0))
           |> Map.put(:first_message_preview, first_message_preview)

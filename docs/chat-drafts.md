@@ -22,8 +22,8 @@ device cannot recreate an already submitted draft using an old version.
 - `PUT /api/bff/chat-drafts/:chat_id` takes `{text, expected_revision}`. A successful
   atomic compare-and-swap returns the saved snapshot. A stale version returns
   HTTP 409 with the current snapshot in the same response shape.
-- Text is limited to 1 MiB, preserves whitespace, and is never included in list
-  summaries or SSE events.
+- Text is limited to 1 MiB and preserves whitespace. List summaries can include a
+  bounded preview for empty chats; SSE events never include draft text.
 - Accepted send, queue and steer requests may include `draft_revision`. Their
   acceptance transaction clears only a matching revision **and** submitted text.
   Newer edits are preserved. Failed acceptance leaves the draft untouched.
@@ -107,8 +107,13 @@ in Unread, Working or Other; a draft does not replace those classifications.
 Search still searches canonical chat metadata/messages, not private draft text.
 
 Attachment-only drafts participate in the same lists and archive protection.
-Summaries expose only `has_draft` and `draft_updated_at`. Draft revisions participate
-in list idle invalidation. The existing user-scoped SSE stream emits
+Summaries expose `has_draft` and `draft_updated_at`. Ordinary list rows, nested rows
+and individual summaries also include `draft_preview` for the owner's chats with
+no messages. It uses the same `preview_len` limit as message previews and is shown
+in muted colors with a **Draft:** label. Chats with messages keep their first-message
+preview; empty or whitespace-only draft text has no preview. Draft text remains
+outside the search index. Draft revisions participate in list idle invalidation.
+The existing user-scoped SSE stream emits
 `chat_draft_changed` with `{chat_id, revision}` after saves and accepted consumption.
 Events are invalidations, not a replay log; snapshot refresh repairs missed events.
 
