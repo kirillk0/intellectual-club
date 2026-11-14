@@ -175,7 +175,8 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
   end
 
   defp maybe_put_content_disposition(conn, filename, disposition) do
-    safe_name = filename |> to_string() |> String.replace("\"", "")
+    filename = to_string(filename)
+    encoded_filename = URI.encode(filename, &URI.char_unreserved?/1)
 
     value =
       case disposition do
@@ -183,10 +184,19 @@ defmodule IntellectualClubWeb.Bff.ImageControllerHelpers do
         _other -> "attachment"
       end
 
-    if safe_name == "" do
+    if filename == "" do
       conn
     else
-      put_resp_header(conn, "content-disposition", ~s(#{value}; filename="#{safe_name}"))
+      header = ~s(#{value}; filename="#{encoded_filename}")
+
+      header =
+        if encoded_filename != filename do
+          header <> "; filename*=UTF-8''#{encoded_filename}"
+        else
+          header
+        end
+
+      put_resp_header(conn, "content-disposition", header)
     end
   end
 

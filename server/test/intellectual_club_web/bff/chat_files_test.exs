@@ -50,6 +50,42 @@ defmodule IntellectualClubWeb.Bff.ChatFilesTest do
     assert result["content"]["media"]["mime_type"] == "text/markdown"
   end
 
+  test "preserves Unicode and reserved filename characters in downloads and PDF previews", %{
+    conn: conn,
+    actor: actor
+  } do
+    for filename <- [
+          "сплин выхода нет (ля минор).pdf",
+          "сплин выхода нет (ля минор) v2.pdf",
+          ~s(notes "final"; 100% 'v2'.pdf)
+        ] do
+      chat = create_chat!(actor)
+      message = create_message!(actor, chat)
+      step = create_step!(actor, message)
+      item = create_item!(actor, step, type: :artifact)
+      payload = text_pdf_fixture()
+      file = create_file!(filename: filename, mime_type: "application/pdf", payload: payload)
+      content = create_content!(actor, item, kind: :media, file_id: file.id)
+
+      for {url, disposition} <- [
+            {file_url(file), "attachment"},
+            {content_url(%{message: message, content: content}), "inline"}
+          ] do
+        download = get(conn, url)
+        assert response(download, 200) == payload
+        assert [header] = get_resp_header(download, "content-disposition")
+        assert header =~ ~r/\A[\x20-\x7E]+\z/
+        assert [^disposition, parameters] = String.split(header, "; ", parts: 2)
+
+        assert %{"filename" => fallback, "filename*" => "UTF-8''" <> encoded} =
+                 Plug.Conn.Utils.params(parameters)
+
+        assert String.ends_with?(fallback, ".pdf")
+        assert URI.decode(encoded) == filename
+      end
+    end
+  end
+
   test "downloads images by default and renders them inline only when requested", %{
     conn: conn,
     actor: actor
