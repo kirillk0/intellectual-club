@@ -7,7 +7,9 @@ import {
   describeChatUploadPolicy,
   mapContentToExistingAttachment,
   overallPendingUploadProgress,
+  pendingFileUploadTarget,
   validateFilesForChatUpload,
+  validatePendingFilesForChatUpload,
   type ChatUploadPolicy,
   type ExistingChatAttachment,
   type PendingChatFile,
@@ -56,6 +58,14 @@ type Params = {
   ) => Promise<string[]>;
   removePendingFileFromCollection: (filesRef: Ref<PendingChatFile[]>, id: string) => Promise<void>;
   clearPendingFilesCollection: (filesRef: Ref<PendingChatFile[]>) => Promise<void>;
+  // Validates and adds files, preparing images for upload; without it files are added untouched.
+  addPendingFilesToCollection?: (
+    filesRef: Ref<PendingChatFile[]>,
+    files: File[],
+    policy: ChatUploadPolicy,
+    setError: (error: string) => void
+  ) => void;
+  setPendingFileOriginalInCollection?: (filesRef: Ref<PendingChatFile[]>, id: string, keepOriginal: boolean) => void;
   pushChatRoute: (chatId: number) => Promise<void> | void;
   afterBranchSwitched?: () => void;
   // Applies a chat configuration the server switched as part of an in-chat branch.
@@ -137,11 +147,7 @@ export function useChatMessageActions(params: Params) {
   const editAttachmentHelp = computed(() => describeChatUploadPolicy(editUploadPolicy.value));
   // Files added under a more permissive configuration block saving until removed.
   const editAttachmentPolicyError = computed(
-    () =>
-      validateFilesForChatUpload(
-        editPendingFiles.value.map((item) => item.file),
-        editUploadPolicy.value
-      ).errors[0] || ''
+    () => validatePendingFilesForChatUpload(editPendingFiles.value, editUploadPolicy.value)[0] || ''
   );
   const editErrorText = computed(() => editAttachmentPolicyError.value || editError.value);
 
@@ -154,6 +160,10 @@ export function useChatMessageActions(params: Params) {
     const uploadProgress = overallPendingUploadProgress(editPendingFiles.value);
     if (uploadProgress.active) {
       return `Uploading… ${Math.max(1, Math.round(uploadProgress.progress * 100))}%`;
+    }
+
+    if (editPendingFiles.value.some((file) => pendingFileUploadTarget(file) === null)) {
+      return translate('Preparing attachments…');
     }
 
     if (modalMode.value === 'branch_new_chat') return 'Branching to new chat…';
@@ -819,17 +829,26 @@ export function useChatMessageActions(params: Params) {
   const addEditPendingFiles = (files: File[]) => {
     if (historyReadOnly.value) return;
     if (!files.length) return;
-    const { accepted, errors } = validateFilesForChatUpload(files, editUploadPolicy.value);
-
-    if (accepted.length > 0) {
-      editPendingFiles.value = [...editPendingFiles.value, ...createPendingChatFiles(accepted)];
+    const setError = (error: string) => {
+      editError.value = error;
+    };
+    if (params.addPendingFilesToCollection) {
+      params.addPendingFilesToCollection(editPendingFiles, files, editUploadPolicy.value, setError);
+      return;
     }
 
-    editError.value = errors[0] || '';
+    const { accepted, errors } = validateFilesForChatUpload(files, editUploadPolicy.value);
+    if (accepted.length > 0) editPendingFiles.value = [...editPendingFiles.value, ...createPendingChatFiles(accepted)];
+    setError(errors[0] || '');
   };
 
   const removeEditPendingFile = (id: string) => {
     void params.removePendingFileFromCollection(editPendingFiles, id);
+  };
+
+  const setEditPendingFileOriginal = (id: string, keepOriginal: boolean) => {
+    if (savingEdit.value) return;
+    params.setPendingFileOriginalInCollection?.(editPendingFiles, id, keepOriginal);
   };
 
   const saveEdit = async () => {
@@ -1013,6 +1032,7 @@ export function useChatMessageActions(params: Params) {
     removeEditExistingAttachment,
     addEditPendingFiles,
     removeEditPendingFile,
+    setEditPendingFileOriginal,
     saveEdit,
     dispose,
   };

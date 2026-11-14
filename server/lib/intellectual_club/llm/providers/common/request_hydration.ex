@@ -11,6 +11,8 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydration do
            mapper: mapper,
            cache: Keyword.get(opts, :cache, %{}),
            on_cache: Keyword.get(opts, :on_cache),
+           on_sent: Keyword.get(opts, :on_sent),
+           llm_configuration_id: Keyword.get(opts, :llm_configuration_id),
            provider: Keyword.get(opts, :provider)
          ) do
       {:ok, %{} = wire_request} ->

@@ -53,7 +53,7 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
       assert final_step.id != old_step.id
     end
 
-    test "restart preserves an oversized request image rendition" do
+    test "restart preserves a legacy request image rendition" do
       %{user: actor} = user_fixture()
 
       configuration =
@@ -63,9 +63,9 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
         )
 
       chat = create_chat!(actor, llm_configuration_id: configuration.id)
-      # Wider than the 2000 px request edge, so the request keeps a downscaled rendition.
+
       {:ok, canonical_file} =
-        Files.create_from_binary("orphan-source.png", "image/png", png(2048, 16))
+        Files.create_from_binary("orphan-source.png", "image/png", png_1x1())
 
       {:ok, user_message} =
         Threads.add_message_to_end(chat, :user, "",
@@ -93,6 +93,8 @@ defmodule IntellectualClub.Generation.OrphanedRecoveryTest do
           request_context: %{adapter_module: ImageRecoveryProvider}
         )
 
+      # A downscaled rendition pinned by an earlier release, distinct from the source.
+      pin_legacy_thumbnail!(old_step, png(20, 10))
       [old_binding] = request_file_bindings(old_step.id)
       old_rendition_file = Ash.get!(StoredFile, old_binding.file_id, authorize?: false)
       assert old_binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"

@@ -20,6 +20,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+pub mod inline_image;
+
 pub const DISCOVERY_FUNCTION: &str = "outlet.list_tools";
 const BACKGROUND_PROGRESS_MAX_CHARS: usize = 400_000;
 const BACKGROUND_PROGRESS_ENTRY_MAX_CHARS: usize = 12_000;

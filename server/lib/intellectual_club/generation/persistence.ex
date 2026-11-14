@@ -391,6 +391,30 @@ defmodule IntellectualClub.Generation.Persistence do
 
   def retry_attempt_before_step!(_message_id, _step_sequence), do: nil
 
+  @doc """
+  Whether any step of the message before `step_sequence` was retried because a
+  provider rejected a request image (`"retry_reason": "image_rejected"` in the
+  metadata of its retry error), regardless of later transient retries. One query.
+  """
+  def image_rejection_retried_before_step?(message_id, step_sequence)
+      when is_integer(message_id) and is_integer(step_sequence) and step_sequence > 1 do
+    actor = actor_for_message!(message_id)
+
+    ChatMessageContent
+    |> Ash.Query.filter(
+      kind == :opaque and chat_message_item.type == :error and
+        chat_message_item.chat_message_step.chat_message_id == ^message_id and
+        chat_message_item.chat_message_step.sequence < ^step_sequence and
+        fragment("(? ->> 'retry_reason') = 'image_rejected'", content_json)
+    )
+    |> Ash.Query.select([:id])
+    |> Ash.Query.limit(1)
+    |> Ash.read_one!(actor: actor)
+    |> is_struct(ChatMessageContent)
+  end
+
+  def image_rejection_retried_before_step?(_message_id, _step_sequence), do: false
+
   def mark_step_done!(step_id) when is_integer(step_id) do
     actor = actor_for_step!(step_id)
     now = DateTime.utc_now()
@@ -1474,20 +1498,28 @@ defmodule IntellectualClub.Generation.Persistence do
     delay_ms = Keyword.get(opts, :retry_delay_ms)
     retry_in = retry_delay_text(delay_ms)
     detail = error_text |> to_string() |> String.trim()
+    image_rejected? = Keyword.get(opts, :retry_reason) == :image_rejected
 
     prefix =
-      case attempt do
-        value when is_integer(value) and value > 0 ->
+      case {image_rejected?, attempt} do
+        {true, value} when is_integer(value) and value > 0 ->
+          "The provider rejected an image on attempt #{value}."
+
+        {true, _other} ->
+          "The provider rejected an image."
+
+        {false, value} when is_integer(value) and value > 0 ->
           "Transient provider error on attempt #{value}."
 
-        _other ->
+        {false, _other} ->
           "Transient provider error."
       end
 
     suffix =
-      case retry_in do
-        "" -> " Retrying."
-        value -> " Retrying in #{value}."
+      case {image_rejected?, retry_in} do
+        {true, _retry_in} -> " Retrying with the suspected images replaced by text."
+        {false, ""} -> " Retrying."
+        {false, value} -> " Retrying in #{value}."
       end
 
     if detail == "" do
@@ -1522,7 +1554,13 @@ defmodule IntellectualClub.Generation.Persistence do
     |> maybe_put_metadata("status_code", Keyword.get(opts, :status_code))
     |> maybe_put_metadata("error_kind", Keyword.get(opts, :error_kind))
     |> maybe_put_metadata("retryable", Keyword.get(opts, :retryable))
+    |> maybe_put_metadata("retry_reason", retry_reason(Keyword.get(opts, :retry_reason)))
   end
+
+  defp retry_reason(reason) when is_atom(reason) and not is_nil(reason),
+    do: Atom.to_string(reason)
+
+  defp retry_reason(_reason), do: nil
 
   defp maybe_put_metadata(map, _key, nil), do: map
   defp maybe_put_metadata(map, _key, value) when is_binary(value) and value == "", do: map

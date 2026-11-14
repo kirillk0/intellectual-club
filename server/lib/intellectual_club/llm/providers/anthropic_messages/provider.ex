@@ -265,6 +265,8 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
             image_mapper: &map_request_images/3,
             image_cache: Map.get(opts, :image_cache, %{}),
             image_cache_update: Map.get(opts, :image_cache_update),
+            image_sent_update: Map.get(opts, :image_sent_update),
+            image_llm_configuration_id: Map.get(opts, :image_llm_configuration_id),
             timeout_ms: Map.get(opts, :timeout_ms, 300_000)
           },
           emit

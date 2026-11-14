@@ -38,7 +38,7 @@ defmodule IntellectualClub.Chat.MediaTest do
     refute inspect(marker) =~ ";base64,"
   end
 
-  test "projection defers image validation and resizing until a request step exists" do
+  test "projection defers image validation and limits until a request step exists" do
     invalid = image_content!("<html><body>404 Not Found</body></html>", "image/png")
     oversized = image_content!(oversized_png(), "image/png")
 

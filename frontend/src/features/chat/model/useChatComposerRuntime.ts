@@ -2,12 +2,28 @@ import { computed, nextTick, ref, watch, type ComputedRef, type Ref } from 'vue'
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
+  canTogglePendingImageOriginal,
   createPendingChatFiles,
+  initialPendingImageState,
+  isImageMimeType,
   overallPendingUploadProgress,
+  pendingFileSizeError,
+  pendingFileUploadTarget,
+  pendingImageStateAfterConversion,
+  pendingImageStateAfterInspection,
+  pendingImageStatePatch,
   validateFilesForChatUpload,
   type ChatUploadPolicy,
   type PendingChatFile,
+  type PendingImageState,
 } from '@/features/chat/attachments';
+import {
+  convertImageFile,
+  enqueueImageConversion,
+  inspectImageFile,
+  MODEL_IMAGE_LIMITS,
+  type ImageUploadPlan,
+} from '@/features/chat/imageNormalization';
 import {
   abortChatUploadSession,
   createChatUploadSession,
@@ -154,6 +170,10 @@ export function useChatComposerRuntime(params: Params) {
         return translate('Uploading… {progress}%', {
           progress: Math.max(1, Math.round(uploadProgress.progress * 100)),
         });
+      }
+
+      if (pendingFiles.value.some((file) => pendingFileUploadTarget(file) === null)) {
+        return translate('Preparing attachments…');
       }
 
       return translate('Sending…');
@@ -377,6 +397,18 @@ export function useChatComposerRuntime(params: Params) {
       window.setTimeout(resolve, delayMs);
     });
 
+  const abortUploadSessionQuietly = async (chatIdValue: number, uploadId: string) => {
+    if (!chatIdValue) return;
+
+    try {
+      await abortChatUploadSession(chatIdValue, uploadId);
+    } catch (error) {
+      if (!isHttpError(error) || error.status !== 404) {
+        console.warn('Failed to abort chat upload session', error);
+      }
+    }
+  };
+
   const uploadPendingFile = async (
     filesRef: Ref<PendingChatFile[]>,
     fileId: string,
@@ -386,16 +418,40 @@ export function useChatComposerRuntime(params: Params) {
     const pending = findPendingFile(filesRef, fileId);
     if (!pending) return null;
 
-    let { upload, offset } = await resolveWritableChatUpload(chatIdValue, pending, options);
+    // Removing the attachment or switching its variant (original/compressed) makes this
+    // transfer stale: it then stops without touching the state of the attachment.
+    const revision = pending.variantRevision ?? 0;
+    const findLiveFile = () => {
+      const item = findPendingFile(filesRef, fileId);
+      return item && (item.variantRevision ?? 0) === revision ? item : null;
+    };
+    const updateLiveFile = (patch: Partial<PendingChatFile>) => {
+      if (findLiveFile()) updatePendingFile(filesRef, fileId, patch);
+    };
+    const syncLiveFile = (upload: ChatUploadInfo, extra: Partial<PendingChatFile> = {}) => {
+      if (findLiveFile()) syncPendingFileWithUpload(filesRef, fileId, upload, extra);
+    };
+    // A session that became stale before it was recorded on the attachment is aborted here;
+    // recorded sessions are aborted by whoever removed or replaced the attachment.
+    const resolveLiveUpload = async (file: PendingChatFile) => {
+      const resolved = await resolveWritableChatUpload(chatIdValue, file, options);
+      if (findLiveFile()) return resolved;
+      void abortUploadSessionQuietly(chatIdValue, resolved.upload.upload_id);
+      return null;
+    };
 
-    syncPendingFileWithUpload(filesRef, fileId, upload, {
+    const initial = await resolveLiveUpload(pending);
+    if (!initial) return null;
+    let { upload, offset } = initial;
+
+    syncLiveFile(upload, {
       error: '',
       speedBps: 0,
       etaSeconds: offset >= pending.size ? 0 : null,
     });
 
     if (upload.status === 'uploaded' || offset >= pending.size) {
-      syncPendingFileWithUpload(filesRef, fileId, upload, {
+      syncLiveFile(upload, {
         uploadStatus: 'uploaded',
         uploadedBytes: pending.size,
         progress: 1,
@@ -412,7 +468,7 @@ export function useChatComposerRuntime(params: Params) {
     let retryAttempt = 0;
 
     while (offset < pending.size) {
-      const liveFile = findPendingFile(filesRef, fileId);
+      const liveFile = findLiveFile();
       if (!liveFile) return null;
 
       const chunkSize = Math.min(upload.chunk_size_bytes || liveFile.size, liveFile.size - offset);
@@ -421,10 +477,10 @@ export function useChatComposerRuntime(params: Params) {
       try {
         upload = await uploadChatChunk(chatIdValue, upload.upload_id, offset, chunk, {
           onAbortHandle: (abortHandle) => {
-            updatePendingFile(filesRef, fileId, { abortHandle });
+            updateLiveFile({ abortHandle });
           },
           onProgress: (loadedBytes) => {
-            const currentFile = findPendingFile(filesRef, fileId);
+            const currentFile = findLiveFile();
             if (!currentFile) return;
 
             const totalUploaded = Math.min(offset + loadedBytes, currentFile.size);
@@ -445,23 +501,22 @@ export function useChatComposerRuntime(params: Params) {
           },
         });
 
-        const currentFile = findPendingFile(filesRef, fileId);
+        const currentFile = findLiveFile();
         if (!currentFile) return null;
 
         offset = Math.min(upload.uploaded_bytes || 0, currentFile.size);
         retryAttempt = 0;
-        syncPendingFileWithUpload(filesRef, fileId, upload, {
+        syncLiveFile(upload, {
           error: '',
           speedBps: offset >= currentFile.size ? 0 : currentFile.speedBps,
           etaSeconds: offset >= currentFile.size ? 0 : currentFile.etaSeconds,
           abortHandle: null,
         });
       } catch (error) {
-        if (error instanceof UploadAbortedError) {
-          const stillPresent = findPendingFile(filesRef, fileId);
-          if (!stillPresent) return null;
+        if (!findLiveFile()) return null;
 
-          updatePendingFile(filesRef, fileId, {
+        if (error instanceof UploadAbortedError) {
+          updateLiveFile({
             uploadStatus: 'error',
             abortHandle: null,
             speedBps: 0,
@@ -476,7 +531,7 @@ export function useChatComposerRuntime(params: Params) {
           const nextOffset = Number((error.bodyJson as { next_offset?: unknown } | null)?.next_offset);
 
           if (Number.isFinite(nextOffset) && nextOffset >= 0) {
-            const currentFile = findPendingFile(filesRef, fileId);
+            const currentFile = findLiveFile();
             if (!currentFile) return null;
 
             offset = Math.min(nextOffset, currentFile.size);
@@ -484,7 +539,7 @@ export function useChatComposerRuntime(params: Params) {
             startedAt = performance.now();
             retryAttempt = 0;
             upload = await getChatUploadSession(chatIdValue, upload.upload_id);
-            syncPendingFileWithUpload(filesRef, fileId, upload, {
+            syncLiveFile(upload, {
               error: '',
               speedBps: 0,
               etaSeconds: null,
@@ -498,7 +553,7 @@ export function useChatComposerRuntime(params: Params) {
           const delayMs = uploadChunkRetryDelaysMs[retryAttempt];
           retryAttempt += 1;
 
-          updatePendingFile(filesRef, fileId, {
+          updateLiveFile({
             uploadStatus: 'uploading',
             abortHandle: null,
             speedBps: 0,
@@ -508,13 +563,17 @@ export function useChatComposerRuntime(params: Params) {
 
           await waitForUploadRetry(delayMs);
 
-          const currentFile = findPendingFile(filesRef, fileId);
+          const currentFile = findLiveFile();
           if (!currentFile) return null;
 
           try {
-            ({ upload, offset } = await resolveWritableChatUpload(chatIdValue, currentFile, options));
+            const resumed = await resolveLiveUpload(currentFile);
+            if (!resumed) return null;
+            ({ upload, offset } = resumed);
           } catch (syncError) {
-            updatePendingFile(filesRef, fileId, {
+            if (!findLiveFile()) return null;
+
+            updateLiveFile({
               uploadStatus: 'error',
               abortHandle: null,
               speedBps: 0,
@@ -527,7 +586,7 @@ export function useChatComposerRuntime(params: Params) {
 
           resumeOffset = offset;
           startedAt = performance.now();
-          syncPendingFileWithUpload(filesRef, fileId, upload, {
+          syncLiveFile(upload, {
             error: '',
             speedBps: 0,
             etaSeconds: offset >= currentFile.size ? 0 : null,
@@ -536,7 +595,7 @@ export function useChatComposerRuntime(params: Params) {
           continue;
         }
 
-        updatePendingFile(filesRef, fileId, {
+        updateLiveFile({
           uploadStatus: 'error',
           abortHandle: null,
           speedBps: 0,
@@ -548,7 +607,7 @@ export function useChatComposerRuntime(params: Params) {
       }
     }
 
-    const finalFile = findPendingFile(filesRef, fileId);
+    const finalFile = findLiveFile();
     if (!finalFile) return null;
 
     updatePendingFile(filesRef, fileId, {
@@ -565,6 +624,10 @@ export function useChatComposerRuntime(params: Params) {
     return upload.upload_id;
   };
 
+  // Image preparations in flight, keyed by pending file id; uploads wait for them. Each one
+  // resolves to the error its attachment was rejected with, or '' when it was kept.
+  const imagePreparations = new Map<string, Promise<string>>();
+
   const ensurePendingFilesUploaded = async (
     filesRef: Ref<PendingChatFile[]>,
     fileIds?: ReadonlySet<string>,
@@ -575,34 +638,182 @@ export function useChatComposerRuntime(params: Params) {
     const targetIds = fileIds ? [...fileIds] : filesRef.value.map((item) => item.id);
 
     for (const fileId of targetIds) {
-      const item = findPendingFile(filesRef, fileId);
-      if (!item) continue;
+      // Repeats when the attachment switches to another variant while it is uploaded.
+      for (;;) {
+        const item = findPendingFile(filesRef, fileId);
+        if (!item) break;
 
-      if (item.uploadStatus === 'uploaded' && item.uploadId) {
-        continue;
-      }
-
-      try {
-        await uploadPendingFile(filesRef, item.id, params.chatId.value, options);
-      } catch (error) {
-        if (error instanceof UploadAbortedError && !findPendingFile(filesRef, item.id)) {
+        const preparation = imagePreparations.get(fileId);
+        if (preparation && pendingFileUploadTarget(item) === null) {
+          const rejection = await preparation;
+          if (rejection) throw new Error(rejection);
           continue;
         }
 
-        throw error;
+        if (item.uploadStatus === 'uploaded' && item.uploadId) break;
+
+        const revision = item.variantRevision ?? 0;
+        const isCurrentVariant = () => (findPendingFile(filesRef, fileId)?.variantRevision ?? 0) === revision;
+
+        try {
+          await uploadPendingFile(filesRef, fileId, params.chatId.value, options);
+        } catch (error) {
+          if (error instanceof UploadAbortedError && (!findPendingFile(filesRef, fileId) || !isCurrentVariant())) {
+            continue;
+          }
+
+          throw error;
+        }
+
+        const updated = findPendingFile(filesRef, fileId);
+        if (!updated) break;
+        if (!isCurrentVariant()) continue;
+        if (updated.uploadStatus === 'uploaded' && updated.uploadId) break;
+
+        throw new Error(updated.error || 'Failed to upload attachment.');
       }
-
-      const updated = findPendingFile(filesRef, item.id);
-      if (!updated) continue;
-      if (updated.uploadStatus === 'uploaded' && updated.uploadId) continue;
-
-      throw new Error(updated.error || 'Failed to upload attachment.');
     }
 
     return filesRef.value
       .filter((item) => !fileIds || fileIds.has(item.id))
       .map((item) => item.uploadId)
       .filter((value): value is string => typeof value === 'string' && value.trim() !== '');
+  };
+
+  // Applies a new image state; switching the uploaded variant drops the previous upload.
+  const replacePendingImageState = (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    image: PendingImageState | null
+  ) => {
+    const current = findPendingFile(filesRef, id);
+    if (!current) return;
+
+    const { patch, variantChanged } = pendingImageStatePatch(current, image);
+    updatePendingFile(filesRef, id, patch);
+    if (!variantChanged) return;
+
+    current.abortHandle?.();
+    if (current.uploadId) void abortUploadSessionQuietly(params.chatId.value, current.uploadId);
+  };
+
+  /**
+   * Applies the next image state of an attachment being prepared. When the variant that
+   * state uploads exceeds the size limit, the attachment is removed instead and the
+   * error is returned; otherwise ''.
+   */
+  const settlePendingImageState = (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    update: (image: PendingImageState) => PendingImageState | null,
+    sizeLimitBytes: number
+  ) => {
+    const current = findPendingFile(filesRef, id);
+    if (!current?.image) return '';
+
+    const image = update(current.image);
+    const error = pendingFileSizeError({ ...current, image }, sizeLimitBytes);
+    if (error) void removePendingFileFromCollection(filesRef, id);
+    else replacePendingImageState(filesRef, id, image);
+    return error;
+  };
+
+  const preparePendingFile = async (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    source: File,
+    sizeLimitBytes: number
+  ) => {
+    let plan: ImageUploadPlan | null = null;
+    try {
+      plan = await inspectImageFile(source);
+    } catch (error) {
+      console.warn('Failed to inspect attachment', error);
+    }
+
+    // Not a raster image this client can prepare (SVG, icon, damaged file): upload it as is.
+    if (!plan) return settlePendingImageState(filesRef, id, () => null, sizeLimitBytes);
+
+    const inspected = plan;
+    const rejection = settlePendingImageState(
+      filesRef,
+      id,
+      (image) => pendingImageStateAfterInspection(image, inspected),
+      sizeLimitBytes
+    );
+    if (rejection || inspected.action !== 'convert') return rejection;
+
+    // The copy has to fit the upload policy as well. Conversions run one at a time; skip
+    // those of attachments removed while waiting.
+    const limits = { ...MODEL_IMAGE_LIMITS, maxBytes: Math.min(MODEL_IMAGE_LIMITS.maxBytes, sizeLimitBytes) };
+    const result = await enqueueImageConversion(async () =>
+      findPendingFile(filesRef, id) ? convertImageFile(source, inspected, { limits }) : null
+    );
+    if (!result) return '';
+    if (result.kind === 'failed') {
+      console.warn(`Failed to ${result.reason} image attachment ${JSON.stringify(source.name)}`, result.error);
+    }
+
+    return settlePendingImageState(
+      filesRef,
+      id,
+      (image) => pendingImageStateAfterConversion(image, result),
+      sizeLimitBytes
+    );
+  };
+
+  /**
+   * Adds the files the upload policy accepts to an attachment collection and starts
+   * preparing the images among them (the server treats only image MIME types as images).
+   * An image over the size limit is accepted while a compressed copy may fit; it is
+   * removed with the usual size error once the variant to upload turns out too large.
+   * `setError` gets the first rejection, '' when every file was accepted, and later the
+   * error of such a removal.
+   */
+  const addPendingFilesToCollection = (
+    filesRef: Ref<PendingChatFile[]>,
+    files: File[],
+    policy: ChatUploadPolicy,
+    setError: (error: string) => void
+  ) => {
+    const { accepted, errors } = validateFilesForChatUpload(files, policy, { deferImageSizeCheck: true });
+    const sizeLimitBytes = policy.maxFileSizeBytes;
+    const created = createPendingChatFiles(accepted).map((item) =>
+      isImageMimeType(item.file.type) ? { ...item, image: initialPendingImageState(item.file, sizeLimitBytes) } : item
+    );
+    if (created.length > 0) filesRef.value = [...filesRef.value, ...created];
+    setError(errors[0] || '');
+
+    for (const item of created) {
+      if (!item.image) continue;
+      const preparation = preparePendingFile(filesRef, item.id, item.file, sizeLimitBytes)
+        .catch((error) => {
+          console.error('Failed to prepare attachment', error);
+          return settlePendingImageState(
+            filesRef,
+            item.id,
+            (image) => ({ ...image, phase: 'ready', failed: true }),
+            sizeLimitBytes
+          );
+        })
+        .then((rejection) => {
+          if (rejection) setError(rejection);
+          return rejection;
+        })
+        .finally(() => imagePreparations.delete(item.id));
+      imagePreparations.set(item.id, preparation);
+    }
+  };
+
+  /** Chooses between the original image and its compressed copy for upload. */
+  const setPendingFileOriginalInCollection = (
+    filesRef: Ref<PendingChatFile[]>,
+    id: string,
+    keepOriginal: boolean
+  ) => {
+    const image = findPendingFile(filesRef, id)?.image;
+    if (!image || image.keepOriginal === keepOriginal || !canTogglePendingImageOriginal(image)) return;
+    replacePendingImageState(filesRef, id, { ...image, keepOriginal });
   };
 
   const removePendingFileFromCollection = async (filesRef: Ref<PendingChatFile[]>, id: string) => {
@@ -614,13 +825,7 @@ export function useChatComposerRuntime(params: Params) {
 
     if (!params.chatId.value || !current.uploadId) return;
 
-    try {
-      await abortChatUploadSession(params.chatId.value, current.uploadId);
-    } catch (error) {
-      if (!isHttpError(error) || error.status !== 404) {
-        console.warn('Failed to abort chat upload session', error);
-      }
-    }
+    await abortUploadSessionQuietly(params.chatId.value, current.uploadId);
   };
 
   const clearPendingFilesCollection = async (filesRef: Ref<PendingChatFile[]>) => {
@@ -632,13 +837,7 @@ export function useChatComposerRuntime(params: Params) {
 
       if (!params.chatId.value || !item.uploadId) continue;
 
-      try {
-        await abortChatUploadSession(params.chatId.value, item.uploadId);
-      } catch (error) {
-        if (!isHttpError(error) || error.status !== 404) {
-          console.warn('Failed to abort chat upload session', error);
-        }
-      }
+      await abortUploadSessionQuietly(params.chatId.value, item.uploadId);
     }
   };
 
@@ -1300,17 +1499,22 @@ export function useChatComposerRuntime(params: Params) {
   const addPendingFiles = (files: File[]) => {
     if (params.readOnly.value) return;
     if (!files.length) return;
-    const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
-
-    if (accepted.length > 0) {
-      pendingFiles.value = [...pendingFiles.value, ...createPendingChatFiles(accepted)];
-    }
-
-    params.loadError.value = errors[0] || '';
+    addPendingFilesToCollection(pendingFiles, files, params.fileUploadPolicy.value, (error) => {
+      params.loadError.value = error;
+    });
   };
 
   const removePendingFile = (id: string) => {
     void removePendingFileFromCollection(pendingFiles, id);
+  };
+
+  // A file already uploaded for the message being sent stays as is until the send settles.
+  const isPendingFileLockedForSend = (file: PendingChatFile) => sending.value && file.uploadStatus === 'uploaded';
+
+  const setPendingFileOriginal = (id: string, keepOriginal: boolean) => {
+    const current = findPendingFile(pendingFiles, id);
+    if (!current || isPendingFileLockedForSend(current)) return;
+    setPendingFileOriginalInCollection(pendingFiles, id, keepOriginal);
   };
 
   const syncServerGenerationState = (messageId: number | null | undefined) => {
@@ -1361,6 +1565,8 @@ export function useChatComposerRuntime(params: Params) {
     steerButtonLabel,
     findPendingFile,
     ensurePendingFilesUploaded,
+    addPendingFilesToCollection,
+    setPendingFileOriginalInCollection,
     removePendingFileFromCollection,
     clearPendingFilesCollection,
     startPolling,
@@ -1379,6 +1585,7 @@ export function useChatComposerRuntime(params: Params) {
     onPendingFilesSelected,
     addPendingFiles,
     removePendingFile,
+    setPendingFileOriginal,
     dispose,
   };
 }

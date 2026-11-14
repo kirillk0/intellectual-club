@@ -2,7 +2,7 @@ defmodule IntellectualClub.Generation.NativeModalities do
   @moduledoc """
   Projects canonical media contents into compact provider-native modalities.
 
-  Image bytes are deliberately not read here. Validation, optional resizing, and
+  Image bytes are deliberately not read here. Validation, request limits and
   pinning happen in `RequestImages.prepare/3` before the final request is inserted.
   """
 

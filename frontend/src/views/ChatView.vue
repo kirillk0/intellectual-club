@@ -339,6 +339,12 @@
                       >
                         <span class="pending-file__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
                       </div>
+                      <ChatPendingImageOptions
+                        v-if="item.image"
+                        :image="item.image"
+                        :disabled="vm.sending && item.uploadStatus === 'uploaded'"
+                        @update:keep-original="(value) => vm.setPendingFileOriginal(item.id, value)"
+                      />
                     </div>
                     <button
                       class="pending-file__remove"
@@ -589,6 +595,7 @@
         @cancel="vm.cancelEdit"
         @add-files="vm.addEditPendingFiles"
         @remove-pending-file="vm.removeEditPendingFile"
+        @set-pending-file-original="vm.setEditPendingFileOriginal"
         @remove-existing-attachment="vm.removeEditExistingAttachment"
         @preview-existing-attachment="vm.openExistingAttachmentPreview"
         @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'edit')"
@@ -629,6 +636,7 @@
         @cancel="vm.cancelQueuedEdit"
         @add-files="vm.addQueuedEditPendingFiles"
         @remove-pending-file="vm.removeQueuedEditPendingFile"
+        @set-pending-file-original="vm.setQueuedEditPendingFileOriginal"
         @remove-existing-attachment="vm.removeQueuedEditExistingAttachment"
         @preview-existing-attachment="vm.openExistingAttachmentPreview"
         @preview-pending-file="(id) => vm.openPendingAttachmentPreview(id, 'queue-edit')"
@@ -863,6 +871,7 @@ import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ChatBranchOptions from '@/features/chat/components/ChatBranchOptions.vue';
+import ChatPendingImageOptions from '@/features/chat/components/ChatPendingImageOptions.vue';
 import ChatMessageTreeOverlay from '@/features/chat/components/ChatMessageTreeOverlay.vue';
 import ChatHeaderToolbar from '@/features/chat/components/ChatHeaderToolbar.vue';
 import ChatContextSidebar from '@/features/chat/components/ChatContextSidebar.vue';

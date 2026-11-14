@@ -20,6 +20,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
   test "successful senders hydrate only the wire body and preserve the persisted logical map" do
     %{user: actor} = user_fixture()
     parent = self()
+    configuration_id = create_configuration!(actor).id
 
     chat =
       Chat
@@ -90,6 +91,12 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
         authorize?: false
       )
       |> Ash.create!(authorize?: false)
+
+      :ok =
+        IntellectualClub.Files.ImageProviderVerdicts.record_accepted(
+          [file.sha256],
+          configuration_id
+        )
 
       wire =
         image_request(adapter, "data:image/png;base64," <> encoded_image, encoded_image)
@@ -177,13 +184,25 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
                    image_cache_update: fn updated ->
                      send(parent, {:updated_cache, adapter, updated})
                    end,
+                   image_sent_update: fn sent -> send(parent, {:sent_images, adapter, sent}) end,
+                   image_llm_configuration_id: configuration_id,
                    timeout_ms: provider_deadline_ms()
                  },
                  fn event -> send(parent, {:provider_event, event}) end
                )
 
+      sent = [
+        %{
+          sha256: file.sha256,
+          file_id: file.id,
+          source_file_external_id: to_string(file.external_id),
+          accepted?: true
+        }
+      ]
+
       assert_receive {:wire_request, ^adapter, ^wire}
       assert_receive {:updated_cache, ^adapter, ^cache}
+      assert_receive {:sent_images, ^adapter, ^sent}
       assert_receive {:cache_event, %{hit: 1}}
       refute_receive {:cache_event, %{loaded_bytes: _}}, 0
       refute_receive {:cache_event, %{encoded_bytes: _}}, 0
@@ -193,6 +212,7 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestHydrationTest do
       if adapter == ResponsesWss do
         assert_receive :websocket_upgrade_attempted
         assert_receive {:updated_cache, ^adapter, ^cache}
+        assert_receive {:sent_images, ^adapter, ^sent}
       end
 
       assert_receive {:provider_event, {:response_complete, %{raw_request: ^prepared}}}

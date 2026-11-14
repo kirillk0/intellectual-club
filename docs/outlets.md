@@ -385,7 +385,10 @@ Shell outlet `read_image` reads the local file once. Image validation, SHA-256 a
 upload all use that same byte snapshot, never a later read of the path. A writer
 may still change a file while it is being read; incomplete image snapshots are
 rejected by the decoder. Callers must await file creation before invoking
-`read_image`, or publish completed files with an atomic rename.
+`read_image`, or publish completed files with an atomic rename. JPEG, PNG, GIF and
+WebP files within 2000 px per side and 7.5 MB pass byte for byte; larger or other
+decodable images are downscaled and/or converted by the outlet itself (the server
+never resizes), and the tool result notes the conversion and the unchanged original.
 
 `GET /api/outlet/calls/:call_id/files/:file_id` downloads an authorized attachment.
 Both operations use the outlet bearer token and the server's immutable call context;

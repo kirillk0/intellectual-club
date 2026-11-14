@@ -16,10 +16,6 @@ $script:PostgresVersion = '16.13.0'
 $script:PostgresArchiveName = 'postgresql-16.13.0-x86_64-pc-windows-msvc.tar.gz'
 $script:PostgresUrl = "https://github.com/theseus-rs/postgresql-binaries/releases/download/$($script:PostgresVersion)/$($script:PostgresArchiveName)"
 $script:PostgresSha256 = '27e05be6671bb3af592ff83ac1e717bad456a6ef45d56de0ba64f719908e1f56'
-$script:VipsVersion = '8.18.2'
-$script:VipsArchiveName = 'vips-dev-x64-web-8.18.2.zip'
-$script:VipsUrl = "https://github.com/libvips/build-win64-mxe/releases/download/v$($script:VipsVersion)/$($script:VipsArchiveName)"
-$script:VipsSha256 = '08effbafe12c6700345882b011cefeb41bcb305b959f5c0812a56cd1b0ddb752'
 $script:TailwindVersion = '4.1.12'
 $script:TailwindExecutableName = "tailwindcss-windows-x64-$($script:TailwindVersion).exe"
 $script:TailwindUrl = "https://github.com/tailwindlabs/tailwindcss/releases/download/v$($script:TailwindVersion)/tailwindcss-windows-x64.exe"
@@ -308,16 +304,6 @@ function Ensure-Dependencies {
   }
   $postgresRoot = Find-PayloadRoot $postgresExtract 'postgres.exe'
 
-  $vipsArchive = Join-Path $downloadRoot $script:VipsArchiveName
-  Ensure-Download $script:VipsUrl $vipsArchive $script:VipsSha256
-  $vipsExtract = Join-Path $dependencyRoot "libvips-$($script:VipsVersion)"
-  if (-not (Get-ChildItem -LiteralPath $vipsExtract -Recurse -File -Filter 'vips.exe' -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-    Remove-ManagedDirectory $vipsExtract $dependencyRoot
-    New-Item -ItemType Directory -Path $vipsExtract | Out-Null
-    Expand-Archive -LiteralPath $vipsArchive -DestinationPath $vipsExtract
-  }
-  $vipsRoot = Find-PayloadRoot $vipsExtract 'vips.exe'
-
   $tailwindBin = Join-Path $dependencyRoot $script:TailwindExecutableName
   Ensure-Download $script:TailwindUrl $tailwindBin $script:TailwindSha256
 
@@ -333,7 +319,6 @@ function Ensure-Dependencies {
 
   [pscustomobject]@{
     PostgresRoot = $postgresRoot
-    VipsRoot = $vipsRoot
     TailwindBin = $tailwindBin
     EsbuildBin = $esbuildBin
   }
@@ -539,13 +524,6 @@ function Assert-WindowsPayload {
   }
   if (-not (Test-Path -LiteralPath (Join-Path $release 'lib') -PathType Container)) {
     throw 'The BEAM release does not contain application libraries.'
-  }
-  if (-not (Test-Path -LiteralPath (Join-Path $release 'lib') -PathType Container) -or
-      -not (Get-ChildItem -LiteralPath (Join-Path $release 'lib') -Directory -Filter 'intellectual_club-*' |
-        ForEach-Object { Join-Path $_.FullName 'priv\libvips\bin\vips.exe' } |
-        Where-Object { Test-Path -LiteralPath $_ } |
-        Select-Object -First 1)) {
-    throw 'The BEAM release does not contain bundled libvips.'
   }
 
   $peFiles = Get-ChildItem -LiteralPath $StagingRoot -Recurse -File |
@@ -1046,9 +1024,8 @@ $BuildDirectory = Get-FullPath $BuildDirectory
 $OutputDirectory = Get-FullPath $OutputDirectory
 New-Item -ItemType Directory -Force -Path $BuildDirectory, $OutputDirectory | Out-Null
 
-Write-Step 'Preparing pinned PostgreSQL, libvips, and asset tool payloads'
+Write-Step 'Preparing pinned PostgreSQL and asset tool payloads'
 $dependencies = Ensure-Dependencies $BuildDirectory
-$env:IC_VIPS_BIN = Join-Path $dependencies.VipsRoot 'bin\vips.exe'
 $env:MIX_TAILWIND_PATH = $dependencies.TailwindBin
 $env:MIX_ESBUILD_PATH = $dependencies.EsbuildBin
 
@@ -1083,9 +1060,10 @@ if (-not $SkipTests) {
   Invoke-Native 'cargo' @('test', '--workspace', '--locked', '--target', 'x86_64-pc-windows-msvc') (Join-Path $script:RepositoryRoot 'native_tools')
 
   # Application tests do not run the suites of path dependencies.
-  Write-Step 'Testing the pure Elixir PDF library'
+  Write-Step 'Testing the pure Elixir PDF and image check libraries'
   $env:MIX_ENV = 'test'
   Invoke-Native 'mix' @('test') (Join-Path $script:RepositoryRoot 'server/vendor/pdf_text')
+  Invoke-Native 'mix' @('test') (Join-Path $script:RepositoryRoot 'server/vendor/image_check')
 
   Write-Step 'Checking and testing the Elixir application against portable PostgreSQL'
   Invoke-WithTestPostgres $dependencies.PostgresRoot $BuildDirectory {
@@ -1124,11 +1102,6 @@ if (-not $PrebuiltStaticDirectory) {
 }
 Invoke-Native 'mix' @('release', '--overwrite') $serverRoot
 $beamRelease = Join-Path $serverRoot '_build\prod\rel\intellectual_club'
-$applicationPriv = Get-ChildItem -LiteralPath (Join-Path $beamRelease 'lib') -Directory -Filter 'intellectual_club-*' |
-  Select-Object -First 1 |
-  ForEach-Object { Join-Path $_.FullName 'priv' }
-if (-not $applicationPriv) { throw 'Could not locate the Intellectual Club application priv directory.' }
-Copy-DirectoryContents $dependencies.VipsRoot (Join-Path $applicationPriv 'libvips')
 
 $ertsBin = Get-ChildItem -LiteralPath $beamRelease -Directory -Filter 'erts-*' |
   Select-Object -First 1 |

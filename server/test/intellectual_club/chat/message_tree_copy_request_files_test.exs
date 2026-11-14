@@ -205,8 +205,8 @@ defmodule IntellectualClub.Chat.MessageTreeCopyRequestFilesTest do
   test "read-only preflight keeps a frozen rendition unchanged when a later copy rolls back" do
     %{user: actor} = user_fixture()
 
-    %{chat: source, step: source_step} =
-      create_source_with_request!(actor, oversized_png())
+    %{chat: source, step: source_step} = create_source_with_request!(actor, png_1x1())
+    pin_legacy_thumbnail!(source_step, png(20, 10))
 
     source_branch =
       Threads.active_branch(source.id, actor,

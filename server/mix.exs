@@ -81,13 +81,10 @@ defmodule IntellectualClub.MixProject do
       {:mint_web_socket, "~> 1.0"},
       {:ex_image_info, "~> 1.0"},
       {:pdf_text, path: "vendor/pdf_text"},
+      {:image_check, path: "vendor/image_check"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
-    ] ++ image_dependencies()
-  end
-
-  defp image_dependencies do
-    if windows?(), do: [], else: [{:image, "~> 0.69.0"}]
+    ]
   end
 
   # Aliases are shortcuts or tasks specific to the current project.
@@ -144,7 +141,12 @@ defmodule IntellectualClub.MixProject do
       precommit:
         ["compile"] ++
           unused_dependency_check() ++
-          ["format", "cmd --cd vendor/pdf_text mix test", "cmd mix test"]
+          [
+            "format",
+            "cmd --cd vendor/pdf_text mix test",
+            "cmd --cd vendor/image_check mix test",
+            "cmd mix test"
+          ]
     ]
   end
 

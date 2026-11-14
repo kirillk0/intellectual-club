@@ -16,6 +16,8 @@ defmodule IntellectualClub.Files do
 
   resources do
     resource(File)
+    resource(IntellectualClub.Files.ImageVerdict)
+    resource(IntellectualClub.Files.ImageProviderVerdict)
   end
 
   @type upload_attrs :: %{

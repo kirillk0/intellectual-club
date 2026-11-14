@@ -2,10 +2,20 @@ import { computed, nextTick, ref } from 'vue';
 import { flushPromises } from '@vue/test-utils';
 
 const apiMocks = vi.hoisted(() => ({
+  del: vi.fn(),
   get: vi.fn(),
   isHttpError: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
+}));
+
+const imageMocks = vi.hoisted(() => ({
+  convertImageFile: vi.fn(),
+  inspectImageFile: vi.fn(),
+}));
+
+const uploadMocks = vi.hoisted(() => ({
+  uploadChatChunk: vi.fn(),
 }));
 
 vi.mock('@/api/client', () => ({
@@ -18,7 +28,19 @@ vi.mock('@/features/chat/chatEvents', () => ({
   publishChatChange: vi.fn(),
 }));
 
+vi.mock('@/features/chat/imageNormalization', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/chat/imageNormalization')>()),
+  convertImageFile: imageMocks.convertImageFile,
+  inspectImageFile: imageMocks.inspectImageFile,
+}));
+
+vi.mock('@/features/chat/upload', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/chat/upload')>()),
+  uploadChatChunk: uploadMocks.uploadChatChunk,
+}));
+
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
+import { UploadAbortedError } from '@/features/chat/upload';
 import type { PendingChatFile } from '@/features/chat/attachments';
 import type { ChatQueuedMessage } from '@/features/chat/model/chatViewModel.shared';
 import type { ChatBranchMessage } from '@/types/api';
@@ -135,6 +157,7 @@ describe('chat composer runtime', () => {
     viewportWidth = 390;
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: viewportWidth <= 900 })));
     window.localStorage.clear();
+    apiMocks.del.mockReset().mockResolvedValue({ upload: { status: 'aborted' } });
     apiMocks.get.mockReset();
     apiMocks.isHttpError.mockReset().mockReturnValue(false);
     apiMocks.post.mockReset();
@@ -777,6 +800,323 @@ describe('chat composer runtime', () => {
     await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(2));
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 1_200, left: 0, behavior: 'auto' });
+  });
+
+  describe('image attachments', () => {
+    const original = () => new File([new Uint8Array(900)], 'photo.heic', { type: 'image/heic' });
+    const compressed = () => new File([new Uint8Array(300)], 'photo.jpg', { type: 'image/jpeg' });
+    const conversionPlan = {
+      action: 'convert',
+      header: { format: 'heic', width: null, height: null },
+      reasons: ['format'],
+    };
+    const converted = (file: File) => ({
+      kind: 'converted',
+      file,
+      width: 2000,
+      height: 1500,
+      sourceWidth: 4032,
+      sourceHeight: 3024,
+    });
+    const uploadInfo = (uploadId: string, size: number, status = 'uploaded') => ({
+      upload_id: uploadId,
+      filename: 'photo',
+      mime_type: 'image/jpeg',
+      size_bytes: size,
+      uploaded_bytes: status === 'uploaded' ? size : 0,
+      chunk_size_bytes: 1024,
+      status,
+      expires_at: '2026-12-01T00:00:00Z',
+    });
+    const generationStart = { branch: [{ id: 21, role: 'user', status: 'done' }], generation: null };
+
+    const createImageRuntime = async () => {
+      const setup = createRuntime(null);
+      setup.branch.value = [{ id: 20, role: 'assistant', status: 'done' }];
+      imageMocks.inspectImageFile.mockResolvedValue(conversionPlan);
+      return setup;
+    };
+
+    it('uploads the compressed copy once the browser has prepared it', async () => {
+      const { runtime, loadError } = await createImageRuntime();
+      const source = original();
+      const copy = compressed();
+      let finishConversion!: (result: unknown) => void;
+      imageMocks.convertImageFile.mockReturnValue(new Promise((resolve) => { finishConversion = resolve; }));
+      apiMocks.post
+        .mockResolvedValueOnce({ upload: uploadInfo('upload-compressed', copy.size) })
+        .mockResolvedValueOnce(generationStart);
+
+      runtime.addPendingFiles([source]);
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('processing'));
+      expect(runtime.pendingFiles.value[0]).toMatchObject({ name: 'photo.heic', uploadStatus: 'idle' });
+
+      const sending = runtime.sendMessage();
+      await flushPromises();
+      expect(runtime.sendButtonLabel.value).toBe('Preparing attachments…');
+      expect(apiMocks.post).not.toHaveBeenCalled();
+
+      finishConversion(converted(copy));
+      await sending;
+
+      expect(imageMocks.convertImageFile).toHaveBeenCalledWith(source, conversionPlan, {
+        limits: { maxSidePx: 2000, maxBytes: 1024 },
+      });
+      expect(apiMocks.post).toHaveBeenNthCalledWith(1, '/api/bff/chat-uploads/12', {
+        filename: 'photo.jpg',
+        mime_type: 'image/jpeg',
+        size_bytes: 300,
+      });
+      expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', {
+        content: '',
+        upload_ids: ['upload-compressed'],
+        parent_id: 20,
+      });
+      expect(loadError.value).toBe('');
+      expect(runtime.pendingFiles.value).toEqual([]);
+      await runtime.dispose();
+    });
+
+    it('replaces an upload in progress when the original is chosen', async () => {
+      const { runtime, loadError } = await createImageRuntime();
+      imageMocks.convertImageFile.mockResolvedValue(converted(compressed()));
+      apiMocks.post
+        .mockResolvedValueOnce({ upload: uploadInfo('upload-compressed', 300, 'uploading') })
+        .mockResolvedValueOnce({ upload: uploadInfo('upload-original', 900) })
+        .mockResolvedValueOnce(generationStart);
+      const abortTransfer = vi.fn();
+      uploadMocks.uploadChatChunk.mockImplementation(
+        (_chatId, _uploadId, _offset, _chunk, options) =>
+          new Promise((_resolve, reject) => {
+            options.onAbortHandle(() => {
+              abortTransfer();
+              options.onAbortHandle(null);
+              reject(new UploadAbortedError());
+            });
+          })
+      );
+
+      runtime.addPendingFiles([original()]);
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+      const [item] = runtime.pendingFiles.value;
+      expect(item).toMatchObject({ name: 'photo.jpg', size: 300 });
+
+      const sending = runtime.sendMessage();
+      await vi.waitFor(() => expect(uploadMocks.uploadChatChunk).toHaveBeenCalledTimes(1));
+      runtime.setPendingFileOriginal(item.id, true);
+      await sending;
+
+      expect(abortTransfer).toHaveBeenCalledTimes(1);
+      expect(apiMocks.del).toHaveBeenCalledWith('/api/bff/chat-uploads/12/upload-compressed');
+      expect(apiMocks.post).toHaveBeenNthCalledWith(2, '/api/bff/chat-uploads/12', {
+        filename: 'photo.heic',
+        mime_type: 'image/heic',
+        size_bytes: 900,
+      });
+      expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', {
+        content: '',
+        upload_ids: ['upload-original'],
+        parent_id: 20,
+      });
+      expect(loadError.value).toBe('');
+      await runtime.dispose();
+    });
+
+    it('aborts a session that was created for a variant replaced in the meantime', async () => {
+      const { runtime } = await createImageRuntime();
+      imageMocks.convertImageFile.mockResolvedValue(converted(compressed()));
+      let createStaleSession!: (value: unknown) => void;
+      apiMocks.post
+        .mockReturnValueOnce(new Promise((resolve) => { createStaleSession = resolve; }))
+        .mockResolvedValueOnce({ upload: uploadInfo('upload-original', 900) })
+        .mockResolvedValueOnce(generationStart);
+
+      runtime.addPendingFiles([original()]);
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+      const sending = runtime.sendMessage();
+      await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(1));
+      runtime.setPendingFileOriginal(runtime.pendingFiles.value[0].id, true);
+      createStaleSession({ upload: uploadInfo('upload-stale', 300, 'uploading') });
+      await sending;
+
+      expect(apiMocks.del).toHaveBeenCalledWith('/api/bff/chat-uploads/12/upload-stale');
+      expect(uploadMocks.uploadChatChunk).not.toHaveBeenCalled();
+      expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', {
+        content: '',
+        upload_ids: ['upload-original'],
+        parent_id: 20,
+      });
+      await runtime.dispose();
+    });
+
+    it('keeps an uploaded file while its message is sent and replaces it after a failed send', async () => {
+      const { runtime } = await createImageRuntime();
+      imageMocks.convertImageFile.mockResolvedValue(converted(compressed()));
+      let rejectSend!: (error: unknown) => void;
+      apiMocks.post
+        .mockResolvedValueOnce({ upload: uploadInfo('upload-compressed', 300) })
+        .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectSend = reject; }));
+
+      runtime.addPendingFiles([original()]);
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+      const id = runtime.pendingFiles.value[0].id;
+      const sending = runtime.sendMessage();
+      await vi.waitFor(() => expect(apiMocks.post).toHaveBeenCalledTimes(2));
+
+      runtime.setPendingFileOriginal(id, true);
+      expect(runtime.pendingFiles.value[0]).toMatchObject({ uploadId: 'upload-compressed', uploadStatus: 'uploaded' });
+      expect(apiMocks.del).not.toHaveBeenCalled();
+
+      rejectSend(new Error('send failed'));
+      await sending;
+      runtime.setPendingFileOriginal(id, true);
+
+      expect(apiMocks.del).toHaveBeenCalledWith('/api/bff/chat-uploads/12/upload-compressed');
+      expect(runtime.pendingFiles.value[0]).toMatchObject({
+        name: 'photo.heic',
+        size: 900,
+        uploadId: null,
+        uploadStatus: 'idle',
+        image: { keepOriginal: true },
+      });
+      runtime.pendingFiles.value = [];
+      await runtime.dispose();
+    });
+
+    it('uploads images that fit the limits and other files untouched', async () => {
+      const { runtime } = await createImageRuntime();
+      imageMocks.inspectImageFile.mockResolvedValue({
+        action: 'keep',
+        header: { format: 'jpeg', width: 1200, height: 900 },
+      });
+      const photo = new File([new Uint8Array(500)], 'small.jpg', { type: 'image/jpeg' });
+      const note = new File(['note'], 'note.txt', { type: 'text/plain' });
+
+      runtime.addPendingFiles([photo, note]);
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+
+      expect(imageMocks.inspectImageFile).toHaveBeenCalledTimes(1);
+      expect(imageMocks.convertImageFile).not.toHaveBeenCalled();
+      expect(runtime.pendingFiles.value.map((file) => [file.file, file.image?.originalEmbeddable ?? null])).toEqual([
+        [photo, true],
+        [note, null],
+      ]);
+      runtime.setPendingFileOriginal(runtime.pendingFiles.value[0].id, true);
+      expect(runtime.pendingFiles.value[0].image?.keepOriginal).toBe(false);
+      await runtime.dispose();
+    });
+
+    describe('over the upload size limit', () => {
+      const large = () => new File([new Uint8Array(5_000)], 'large.heic', { type: 'image/heic' });
+      const sizeError = 'File "large.heic" exceeds the maximum size of 1.0 KB.';
+
+      it('accepts the image and uploads a compressed copy made to fit the limit', async () => {
+        const { runtime, loadError } = await createImageRuntime();
+        const source = large();
+        imageMocks.convertImageFile.mockResolvedValue(converted(compressed()));
+        apiMocks.post
+          .mockResolvedValueOnce({ upload: uploadInfo('upload-compressed', 300) })
+          .mockResolvedValueOnce(generationStart);
+
+        runtime.addPendingFiles([source]);
+        expect(loadError.value).toBe('');
+        // The server would reject the original, so it cannot be chosen.
+        runtime.setPendingFileOriginal(runtime.pendingFiles.value[0].id, true);
+        expect(runtime.pendingFiles.value[0].image).toMatchObject({ keepOriginal: false, sizeLimitBytes: 1024 });
+        await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+        await runtime.sendMessage();
+
+        expect(imageMocks.convertImageFile).toHaveBeenCalledWith(source, conversionPlan, {
+          limits: { maxSidePx: 2000, maxBytes: 1024 },
+        });
+        expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', {
+          content: '',
+          upload_ids: ['upload-compressed'],
+          parent_id: 20,
+        });
+        expect(loadError.value).toBe('');
+        await runtime.dispose();
+      });
+
+      it.each<[string, () => void]>([
+        [
+          'its compressed copy is still too large',
+          () => {
+            imageMocks.convertImageFile.mockResolvedValue(
+              converted(new File([new Uint8Array(2_000)], 'large.jpg', { type: 'image/jpeg' }))
+            );
+          },
+        ],
+        [
+          'the browser cannot compress it',
+          () => {
+            imageMocks.convertImageFile.mockResolvedValue({ kind: 'failed', reason: 'decode' });
+          },
+        ],
+        [
+          'it is uploaded as is',
+          () => {
+            imageMocks.inspectImageFile.mockResolvedValue({ action: 'keep', header: { format: 'jpeg', width: 1200, height: 900 } });
+          },
+        ],
+        [
+          'it is not a raster image',
+          () => {
+            imageMocks.inspectImageFile.mockResolvedValue(null);
+          },
+        ],
+      ])('rejects the image with the size error when %s', async (_label, arrange) => {
+        const { runtime, loadError } = await createImageRuntime();
+        arrange();
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        runtime.addPendingFiles([large(), new File(['note'], 'note.txt', { type: 'text/plain' })]);
+        expect(loadError.value).toBe('');
+        await vi.waitFor(() => expect(runtime.pendingFiles.value.map((file) => file.name)).toEqual(['note.txt']));
+
+        expect(loadError.value).toBe(sizeError);
+        await runtime.dispose();
+      });
+
+      it('fails a send that waits for an image rejected while it was prepared', async () => {
+        const { runtime } = await createImageRuntime();
+        let finishConversion!: (result: unknown) => void;
+        imageMocks.convertImageFile.mockReturnValue(new Promise((resolve) => { finishConversion = resolve; }));
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        runtime.draft.value = 'see attached';
+        runtime.addPendingFiles([large()]);
+        await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('processing'));
+        const sending = runtime.sendMessage();
+        await flushPromises();
+        finishConversion({ kind: 'failed', reason: 'encode' });
+        await sending;
+
+        expect(apiMocks.post).not.toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalledWith(expect.objectContaining({ message: sizeError }));
+        expect(runtime.pendingFiles.value).toEqual([]);
+        expect(runtime.draft.value).toBe('see attached');
+        await runtime.dispose();
+      });
+    });
+
+    it('skips the conversion of an image removed while waiting for its turn', async () => {
+      const { runtime } = await createImageRuntime();
+      let finishFirst!: (result: unknown) => void;
+      imageMocks.convertImageFile.mockReturnValueOnce(new Promise((resolve) => { finishFirst = resolve; }));
+
+      runtime.addPendingFiles([original(), new File([new Uint8Array(800)], 'second.heic', { type: 'image/heic' })]);
+      await vi.waitFor(() => expect(imageMocks.convertImageFile).toHaveBeenCalledTimes(1));
+      runtime.removePendingFile(runtime.pendingFiles.value[1].id);
+      finishFirst(converted(compressed()));
+      await vi.waitFor(() => expect(runtime.pendingFiles.value[0]?.image?.phase).toBe('ready'));
+      await flushPromises();
+
+      expect(imageMocks.convertImageFile).toHaveBeenCalledTimes(1);
+      expect(runtime.pendingFiles.value).toHaveLength(1);
+      await runtime.dispose();
+    });
   });
 
   describe('responsive autoscroll', () => {

@@ -16,7 +16,12 @@ const publishChatChange = vi.hoisted(() => vi.fn());
 
 vi.mock('@/features/chat/chatEvents', () => ({ publishChatChange }));
 
-import type { ChatUploadPolicy } from '@/features/chat/attachments';
+import {
+  createPendingChatFiles,
+  initialPendingImageState,
+  type ChatUploadPolicy,
+  type PendingChatFile,
+} from '@/features/chat/attachments';
 import { useChatMessageActions } from '@/features/chat/model/useChatMessageActions';
 import type { Chat, ChatBranchMessage } from '@/types/api';
 
@@ -65,6 +70,7 @@ const createActions = (
     chatUploadPolicy?: ChatUploadPolicy;
     uploadPolicyForConfig?: (configId: number) => ChatUploadPolicy;
     messageConfigLabel?: (configId?: number | null, snapshot?: string | null) => string;
+    addPendingFilesToCollection?: Parameters<typeof useChatMessageActions>[0]['addPendingFilesToCollection'];
   } = {}
 ) => {
   const branch = ref<ChatBranchMessage[]>([userMessage, assistantMessage]);
@@ -88,6 +94,7 @@ const createActions = (
     startPolling,
     scrollToLastMessage,
     ensurePendingFilesUploaded,
+    addPendingFilesToCollection: overrides.addPendingFilesToCollection,
     removePendingFileFromCollection: async () => undefined,
     clearPendingFilesCollection: async () => undefined,
     pushChatRoute,
@@ -437,6 +444,37 @@ describe('chat message branch options', () => {
       actions.addEditPendingFiles([image()]);
       expect(actions.editPendingFiles.value).toHaveLength(1);
       expect(actions.editErrorText.value).toBe('');
+    });
+
+    it('adds files through the preparing runtime and checks the variant each one uploads', () => {
+      const addPendingFilesToCollection = vi.fn();
+      const { actions } = createActions({
+        chatUploadPolicy: noFiles,
+        uploadPolicyForConfig: policyForConfig,
+        addPendingFilesToCollection,
+      });
+      const sizeError = 'File "big.png" exceeds the maximum size of 9.8 KB.';
+
+      actions.startBranchToNewChat(userMessage);
+      actions.branchConfigId.value = 8;
+      const picked = [image()];
+      actions.addEditPendingFiles(picked);
+      expect(addPendingFilesToCollection).toHaveBeenCalledWith(actions.editPendingFiles, picked, imagesOnly, expect.any(Function));
+      const setError = addPendingFilesToCollection.mock.calls[0][3] as (error: string) => void;
+      setError(sizeError);
+      expect(actions.editErrorText.value).toBe(sizeError);
+      setError('');
+
+      // An image over the limit is fine while its compressed copy is prepared, not once the original is what remains.
+      const big = new File([new Uint8Array(20_000)], 'big.png', { type: 'image/png' });
+      const processing: PendingChatFile = {
+        ...createPendingChatFiles([big])[0],
+        image: { ...initialPendingImageState(big, imagesOnly.maxFileSizeBytes), phase: 'processing' },
+      };
+      actions.editPendingFiles.value = [processing];
+      expect(actions.editAttachmentPolicyError.value).toBe('');
+      actions.editPendingFiles.value = [{ ...processing, image: { ...processing.image!, phase: 'ready', failed: true } }];
+      expect(actions.editAttachmentPolicyError.value).toBe(sizeError);
     });
 
     it('keeps the chat policy for in-place edits', () => {

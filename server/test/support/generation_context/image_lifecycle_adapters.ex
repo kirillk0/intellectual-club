@@ -3,7 +3,8 @@ defmodule IntellectualClub.GenerationContext.ImageLifecycleAdapters do
   Provider adapters for request image lifecycle tests of the generation worker.
 
   Every adapter hydrates the logical request before "transport", exactly as a
-  real Responses adapter does, and reports
+  real Responses adapter does (including the sent-image report and the LLM
+  configuration of the Worker), and reports
   `{:image_request, attempt, stream_pid, step_id, logical_request, wire_request}`
   to `context.test_pid`. `context.attempts` must be an Agent holding the number
   of stream attempts so far. Streams that do not finish immediately block until
@@ -12,7 +13,15 @@ defmodule IntellectualClub.GenerationContext.ImageLifecycleAdapters do
     * `Steering` supports steering injection;
     * `RetryOnce` fails the first attempt with a retryable network error;
     * `ToolFollowup` returns a tool call on the first attempt and supports
-      follow-up requests.
+      follow-up requests;
+    * `ImageRejection` runs attempt `n` as `Enum.at(context.test_outcomes, n - 1)`:
+      `{:error, meta}` emits `{:response_error, meta}`, `{:error_response, raw}`
+      completes with an error inside `raw_response`, and attempts past the list
+      complete with an answer immediately;
+    * `RegisteredImageRejection` is `ImageRejection` as a registered provider
+      type, for Workers whose context the supervisor builds from the database
+      (manual retry, recovery); the test supplies the context switches with
+      `RegisteredImageRejection.put_script/1`.
   """
 
   alias IntellectualClub.Generation.RequestImages
@@ -29,7 +38,9 @@ defmodule IntellectualClub.GenerationContext.ImageLifecycleAdapters do
       RequestImages.hydrate(logical_request, step_id,
         mapper: &ImageMapper.map_request_images/3,
         cache: Map.fetch!(opts, :image_cache),
-        on_cache: Map.fetch!(opts, :image_cache_update)
+        on_cache: Map.fetch!(opts, :image_cache_update),
+        on_sent: Map.fetch!(opts, :image_sent_update),
+        llm_configuration_id: Map.fetch!(opts, :image_llm_configuration_id)
       )
 
     send(
@@ -117,6 +128,101 @@ defmodule IntellectualClub.GenerationContext.ImageLifecycleAdapters do
         {_attempt, logical_request} ->
           Adapters.complete_on_signal(emit, logical_request, "Recovered.")
       end
+    end
+  end
+
+  defmodule ImageRejection do
+    @moduledoc false
+
+    alias IntellectualClub.GenerationContext.ImageLifecycleAdapters, as: Adapters
+
+    defdelegate map_request_images(request, acc, mapper),
+      to: IntellectualClub.Llm.Providers.Responses.ImageMapper
+
+    defdelegate request_snapshot(raw_request), to: Adapters
+
+    def stream_generate(opts, emit) do
+      {attempt, logical_request} = Adapters.hydrate_and_report(opts)
+
+      case Enum.at(opts.context.test_outcomes, attempt - 1) do
+        {:error, meta} ->
+          emit.({:response_error, Map.put_new(meta, :raw_request, logical_request)})
+
+        {:error_response, raw_response} ->
+          emit.({:response_complete, %{raw_request: logical_request, raw_response: raw_response}})
+
+        nil ->
+          emit.({:trace, {:set_text, "answer", :answer, 1, "Answered."}})
+
+          emit.(
+            {:response_complete,
+             %{raw_request: logical_request, raw_response: %{"id" => "answer", "output" => []}}}
+          )
+      end
+
+      :ok
+    end
+  end
+
+  defmodule RegisteredImageRejection do
+    @moduledoc false
+    @behaviour IntellectualClub.Llm.Providers.Common.ProviderType
+
+    alias IntellectualClub.GenerationContext.ImageLifecycleAdapters, as: Adapters
+    alias IntellectualClub.Llm.Providers.{Demo, Responses}
+
+    @script_key :image_lifecycle_registered_provider_script
+
+    @impl true
+    def type, do: "image_lifecycle_test"
+
+    @impl true
+    def label, do: "Image lifecycle test"
+
+    @impl true
+    def metadata, do: Demo.metadata() |> Map.put(:type, type()) |> Map.put(:label, label())
+
+    @impl true
+    def validate_provider(_provider, _opts), do: :ok
+
+    @impl true
+    def list_models(_provider), do: {:ok, []}
+
+    @impl true
+    def supports_cache_control?, do: false
+
+    @impl true
+    def apply_standard_parameters(parameters, _settings), do: parameters
+
+    @impl true
+    defdelegate map_request_images(request, acc, mapper),
+      to: IntellectualClub.Llm.Providers.Responses.ImageMapper
+
+    @impl true
+    defdelegate build_initial_request(opts), to: Responses
+
+    @impl true
+    defdelegate build_followup_request(opts), to: Responses
+
+    @impl true
+    defdelegate inject_steering(request, items, context), to: Responses
+
+    @impl true
+    defdelegate request_snapshot(raw_request), to: Adapters
+
+    @doc """
+    Sets `test_outcomes`, `attempts` and `test_pid` of `ImageRejection` for the
+    current test (`async: false` only: the script is application environment).
+    """
+    def put_script(%{test_outcomes: _, attempts: _, test_pid: _} = script) do
+      IntellectualClub.TestEnv.put_app_env(@script_key, script)
+    end
+
+    @impl true
+    def stream_generate(opts, emit) do
+      script = Application.fetch_env!(:intellectual_club, @script_key)
+      context = opts.context |> Map.from_struct() |> Map.merge(script)
+      Adapters.ImageRejection.stream_generate(%{opts | context: context}, emit)
     end
   end
 

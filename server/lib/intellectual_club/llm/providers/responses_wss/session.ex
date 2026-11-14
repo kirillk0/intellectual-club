@@ -139,6 +139,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
              Map.get(opts, :image_mapper, &Responses.map_request_images/3),
              cache: Map.get(opts, :image_cache, %{}),
              on_cache: Map.get(opts, :image_cache_update),
+             on_sent: Map.get(opts, :image_sent_update),
+             llm_configuration_id: Map.get(opts, :image_llm_configuration_id),
              provider: provider
            ),
          {:ok, connection, state} <- ensure_connection(state, opts, url),

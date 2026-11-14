@@ -130,7 +130,7 @@ defmodule IntellectualClub.Generation.Supervisor do
              steering_specs,
              context
            ) do
-      context = replacement_request_context(context, step_id)
+      context = %{replacement_request_context(context, step_id) | manual_retry?: true}
       start_worker(context, lease)
     else
       nil ->

@@ -17,12 +17,14 @@ defmodule IntellectualClub.Generation.Worker do
   alias IntellectualClub.Chat.Handoff
   alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Chat.Subagent
+  alias IntellectualClub.Files.ImageProviderVerdicts
   alias IntellectualClub.Generation.Context
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.PersistenceOperation
   alias IntellectualClub.Generation.PersistenceFailure
   alias IntellectualClub.Generation.RecoveryGate
+  alias IntellectualClub.Generation.RequestImages.ProviderRejection
   alias IntellectualClub.Generation.QueueCoordinator
   alias IntellectualClub.Generation.QueueDispatcher
   alias IntellectualClub.Generation.RuntimePoll
@@ -80,7 +82,11 @@ defmodule IntellectualClub.Generation.Worker do
     :tool_interruption_retry,
     :deferred_provider_event,
     :deferred_tool_outcome,
+    # Images the current stream attempt sent natively, as reported by hydration:
+    # %{stream_ref: ref, step_id: id, images: %{sha256 => RequestImages.sent_image()}}.
+    :sent_images,
     image_cache: %{},
+    image_rejection_retried?: false,
     phase: :initializing,
     continuation: :idle,
     cancel_requested?: false,
@@ -256,12 +262,15 @@ defmodule IntellectualClub.Generation.Worker do
       |> Map.put(:step_id, runtime_step.id)
       |> Map.put(:request_payload, runtime_step.raw_request)
 
+    {step_attempt, image_rejection_retried?} = initial_retry_state(context, initial_step_sequence)
+
     state = %{
       context: context,
       lease: lease,
       adapter: adapter,
       status: :generating,
-      step_attempt: initial_step_attempt(context, initial_step_sequence),
+      step_attempt: step_attempt,
+      image_rejection_retried?: image_rejection_retried?,
       step_sequence: runtime_step.sequence,
       tool_round: 0,
       refusal_round: 0,
@@ -344,6 +353,11 @@ defmodule IntellectualClub.Generation.Worker do
           send(me, {:image_cache_update, stream_ref, step_id, entries})
         end
 
+        # Hydration reports the natively sent images before transmitting.
+        sent_update = fn images ->
+          send(me, {:request_images_sent, stream_ref, step_id, images})
+        end
+
         adapter.stream_generate(
           %{
             context: context,
@@ -353,7 +367,9 @@ defmodule IntellectualClub.Generation.Worker do
             chunk_delay_ms: context.chunk_delay_ms,
             provider_session: provider_session,
             image_cache: image_cache,
-            image_cache_update: cache_update
+            image_cache_update: cache_update,
+            image_sent_update: sent_update,
+            image_llm_configuration_id: Map.get(context, :llm_configuration_id)
           },
           emit
         )
@@ -363,6 +379,7 @@ defmodule IntellectualClub.Generation.Worker do
       state
       | stream_task: task,
         stream_ref: stream_ref,
+        sent_images: %{stream_ref: stream_ref, step_id: step_id, images: %{}},
         retry_timer_ref: nil,
         phase: :provider
     }
@@ -378,6 +395,22 @@ defmodule IntellectualClub.Generation.Worker do
   end
 
   def handle_info({:image_cache_update, _ref, _step_id, _entries}, state), do: {:noreply, state}
+
+  # One attempt may hydrate more than once (Responses WSS, then HTTP fallback).
+  def handle_info(
+        {:request_images_sent, ref, step_id, images},
+        %{
+          stream_ref: ref,
+          runtime_step: %{id: step_id},
+          sent_images: %{stream_ref: ref, step_id: step_id} = sent
+        } = state
+      )
+      when is_list(images) do
+    images = Enum.reduce(images, sent.images, &Map.put(&2, &1.sha256, &1))
+    {:noreply, %{state | sent_images: %{sent | images: images}}}
+  end
+
+  def handle_info({:request_images_sent, _ref, _step_id, _images}, state), do: {:noreply, state}
 
   def handle_info(
         {:provider_event, stream_ref, {:trace, _event}},
@@ -442,21 +475,20 @@ defmodule IntellectualClub.Generation.Worker do
         raw_response: raw_response
       }
 
-      case maybe_retry_current_step(state, error_meta) do
-        {:retrying, state} ->
-          {:noreply, state}
-
-        :no_retry ->
-          finalize_error(state, error_text, error_meta)
-      end
+      handle_provider_error(state, error_text, error_meta)
     else
+      accepted = newly_accepted_images(state)
       state = cancel_stream_task(state)
 
       {:noreply,
        begin_persistence(state, :provider_completed, fn ->
-         safe_persist_value(state, :provider_completed, fn ->
-           Persistence.persist_provider_completed!(state.context.message_id, runtime_step)
-         end)
+         result =
+           safe_persist_value(state, :provider_completed, fn ->
+             Persistence.persist_provider_completed!(state.context.message_id, runtime_step)
+           end)
+
+         record_accepted_images(state, accepted, result)
+         result
        end)}
     end
   end
@@ -467,14 +499,7 @@ defmodule IntellectualClub.Generation.Worker do
         %{stream_ref: stream_ref} = state
       ) do
     error_text = Map.get(meta, :error_text) || "Provider error"
-
-    case maybe_retry_current_step(state, meta) do
-      {:retrying, state} ->
-        {:noreply, state}
-
-      :no_retry ->
-        finalize_error(state, error_text, meta)
-    end
+    handle_provider_error(state, error_text, meta)
   end
 
   @impl true
@@ -1368,6 +1393,18 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp durable_waiting_tools_step?(_runtime_step), do: false
 
+  # Transient failures retry with backoff. A provider refusing a request image
+  # retries once with the suspected images replaced by text. Anything else ends
+  # the generation with the provider error.
+  defp handle_provider_error(state, error_text, meta) do
+    with :no_retry <- maybe_retry_current_step(state, meta),
+         :no_retry <- maybe_retry_rejected_images(state, error_text, meta) do
+      finalize_error(state, error_text, meta)
+    else
+      {:retrying, state} -> {:noreply, state}
+    end
+  end
+
   defp maybe_retry_current_step(state, meta) when is_map(meta) do
     if retryable_provider_error?(meta) do
       attempt = state.step_attempt
@@ -1395,7 +1432,140 @@ defmodule IntellectualClub.Generation.Worker do
     end
   end
 
-  defp persist_retry_error_and_start_next_step(state, error_text, meta, attempt, delay_ms) do
+  # At most one image-rejection retry per run of the generation (see
+  # `initial_retry_state/2`): a repeated rejection is not an image problem the
+  # facts could fix, and must not blame more images.
+  # Without a configuration (demo) there are no facts to record.
+  defp maybe_retry_rejected_images(state, error_text, meta) do
+    configuration_id = Map.get(state.context, :llm_configuration_id)
+    sent = current_sent_images(state)
+
+    if not state.image_rejection_retried? and is_integer(configuration_id) and sent != [] and
+         ProviderRejection.image_rejection?(meta) do
+      attempt = state.step_attempt
+      suspects = ProviderRejection.suspects(sent)
+      state = %{cancel_stream_task(state) | image_rejection_retried?: true}
+
+      state =
+        begin_persistence(state, {:image_rejection_retry, attempt, error_text, meta}, fn ->
+          retry_rejected_images(state, meta, attempt, configuration_id, suspects)
+        end)
+
+      {:retrying, state}
+    else
+      :no_retry
+    end
+  end
+
+  # The images hydration reported for the running attempt. Reports of other
+  # attempts or steps are never used.
+  defp current_sent_images(%{
+         stream_ref: ref,
+         runtime_step: %{id: step_id},
+         sent_images: %{stream_ref: ref, step_id: step_id, images: images}
+       })
+       when not is_nil(ref),
+       do: images |> Map.values() |> Enum.sort_by(& &1.sha256)
+
+  defp current_sent_images(_state), do: []
+
+  # The facts make the retry step, prepared from the failed one, carry text
+  # instead of the suspected images. Without them nothing would change: the
+  # generation then fails with the provider error.
+  defp retry_rejected_images(state, meta, attempt, configuration_id, {sha256s, fallback?}) do
+    step_id = state.runtime_step.id
+    details = ProviderRejection.details(state.context.provider_type || "provider", meta)
+
+    case mark_rejected_images(sha256s, configuration_id, details) do
+      :ok ->
+        Logger.warning(
+          "generation step image-rejection retry message_id=#{state.context.message_id} " <>
+            "step_id=#{inspect(step_id)} attempt=#{attempt} " <>
+            "llm_configuration_id=#{configuration_id} marked_images=#{length(sha256s)} " <>
+            "fallback=#{fallback?} status_code=#{inspect(status_code_from_meta(meta))}" <>
+            if(fallback?,
+              do: " (every sent image was accepted by this configuration before)",
+              else: ""
+            )
+        )
+
+        persist_retry_error_and_start_next_step(
+          state,
+          error_text_from_meta(meta),
+          meta,
+          attempt,
+          0,
+          retry_reason: :image_rejected
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "generation step image rejection not retried message_id=#{state.context.message_id} " <>
+            "step_id=#{inspect(step_id)} reason=#{inspect(reason, limit: 5, printable_limit: 200)}"
+        )
+
+        {:ok, {:image_rejection_not_retried, reason}}
+    end
+  end
+
+  defp mark_rejected_images(sha256s, configuration_id, details) do
+    ImageProviderVerdicts.mark_rejected(sha256s, configuration_id, details)
+  rescue
+    exception -> {:error, exception}
+  end
+
+  # The sent images the configuration had not accepted when they were hydrated.
+  # Once recorded, later attempts report them as accepted and write nothing.
+  defp newly_accepted_images(state) do
+    case Map.get(state.context, :llm_configuration_id) do
+      id when is_integer(id) ->
+        sha256s =
+          for %{accepted?: false, sha256: sha256} <- current_sent_images(state), do: sha256
+
+        {id, sha256s}
+
+      _other ->
+        {nil, []}
+    end
+  end
+
+  # Runs after the step was persisted as done or waiting for tools. Failures are
+  # logged only: the facts are an optimization of the image-rejection retry.
+  defp record_accepted_images(state, {configuration_id, [_ | _] = sha256s}, result) do
+    case result do
+      {:ok, %{step: %{status: status}}} when status in [:done, :waiting_tools] ->
+        case ImageProviderVerdicts.record_accepted(sha256s, configuration_id) do
+          :ok -> :ok
+          {:error, reason} -> log_accepted_images_failure(state, reason)
+        end
+
+      _other ->
+        :ok
+    end
+  rescue
+    exception -> log_accepted_images_failure(state, exception)
+  catch
+    kind, reason -> log_accepted_images_failure(state, {kind, reason})
+  end
+
+  defp record_accepted_images(_state, _accepted, _result), do: :ok
+
+  defp log_accepted_images_failure(state, reason) do
+    Logger.warning(
+      "generation step accepted request images not recorded " <>
+        "message_id=#{state.context.message_id} step_id=#{inspect(state.runtime_step.id)} " <>
+        "reason=#{inspect(reason, limit: 5, printable_limit: 200)}"
+    )
+  end
+
+  defp persist_retry_error_and_start_next_step(
+         state,
+         error_text,
+         meta,
+         attempt,
+         delay_ms,
+         opts \\ []
+       ) do
     raw_request = state.runtime_step.raw_request || %{}
 
     case safe_request_persist_value(state, :auto_retry, fn ->
@@ -1410,6 +1580,7 @@ defmodule IntellectualClub.Generation.Worker do
              error_kind: string_value(meta, :error_kind),
              raw_response: Map.get(meta, :raw_response),
              retryable: true,
+             retry_reason: Keyword.get(opts, :retry_reason),
              request_context: Map.put(state.context, :adapter_module, state.adapter),
              source_step_id: state.runtime_step.id,
              previous_request: state.runtime_step.raw_request,
@@ -1486,15 +1657,31 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp backoff_delay_ms(_attempt), do: 0
 
-  defp initial_step_attempt(context, initial_step_sequence)
+  # `{step_attempt, image_rejection_retried?}`. A Worker restarted on a retry step
+  # continues the attempt count of its predecessor. Independently of it, a Worker
+  # continuing an interrupted run does not repeat an image-rejection retry made by
+  # any earlier step of the generation. A manual retry by the user is a new run
+  # with its own image-rejection retry; otherwise an image newly rejected after an
+  # earlier one would fail every manual retry of the message.
+  defp initial_retry_state(context, initial_step_sequence)
        when is_map(context) and is_integer(initial_step_sequence) and initial_step_sequence > 1 do
-    case Persistence.retry_attempt_before_step!(context.message_id, initial_step_sequence) do
-      attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
-      _other -> 1
-    end
+    attempt =
+      case Persistence.retry_attempt_before_step!(context.message_id, initial_step_sequence) do
+        attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
+        _other -> 1
+      end
+
+    image_rejection_retried? =
+      Map.get(context, :manual_retry?) != true and
+        Persistence.image_rejection_retried_before_step?(
+          context.message_id,
+          initial_step_sequence
+        )
+
+    {attempt, image_rejection_retried?}
   end
 
-  defp initial_step_attempt(_context, _initial_step_sequence), do: 1
+  defp initial_retry_state(_context, _initial_step_sequence), do: {1, false}
 
   defp add_retry_jitter(delay_ms) when is_integer(delay_ms) and delay_ms > 0 do
     jitter_limit = round(delay_ms * auto_retry_jitter_ratio())
@@ -2616,6 +2803,24 @@ defmodule IntellectualClub.Generation.Worker do
       |> Map.put(:step_attempt, attempt + 1)
 
     advance(state, {:backoff, delay})
+  end
+
+  defp persistence_finished(
+         state,
+         {:image_rejection_retry, attempt, _error_text, _meta},
+         {:ok, %{runtime_step: _runtime_step} = result}
+       ) do
+    persistence_finished(state, {:auto_retry, attempt, 0}, {:ok, result})
+  end
+
+  defp persistence_finished(
+         state,
+         {:image_rejection_retry, _attempt, error_text, meta},
+         {:ok, {:image_rejection_not_retried, _reason}}
+       ) do
+    if state.cancel_requested?,
+      do: advance(state, :idle),
+      else: finalize_error(state, error_text, meta)
   end
 
   defp persistence_finished(state, {:tool_followup, opts}, {:ok, {:next_step, next_step}}) do

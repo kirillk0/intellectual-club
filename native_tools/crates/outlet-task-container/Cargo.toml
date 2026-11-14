@@ -13,7 +13,6 @@ bytes.workspace = true
 clap.workspace = true
 fs2 = "0.4"
 futures-util = "0.3"
-image.workspace = true
 mime_guess.workspace = true
 outlet-core = { path = "../outlet-core" }
 reqwest.workspace = true
@@ -28,3 +27,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+image.workspace = true

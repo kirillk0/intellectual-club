@@ -663,11 +663,16 @@ async fn binary_files_images_and_streaming_safety_limits() {
         let document_id = uuid::Uuid::new_v4().to_string();
         let image_id = uuid::Uuid::new_v4().to_string();
         let oversized_id = uuid::Uuid::new_v4().to_string();
+        let bitmap_id = uuid::Uuid::new_v4().to_string();
         let binary = (0u8..=255).cycle().take(16 * 1024).collect::<Vec<_>>();
         let mut png = Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2)).write_to(&mut png, image::ImageFormat::Png)?;
         let png = png.into_inner();
+        let pixels = image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([x as u8 * 80, y as u8 * 100, 7]));
+        let mut bitmap = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels.clone()).write_to(&mut bitmap, image::ImageFormat::Bmp)?;
         let server = FileServer::start(HashMap::from([
+            (bitmap_id.clone(), DownloadBody { bytes: bitmap.into_inner(), chunked: false }),
             (document_id.clone(), DownloadBody { bytes: binary.clone(), chunked: false }),
             (image_id.clone(), DownloadBody { bytes: png.clone(), chunked: false }),
             (oversized_id.clone(), DownloadBody { bytes: binary.clone(), chunked: true }),
@@ -695,6 +700,14 @@ async fn binary_files_images_and_streaming_safety_limits() {
         ensure!(uploads.len() == 2 && uploads[1].body == png, "image bytes changed");
         ensure!(uploads[1].headers.get("content-type").map(String::as_str) == Some("application/octet-stream"), "file transport must stay opaque to server body parsers");
         ensure!(uploads[1].path.contains("mime_type=image%2Fpng"), "image upload MIME metadata missing");
+        ensure!(!image.text.contains("Image was"), "unchanged image reported a conversion: {}", image.text);
+        outlet.call("download_file", json!({"file_id":bitmap_id, "local_path":"/workspace/scan.bmp"}), ctx()).await?;
+        let converted = outlet.call("read_image", json!({"local_path":"/workspace/scan.bmp"}), ctx()).await?;
+        let uploads = server.uploads();
+        ensure!(uploads.len() == 3 && uploads[2].path.contains("mime_type=image%2Fpng") && uploads[2].path.contains("filename=scan.png"), "BMP was not converted to PNG");
+        ensure!(image::load_from_memory(&uploads[2].body)?.to_rgb8() == pixels, "BMP conversion changed pixels");
+        ensure!(converted.text.contains("Image was converted from 3x2") && converted.text.contains("The original file is unchanged at /workspace/scan.bmp."), "conversion notice missing: {}", converted.text);
+        ensure!(converted.raw["conversion"]["converted"]["format"] == "PNG", "conversion metadata missing");
         ensure!(outlet.call("read_image", json!({"local_path":"/workspace/reports/document.bin"}), ctx()).await.is_err(), "binary file accepted as image");
         ensure!(outlet.call("upload_file", json!({"local_path":"/workspace/reports"}), ctx()).await.is_err(), "directory accepted as a single file");
         let symlink = run(&outlet, 501, 501, json!({"command":"ln -s /workspace/reports/document.bin /workspace/link.bin"})).await?;
@@ -708,7 +721,7 @@ async fn binary_files_images_and_streaming_safety_limits() {
         }
         let error = limited.call("upload_file", json!({"local_path":"/workspace/reports/document.bin"}), ctx()).await.expect_err("oversized upload must fail");
         ensure!(error.to_string().contains("transfer safety limit"), "unexpected upload size rejection: {error:#}");
-        ensure!(server.uploads().len() == 2, "rejected files were still uploaded");
+        ensure!(server.uploads().len() == 3, "rejected files were still uploaded");
         Ok(())
     }).await;
 }

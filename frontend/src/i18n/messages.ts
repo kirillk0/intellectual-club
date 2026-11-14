@@ -1188,7 +1188,18 @@ export const ruMessages: Record<string, string> = {
   'This chat will switch to the selected configuration.':
     'Чат переключится на выбранную конфигурацию.',
   'File uploads are disabled for the current bot and configuration.':
-    'Загрузка файлов отключена для текущего бота и конфигурации.'
+    'Загрузка файлов отключена для текущего бота и конфигурации.',
+  'Original': 'Оригинал',
+  'Upload the original file without compression': 'Загрузить исходный файл без сжатия',
+  'Processing image…': 'Обработка изображения…',
+  'Preparing attachments…': 'Подготовка вложений…',
+  'Fits the model limits': 'В пределах лимитов модели',
+  'The image fits the model limits and is uploaded unchanged.':
+    'Изображение укладывается в лимиты модели и загружается без изменений.',
+  "The browser couldn't process this image, so the model gets it only as a file.":
+    'Браузер не смог обработать изображение, поэтому модель получит его только как файл.',
+  'The model gets a link to the file instead of the image': 'Модель получит ссылку на файл вместо изображения',
+  'The original exceeds the maximum file size of {size}': 'Оригинал превышает максимальный размер файла {size}'
 };
 
 export const messages = {

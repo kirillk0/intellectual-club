@@ -76,7 +76,10 @@ defmodule IntellectualClub.Generation.Context do
     :initial_step_sequence,
     :initial_step_status,
     :initial_resume_mode,
-    :completion_effect
+    :completion_effect,
+    # Set by the supervisor for a manual retry by the user: a new run of the
+    # message rather than the continuation of an interrupted one.
+    manual_retry?: false
   ]
 
   def authorize_chat!(chat_id, actor) do

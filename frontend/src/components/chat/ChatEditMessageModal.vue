@@ -133,6 +133,12 @@
                   >
                     <span class="attachment-row__progress-bar" :style="{ width: `${pendingFileProgress(item)}%` }"></span>
                   </div>
+                  <ChatPendingImageOptions
+                    v-if="item.image"
+                    :image="item.image"
+                    :disabled="saving"
+                    @update:keep-original="(value) => emit('set-pending-file-original', item.id, value)"
+                  />
                 </div>
                 <button
                   class="attachment-row__remove"
@@ -180,6 +186,7 @@ import {
   type PendingChatFile,
 } from '@/features/chat/attachments';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
+import ChatPendingImageOptions from '@/features/chat/components/ChatPendingImageOptions.vue';
 import { translate } from '@/i18n';
 
 interface Props {
@@ -210,6 +217,7 @@ const emit = defineEmits<{
   (e: 'save'): void;
   (e: 'add-files', files: File[]): void;
   (e: 'remove-pending-file', id: string): void;
+  (e: 'set-pending-file-original', id: string, keepOriginal: boolean): void;
   (e: 'remove-existing-attachment', id: number): void;
   (e: 'preview-existing-attachment', attachment: ExistingChatAttachment): void;
   (e: 'preview-pending-file', id: string): void;

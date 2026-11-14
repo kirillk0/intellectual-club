@@ -69,6 +69,7 @@ defmodule IntellectualClub.Generation.PreparedRequests do
       source_request: Keyword.get(opts, :previous_request),
       source_image_state: Keyword.get(opts, :source_image_state),
       cache: Keyword.get(opts, :image_cache, %{}),
+      llm_configuration_id: Map.get(context, :llm_configuration_id),
       mapper: RequestImages.mapper(adapter),
       source_mapper: Keyword.get(opts, :source_mapper, RequestImages.mapper(adapter))
     ]

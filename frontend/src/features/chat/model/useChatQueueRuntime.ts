@@ -29,6 +29,14 @@ type Params = {
   ) => Promise<string[]>;
   removePendingFileFromCollection: (files: Ref<PendingChatFile[]>, id: string) => Promise<void>;
   clearPendingFilesCollection: (files: Ref<PendingChatFile[]>) => Promise<void>;
+  // Validates and adds files, preparing images for upload; without it files are added untouched.
+  addPendingFilesToCollection?: (
+    files: Ref<PendingChatFile[]>,
+    added: File[],
+    policy: ChatUploadPolicy,
+    setError: (error: string) => void
+  ) => void;
+  setPendingFileOriginalInCollection?: (files: Ref<PendingChatFile[]>, id: string, keepOriginal: boolean) => void;
   refreshChat: () => Promise<void>;
   // Lets a manual dispatch start with the configuration the user just selected.
   waitForConfigSync?: () => Promise<boolean>;
@@ -190,15 +198,26 @@ export function useChatQueueRuntime(params: Params) {
 
   const addEditPendingFiles = (files: File[]) => {
     if (params.readOnly.value || editingQueuedMessage.value?.kind !== 'follow_up') return;
-    const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
-    if (accepted.length > 0) {
-      editPendingFiles.value = [...editPendingFiles.value, ...createPendingChatFiles(accepted)];
+    const setError = (error: string) => {
+      editError.value = error;
+    };
+    if (params.addPendingFilesToCollection) {
+      params.addPendingFilesToCollection(editPendingFiles, files, params.fileUploadPolicy.value, setError);
+      return;
     }
-    editError.value = errors[0] || '';
+
+    const { accepted, errors } = validateFilesForChatUpload(files, params.fileUploadPolicy.value);
+    if (accepted.length > 0) editPendingFiles.value = [...editPendingFiles.value, ...createPendingChatFiles(accepted)];
+    setError(errors[0] || '');
   };
 
   const removeEditPendingFile = (id: string) => {
     void params.removePendingFileFromCollection(editPendingFiles, id);
+  };
+
+  const setEditPendingFileOriginal = (id: string, keepOriginal: boolean) => {
+    if (savingEdit.value) return;
+    params.setPendingFileOriginalInCollection?.(editPendingFiles, id, keepOriginal);
   };
 
   const removeEditExistingAttachment = (contentId: number) => {
@@ -423,6 +442,7 @@ export function useChatQueueRuntime(params: Params) {
     cancelEdit,
     addEditPendingFiles,
     removeEditPendingFile,
+    setEditPendingFileOriginal,
     removeEditExistingAttachment,
     saveEdit,
     removeFromQueue,

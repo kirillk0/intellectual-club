@@ -23,8 +23,18 @@ defmodule IntellectualClub.ImageFixtures do
   @doc "A PNG with a valid header but an incomplete IDAT chunk."
   def truncated_png, do: binary_part(png(20, 10), 0, 45)
 
-  @doc "A 3000x1500 PNG, large enough to be downscaled by image processing."
+  @doc "A 3000x1500 PNG, over the 2000 px request image edge limit."
   def oversized_png, do: png(3000, 1500)
+
+  @doc """
+  A valid `width`x`height` PNG with an ancillary chunk of `padding_bytes`, e.g.
+  to exceed the request image byte limit without exceeding the edge limit.
+  """
+  def padded_png(width, height, padding_bytes) do
+    <<signature_and_ihdr::binary-size(33), rest::binary>> = png(width, height)
+    padding = "pad" <> <<0>> <> :binary.copy(<<0>>, padding_bytes)
+    signature_and_ihdr <> chunk("tEXt", padding) <> rest
+  end
 
   @doc "An RGB PNG header without pixel data, for validation limit tests."
   def png_header(width, height) do

@@ -24,7 +24,9 @@ defmodule IntellectualClub.TestSupport.ImageRecoveryProvider do
         opts.request_step_id,
         mapper: &map_request_images/3,
         cache: Map.get(opts, :image_cache, %{}),
-        on_cache: Map.get(opts, :image_cache_update)
+        on_cache: Map.get(opts, :image_cache_update),
+        on_sent: Map.get(opts, :image_sent_update),
+        llm_configuration_id: Map.get(opts, :image_llm_configuration_id)
       )
 
     emit.({:trace, {:set_text, "answer", :answer, 1, "Recovered image."}})

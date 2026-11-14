@@ -103,9 +103,9 @@ and Node.js 24.16.0. Install those tools, then run the same script used by CI:
 pwsh -NoProfile -File .\bin\build-windows-release.ps1
 ```
 
-The script downloads checksum-pinned PostgreSQL 16.13.0, libvips 8.18.2, and
-the Windows PDF NIF into `build\windows`; it does not install PostgreSQL or
-libvips system-wide. It runs frontend, Rust, and Elixir checks and tests before
+The script downloads checksum-pinned PostgreSQL 16.13.0 and
+the Windows PDF NIF into `build\windows`; it does not install PostgreSQL
+system-wide. It runs frontend, Rust, and Elixir checks and tests before
 building the release. `-SkipTests` is available for an incremental packaging
 iteration after a successful full run. The packaging contract has a fast,
 standalone test:
@@ -265,3 +265,28 @@ the side effect again and returns the stable `outlet_task_expired` error.
 are exposed as cursor-based progress entries, and cancellation terminates the command
 process tree. The in-memory progress log is capped at 400,000 characters and reports a
 truncation marker and total observed character count when the cap is reached.
+
+## Image Input
+
+`read_image` in `outlet-shell` and `outlet-task-container` uses the shared
+`outlet_core::inline_image` module. The server embeds only JPEG, PNG, GIF and WebP
+images with a longest side of at most 2000 px and a size of at most 7,864,320 bytes
+(7.5 MB). The outlet reads the file once and works on that snapshot:
+
+- a file that already fits is attached byte for byte, keeping animations and metadata;
+- any other image an enabled `image` decoder accepts (BMP and ICO; also TIFF in the
+  desktop build) gets its EXIF orientation applied and its longest side fitted into
+  2000 px with Lanczos3.
+  Reductions of 3x and more start with an integer box reduction to bound time and
+  memory. The result is PNG for transparent images and PNG/GIF/WebP/BMP/ICO sources,
+  otherwise JPEG at quality 90. An opaque PNG over the byte limit becomes JPEG; a
+  transparent one is downscaled until it fits. Animated sources keep their first
+  frame, and embedded ICC profiles are kept when they match the output colour space;
+- the tool result text gets a note such as `Image was downscaled from 4032x3024
+  (1.8 MB, JPEG) to 2000x1500 (869 KB, JPEG) to fit the 2000 px / 7.5 MB inline limit.
+  The original file is unchanged at <path>.`, and `raw.conversion` holds the details.
+  `raw.sha256` remains the hash of the source snapshot.
+
+Content that does not decode fails with `File content is not a valid image.`. Files
+over 256 MB and images whose decoded pixels would need more than 512 MB are rejected
+with an error stating the size. Decoding and conversion run on Tokio's blocking pool.

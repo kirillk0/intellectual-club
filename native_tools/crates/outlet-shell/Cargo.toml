@@ -9,7 +9,6 @@ publish.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 hex.workspace = true
-image.workspace = true
 libc.workspace = true
 mime_guess.workspace = true
 outlet-core = { path = "../outlet-core" }
@@ -22,4 +21,5 @@ tracing.workspace = true
 which.workspace = true
 
 [dev-dependencies]
+image.workspace = true
 reqwest.workspace = true

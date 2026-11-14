@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use bollard::container::{DownloadFromContainerOptions, LogOutput, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use futures_util::StreamExt;
+use outlet_core::inline_image::read_inline_image;
 use outlet_core::{
     CallContext, ExecutionOutcomeUnknown as UnconfirmedExecution, ToolProvider, ToolResult,
     ToolSpec,
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use crate::manager::{ContainerLease, ContainerManager, ExecStop};
@@ -365,33 +366,42 @@ impl ContainerOutlet {
             read_single_file_archive(&archive_path, &target, limit)
         })
         .await??;
-        let mime_type = if media {
-            let mut input = tokio::fs::File::open(&output_path).await?;
-            let mut header = vec![0u8; 8192];
-            let n = input.read(&mut header).await?;
-            image_mime(&header[..n])?.to_string()
+        let mut raw = json!({
+            "path": path, "sha256": sha256, "size_bytes": size,
+        });
+        let (uploaded, notice) = if media {
+            let image = read_inline_image(&output_path).await?;
+            let notice = image.notice(&path);
+            if let Some(conversion) = &image.conversion {
+                raw["conversion"] = serde_json::to_value(conversion)?;
+            }
+            let upload_name = image.upload_file_name(&filename);
+            let uploaded = context
+                .upload_call_file(&upload_name, image.mime_type, image.bytes)
+                .await?;
+            (uploaded, notice)
         } else {
-            mime_guess::from_path(&filename)
+            let mime_type = mime_guess::from_path(&filename)
                 .first_raw()
-                .unwrap_or("application/octet-stream")
-                .to_string()
+                .unwrap_or("application/octet-stream");
+            let uploaded = context
+                .upload_call_file_path(&filename, mime_type, &output_path)
+                .await?;
+            (uploaded, None)
         };
-        let uploaded = context
-            .upload_call_file_path(&filename, &mime_type, &output_path)
-            .await?;
         let external_id = uploaded
             .get("file_external_id")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let mut result = ToolResult::new(
-            format!(
-                "{} {external_id} attached from {path}",
-                if media { "Image" } else { "File" }
-            ),
-            json!({
-                "path": path, "sha256": sha256, "size_bytes": size,
-            }),
+        let mut text = format!(
+            "{} {external_id} attached from {path}",
+            if media { "Image" } else { "File" }
         );
+        if let Some(notice) = notice {
+            text.push('\n');
+            text.push_str(&notice);
+        }
+        let mut result = ToolResult::new(text, raw);
         if media {
             result.media.push(uploaded);
         } else {
@@ -732,17 +742,6 @@ fn read_single_file_archive(archive: &Path, target: &Path, limit: u64) -> Result
         result = Some((size, format!("{:x}", hash.finalize())));
     }
     result.ok_or_else(|| anyhow!("Docker returned an empty file archive"))
-}
-fn image_mime(header: &[u8]) -> Result<&'static str> {
-    Ok(
-        match image::guess_format(header).context("File is not a supported image")? {
-            image::ImageFormat::Png => "image/png",
-            image::ImageFormat::Jpeg => "image/jpeg",
-            image::ImageFormat::Gif => "image/gif",
-            image::ImageFormat::WebP => "image/webp",
-            _ => bail!("Use PNG, JPEG, GIF, or WebP for image input"),
-        },
-    )
 }
 fn redact(value: &str, secrets: &[String]) -> String {
     let mut ordered = secrets.iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();

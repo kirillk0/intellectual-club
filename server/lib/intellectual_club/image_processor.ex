@@ -1,200 +1,46 @@
 defmodule IntellectualClub.ImageProcessor do
-  @moduledoc false
+  @moduledoc """
+  Rules for images sent natively to model providers.
 
-  @windows? match?({:win32, _name}, :os.type())
+  Images are never decoded, resized or re-encoded. `validate/1` is the cheap
+  structural check of `ImageCheck`; its result is remembered per payload SHA-256
+  by `IntellectualClub.Files.ImageVerdicts` under `check_version/0`. Request limits
+  are applied separately with `check_limits/2`, so verdicts do not depend on them.
+  """
 
-  @max_decoded_pixels 100_000_000
+  # Bump whenever the ImageCheck rules or options used by validate/1 change, so
+  # that remembered verdicts are recomputed.
+  @check_version 2
 
-  @spec validate(binary()) :: :ok | {:error, term()}
-  def validate(payload) when is_binary(payload) do
-    case ExImageInfo.info(payload) do
-      {mime_type, width, height, _variant}
-      when is_binary(mime_type) and is_integer(width) and is_integer(height) and
-             width > 0 and height > 0 ->
-        validate_backend(payload, normalize_mime_type(mime_type), width, height)
+  @max_edge_px 2_000
+  # Anthropic rejects base64 image data above 10 MiB; 4/3 * 7_864_320 = 10_485_760.
+  @max_payload_bytes 7_864_320
 
-      _ ->
-        {:error, :invalid_image_payload}
-    end
-  rescue
-    _error -> {:error, :invalid_image_payload}
-  end
+  @spec check_version() :: pos_integer()
+  def check_version, do: @check_version
 
-  @spec resize_down(binary(), String.t(), pos_integer()) ::
-          {:ok, binary(), String.t()} | {:error, term()}
-  def resize_down(payload, mime_type, max_edge)
-      when is_binary(payload) and is_binary(mime_type) and is_integer(max_edge) and max_edge > 0 do
-    with {detected_mime, width, height, _variant}
-         when is_binary(detected_mime) and is_integer(width) and is_integer(height) <-
-           ExImageInfo.info(payload) do
-      if max(width, height) <= max_edge do
-        {:ok, payload, normalize_mime_type(detected_mime)}
-      else
-        resize_backend(payload, normalize_mime_type(mime_type), max_edge)
-      end
-    else
-      nil -> {:error, :invalid_image_payload}
-      other -> {:error, {:invalid_image_payload, other}}
-    end
-  end
+  @spec max_edge_px() :: pos_integer()
+  def max_edge_px, do: @max_edge_px
 
-  if @windows? do
-    # Windows keeps header-only validation until its CLI backend gains validation.
-    defp validate_backend(_payload, _mime_type, _width, _height), do: :ok
+  @spec max_payload_bytes() :: pos_integer()
+  def max_payload_bytes, do: @max_payload_bytes
 
-    defp resize_backend(payload, mime_type, max_edge) do
-      with {:ok, suffix} <- image_suffix(mime_type),
-           {:ok, executable} <- vips_executable() do
-        root =
-          Path.join(
-            System.tmp_dir!(),
-            "intellectual-club-vips-#{System.unique_integer([:positive, :monotonic])}"
-          )
+  @doc "Reads the format and dimensions from the headers only."
+  @spec header(binary()) :: {:ok, ImageCheck.info()} | {:error, ImageCheck.reason()}
+  def header(payload) when is_binary(payload), do: ImageCheck.header(payload)
 
-        input_path = Path.join(root, "input#{suffix}")
-        output_path = Path.join(root, "output#{suffix}")
+  @doc "Structural validation with the package's default pixel budget."
+  @spec validate(binary()) :: {:ok, ImageCheck.info()} | {:error, ImageCheck.reason()}
+  def validate(payload) when is_binary(payload), do: ImageCheck.validate(payload)
 
-        try do
-          with :ok <- File.mkdir_p(root),
-               :ok <- File.write(input_path, payload),
-               {_output, 0} <-
-                 System.cmd(
-                   executable,
-                   [
-                     "thumbnail",
-                     input_path,
-                     output_path,
-                     Integer.to_string(max_edge),
-                     "--size",
-                     "down"
-                   ],
-                   stderr_to_stdout: true
-                 ),
-               {:ok, resized} <- File.read(output_path),
-               {detected_mime, width, height, _variant}
-               when is_binary(detected_mime) and is_integer(width) and is_integer(height) <-
-                 ExImageInfo.info(resized),
-               true <- max(width, height) <= max_edge do
-            {:ok, resized, normalize_mime_type(detected_mime)}
-          else
-            {output, status} when is_integer(status) ->
-              {:error, {:vips_failed, status, String.trim(output)}}
-
-            false ->
-              {:error, :resized_image_exceeds_limit}
-
-            nil ->
-              {:error, :resized_image_invalid}
-
-            {:error, reason} ->
-              {:error, reason}
-
-            other ->
-              {:error, other}
-          end
-        after
-          File.rm_rf(root)
-        end
-      end
-    end
-
-    defp vips_executable do
-      candidates = [
-        System.get_env("IC_VIPS_BIN"),
-        bundled_vips_executable(),
-        System.find_executable("vips.exe"),
-        System.find_executable("vips")
-      ]
-
-      case Enum.find(candidates, &(is_binary(&1) and File.regular?(&1))) do
-        nil -> {:error, :vips_executable_not_found}
-        executable -> {:ok, executable}
-      end
-    end
-
-    defp bundled_vips_executable do
-      Application.app_dir(:intellectual_club, "priv/libvips/bin/vips.exe")
-    rescue
-      _error -> nil
-    end
-  else
-    @vips_cache_disabled_key {__MODULE__, :vips_cache_disabled}
-
-    defp validate_backend(payload, mime_type, width, height) do
-      :ok = disable_vips_operation_cache()
-
-      # Image.from_binary drops :access; use Vix directly for a sequential scan.
-      # GIF reports some malformed later frames as warnings, so reject those too.
-      failure = if mime_type == "image/gif", do: :VIPS_FAIL_ON_WARNING, else: :VIPS_FAIL_ON_ERROR
-      options = [access: :VIPS_ACCESS_SEQUENTIAL, "fail-on": failure]
-
-      options =
-        if mime_type in ["image/gif", "image/webp"],
-          do: Keyword.put(options, :n, -1),
-          else: options
-
-      with :ok <- validate_pixel_count(width, height),
-           {:ok, image} <- Vix.Vips.Image.new_from_buffer(payload, options),
-           :ok <- validate_pixel_count(Image.width(image), Image.height(image)),
-           # Loading is lazy. avg traverses every pixel without returning a full
-           # decoded pixel buffer to the BEAM or re-encoding the image.
-           {:ok, _average} <- Vix.Vips.Operation.avg(image) do
-        :ok
-      else
-        {:error, :image_pixel_limit_exceeded} = error -> error
-        _ -> {:error, :invalid_image_payload}
-      end
-    end
-
-    defp validate_pixel_count(width, height) when width * height <= @max_decoded_pixels,
-      do: :ok
-
-    defp validate_pixel_count(_width, _height), do: {:error, :image_pixel_limit_exceeded}
-
-    defp resize_backend(payload, mime_type, max_edge) do
-      :ok = disable_vips_operation_cache()
-
-      with {:ok, suffix} <- image_suffix(mime_type),
-           {:ok, image} <- Image.from_binary(payload, fail_on: :error),
-           {:ok, resized_image} <- Image.thumbnail(image, max_edge, resize: :down),
-           {:ok, resized_payload} when is_binary(resized_payload) <-
-             Image.write(resized_image, :memory, suffix: suffix),
-           {detected_mime, width, height, _variant}
-           when is_binary(detected_mime) and is_integer(width) and is_integer(height) <-
-             ExImageInfo.info(resized_payload),
-           true <- max(width, height) <= max_edge do
-        {:ok, resized_payload, normalize_mime_type(detected_mime)}
-      else
-        false -> {:error, :resized_image_exceeds_limit}
-        nil -> {:error, :resized_image_invalid}
-        {:error, reason} -> {:error, reason}
-        other -> {:error, other}
-      end
-    end
-
-    # libvips keeps recently built operations alive together with their inputs and
-    # pixel buffers in a process-wide cache (up to 100 MB of native memory, invisible
-    # to the BEAM allocators). Validation and resizing start from new payloads, so
-    # the cache never hits. Configure it on first use rather than at boot.
-    defp disable_vips_operation_cache do
-      if :persistent_term.get(@vips_cache_disabled_key, false) do
-        :ok
-      else
-        :ok = Vix.Vips.cache_set_max(0)
-        :ok = Vix.Vips.cache_set_max_mem(0)
-        :ok = Vix.Vips.cache_set_max_files(0)
-        :persistent_term.put(@vips_cache_disabled_key, true)
-      end
+  @doc "Checks the request limits for an image of the given size and byte length."
+  @spec check_limits(%{width: pos_integer(), height: pos_integer()}, non_neg_integer()) ::
+          :ok | {:error, :image_dimensions_exceed_limit | :image_bytes_exceed_limit}
+  def check_limits(%{width: width, height: height}, size_bytes) when is_integer(size_bytes) do
+    cond do
+      max(width, height) > @max_edge_px -> {:error, :image_dimensions_exceed_limit}
+      size_bytes > @max_payload_bytes -> {:error, :image_bytes_exceed_limit}
+      true -> :ok
     end
   end
-
-  defp image_suffix("image/jpeg"), do: {:ok, ".jpg"}
-  defp image_suffix("image/jpg"), do: {:ok, ".jpg"}
-  defp image_suffix("image/png"), do: {:ok, ".png"}
-  defp image_suffix("image/webp"), do: {:ok, ".webp"}
-  defp image_suffix("image/gif"), do: {:ok, ".gif"}
-  defp image_suffix(mime_type), do: {:error, {:unsupported_image_mime_type, mime_type}}
-
-  defp normalize_mime_type("image/jpg"), do: "image/jpeg"
-  defp normalize_mime_type(mime_type), do: mime_type
 end

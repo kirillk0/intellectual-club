@@ -29,6 +29,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
             optional(:request_step_id) => integer() | nil,
             optional(:image_cache) => map(),
             optional(:image_cache_update) => (map() -> any()),
+            optional(:image_sent_update) => ([map()] -> any()),
+            optional(:image_llm_configuration_id) => integer() | nil,
             optional(:timeout_ms) => non_neg_integer(),
             optional(:connect_timeout_ms) => non_neg_integer()
           },
@@ -52,6 +54,8 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
            Map.fetch!(opts, :image_mapper),
            cache: Map.get(opts, :image_cache, %{}),
            on_cache: Map.get(opts, :image_cache_update),
+           on_sent: Map.get(opts, :image_sent_update),
+           llm_configuration_id: Map.get(opts, :image_llm_configuration_id),
            provider: provider
          ) do
       {:ok, wire_request} ->

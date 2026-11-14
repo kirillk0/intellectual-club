@@ -73,7 +73,9 @@ so files remain in the writable layer and cleanup has no hidden persistent volum
 - `download_file(file_id, local_path)`: authorized chat attachment to the container;
   creates parent directories.
 - `upload_file(local_path)`: regular container file to a user-visible chat artifact.
-- `read_image(local_path)`: PNG/JPEG/GIF/WebP file as model image input.
+- `read_image(local_path)`: image file as model image input. JPEG/PNG/GIF/WebP files
+  within the inline limits are attached unchanged; other decodable images, BMP
+  included, are converted as described in [Image Input](../../README.md#image-input).
 
 Relative paths start at `/workspace`; absolute paths are also container paths, never
 runner-host paths. Upload one regular file at a time: zip/tar directories yourself.

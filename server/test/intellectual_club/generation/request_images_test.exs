@@ -1,8 +1,9 @@
 defmodule IntellectualClub.Generation.RequestImagesTest do
   @moduledoc """
   `IntellectualClub.Generation.RequestImages`: pinning request images to
-  step-local files, provider-shape normalization and fallbacks, inherited pins,
-  staged file ownership, access scope and the hydrated wire cache.
+  step-local files, provider-shape normalization and text replacements, content
+  verdicts and request limits, inherited and legacy pins, staged file ownership,
+  access scope and the hydrated wire cache.
 
   Most scenarios send one request with the same image in all four provider
   shapes (Responses, OpenRouter, Anthropic, Google) and assert every shape.
@@ -11,21 +12,24 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
   use IntellectualClub.DataCase, async: false
 
   import IntellectualClub.Generation.RequestImageCacheTestHelpers
-  import IntellectualClub.SqlCapture, only: [capture_queries: 1]
+  import IntellectualClub.SqlCapture, only: [capture_queries: 1, selects_from: 2]
 
   require Ash.Query
 
   alias IntellectualClub.Chat.{ChatMessageStep, ChatMessageStepRequestFile}
   alias IntellectualClub.Files
   alias IntellectualClub.Files.File, as: StoredFile
-  alias IntellectualClub.Files.{FilesystemStorage, GarbageCollector}
+  alias IntellectualClub.Files.{FilesystemStorage, GarbageCollector, ImageProviderVerdicts}
+  alias IntellectualClub.Files.ImageVerdict
   alias IntellectualClub.Generation.{Persistence, RequestImages, RequestImagesTestAdapter}
   alias IntellectualClub.Generation.RequestImages.StagedBindings
+  alias IntellectualClub.ImageProcessor
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Tools.ExecutionContext
 
-  @invalid_fallback "[Image omitted: attached file could not be validated as an image.]"
-  @resize_fallback "[Image omitted: attached image exceeded the native image size limit and could not be resized.]"
+  @unavailable_fallback "[Image omitted: attached file could not be validated as an image.]"
+  @thumbnail_variant "thumbnail:max-edge=2000:preserve-format:v1"
+  @legacy_exact_variant "legacy_exact:v1"
 
   describe "prepare/3 and publication" do
     test "pins atom-valued image blocks normalized at the provider boundary" do
@@ -103,6 +107,38 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert :ok = validate_snapshot(prepared.request, step.id)
     end
 
+    test "image state records the content and provenance of every pin" do
+      fixture = request_fixture!(png_1x1())
+      ref = to_string(fixture.file.external_id)
+      assert {:ok, first} = prepare(responses_request(fixture.file), scope(fixture))
+      assert first.image_state.images == %{ref => %{sha256: fixture.file.sha256, origin: :new}}
+      source = publish!(fixture, first)
+
+      {other, _content} =
+        attach_content!(fixture.source_step, fixture.actor, jpeg_payload(), 2, "image/jpeg")
+
+      blocks = image_blocks(first.request) ++ image_blocks(responses_request(other))
+
+      assert {:ok, next} =
+               prepare(put_blocks(first.request, blocks), scope(fixture),
+                 source_step_id: source.id
+               )
+
+      assert next.image_state.images == %{
+               ref => %{sha256: fixture.file.sha256, origin: :inherited},
+               to_string(other.external_id) => %{sha256: other.sha256, origin: :new}
+             }
+
+      assert {:ok, reused} = prepare(first.request, scope(fixture))
+
+      assert reused.image_state.images == %{
+               ref => %{sha256: fixture.file.sha256, origin: :reused}
+             }
+
+      for prepared <- [next, reused],
+          do: assert(:ok = RequestImages.discard_staged_bindings(prepared.bindings))
+    end
+
     test "independent preparations own independent files with the same stable reference" do
       fixture = request_fixture!(png_1x1())
       raw = responses_request(fixture.file)
@@ -127,25 +163,41 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
   end
 
   describe "new image normalization" do
-    test "prepares one bounded thumbnail for all shapes and keeps the canonical payload" do
-      fixture = request_fixture!(oversized_png())
+    test "images over the edge limit become text naming the file and are never resized" do
+      fixture = request_fixture!(oversized_png(), filename: "wide.png")
+      file_count = count_files()
 
       assert {:ok, prepared} =
                prepare(four_shape_request(fixture.file), scope(fixture))
 
-      assert [item] = prepared.bindings.items
-      assert item.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
-      assert item.reference_key == to_string(fixture.file.external_id)
-      assert {:ok, {_file, resized}} = Files.load_payload(item.file_id)
-      assert {"image/png", width, height, _variant} = ExImageInfo.info(resized)
-      assert max(width, height) <= 2_000
+      assert prepared.bindings.items == []
+      assert prepared.image_state.images == %{}
+      assert count_files() == file_count
+      text = assert_omitted(prepared.request, fixture.file, "exceeds the image input limits")
+      assert text =~ ~s("wide.png")
+      assert text =~ "3000x1500 px"
+      # Limits are checked on the headers first, so no verdict is computed.
+      assert verdict(fixture.file) == nil
       assert {:ok, {_file, original}} = Files.load_payload(fixture.file.id)
       assert original == fixture.payload
-      assert {"image/png", 3_000, 1_500, _variant} = ExImageInfo.info(original)
       step = publish!(fixture, prepared)
-      assert saved_step(step.id).raw_request == prepared.request
       assert {:ok, wire} = hydrate(prepared.request, step.id)
-      assert_wire_payload(wire, resized, "image/png")
+      assert wire == prepared.request
+    end
+
+    test "images over the byte limit become text even within the edge limit" do
+      fixture = request_fixture!(padded_png(8, 8, ImageProcessor.max_payload_bytes()))
+      assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+      assert prepared.bindings.items == []
+
+      text =
+        assert_omitted(
+          prepared.request,
+          fixture.file,
+          "exceeds the image input limits of 2000 px per side and 7.5 MB"
+        )
+
+      assert text =~ "8x8 px, 7.5 MB"
     end
 
     test "corrects all MIME fields before INSERT without changing canonical metadata or refs" do
@@ -178,7 +230,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert_wire_payload(wire, fixture.payload, "image/jpeg")
     end
 
-    test "omits header-only oversized images in all shapes before publication" do
+    test "formats providers do not accept become text naming the file" do
       fixture =
         request_fixture!(oversized_bmp_header_payload(),
           mime_type: "image/bmp",
@@ -189,30 +241,31 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
                prepare(four_shape_request(fixture.file), scope(fixture))
 
       assert prepared.bindings.items == []
-
-      fallback =
-        if match?({:win32, _name}, :os.type()), do: @resize_fallback, else: @invalid_fallback
-
-      assert_fallback(prepared.request, fallback)
+      assert_omitted(prepared.request, fixture.file, "could not be validated as an image")
+      assert %{status: :invalid, reason: "unsupported_format:bmp"} = verdict(fixture.file)
       step = publish!(fixture, prepared)
       assert saved_step(step.id).raw_request == prepared.request
     end
 
-    unless match?({:win32, _name}, :os.type()) do
-      test "truncated images with matching hashes become text before publication" do
-        fixture = request_fixture!(truncated_png())
-        raw = four_shape_request(fixture.file, anthropic_cache_control?: true)
-        assert {"image/png", 20, 10, _} = ExImageInfo.info(fixture.payload)
+    test "truncated images with matching hashes become text before publication" do
+      fixture = request_fixture!(truncated_png())
+      raw = four_shape_request(fixture.file, anthropic_cache_control?: true)
+      assert {:ok, %{width: 20, height: 10}} = ImageProcessor.header(fixture.payload)
 
-        assert {:ok, prepared} = prepare(raw, scope(fixture))
-        assert prepared.bindings.items == []
-        assert_fallback(prepared.request, @invalid_fallback, anthropic_cache_control?: true)
-        assert count_files() == 1
-        step = publish!(fixture, prepared)
-        assert {:ok, wire} = hydrate(prepared.request, step.id)
-        refute Jason.encode!(wire) =~ "$intellectual_club_file"
-        assert_fallback(wire, @invalid_fallback, anthropic_cache_control?: true)
-      end
+      assert {:ok, prepared} = prepare(raw, scope(fixture))
+      assert prepared.bindings.items == []
+
+      text =
+        assert_omitted(prepared.request, fixture.file, "could not be validated as an image",
+          anthropic_cache_control?: true
+        )
+
+      assert %{status: :invalid, reason: "png:" <> _} = verdict(fixture.file)
+      assert count_files() == 1
+      step = publish!(fixture, prepared)
+      assert {:ok, wire} = hydrate(prepared.request, step.id)
+      refute Jason.encode!(wire) =~ "$intellectual_club_file"
+      assert_fallback(wire, text, anthropic_cache_control?: true)
     end
 
     test "invalid new images become provider-native text and preserve Anthropic cache control" do
@@ -220,9 +273,105 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       raw = four_shape_request(fixture.file, anthropic_cache_control?: true)
       assert {:ok, prepared} = prepare(raw, scope(fixture))
       assert prepared.bindings.items == []
-      assert_fallback(prepared.request, @invalid_fallback, anthropic_cache_control?: true)
+
+      text =
+        assert_omitted(prepared.request, fixture.file, "could not be validated as an image",
+          anthropic_cache_control?: true
+        )
+
+      assert text =~ ~s("source.png")
       refute Jason.encode!(prepared.request) =~ "$intellectual_club_file"
       assert count_files() == 1
+    end
+  end
+
+  describe "content verdicts" do
+    test "a verdict is computed once per content and reused by later preparations and hydration" do
+      fixture = request_fixture!(png_1x1())
+      assert verdict(fixture.file) == nil
+      assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+      stored = verdict(fixture.file)
+
+      assert %{
+               status: :valid,
+               mime_type: "image/png",
+               width: 1,
+               height: 1,
+               check_version: version
+             } =
+               stored
+
+      assert version == ImageProcessor.check_version()
+      step = publish!(fixture, prepared)
+
+      {copy, _content} =
+        attach_content!(fixture.source_step, fixture.actor, png_1x1(), 2, "image/png", "copy.png")
+
+      assert {:ok, again} = prepare(responses_request(copy), scope(fixture))
+      assert [_item] = again.bindings.items
+      assert {:ok, _wire} = hydrate(prepared.request, step.id)
+      assert {:ok, _staged} = prepare(prepared.request, scope(fixture), source_step_id: step.id)
+      assert verdict(fixture.file) == stored
+      assert ImageVerdict |> Ash.read!(authorize?: false) |> length() == 1
+    end
+
+    test "a remembered current verdict is trusted instead of decoding the payload again" do
+      fixture = request_fixture!(png_1x1())
+
+      image_verdict!(fixture.file.sha256,
+        status: :invalid,
+        mime_type: nil,
+        width: nil,
+        height: nil,
+        reason: "remembered"
+      )
+
+      assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+      assert prepared.bindings.items == []
+      assert_omitted(prepared.request, fixture.file, "could not be validated as an image")
+    end
+
+    test "a stale verdict is recomputed before the image is sent" do
+      fixture = request_fixture!(png_1x1())
+      image_verdict!(fixture.file.sha256, check_version: 0, status: :invalid, reason: "old")
+      assert {:ok, prepared} = prepare(responses_request(fixture.file), scope(fixture))
+      assert [_item] = prepared.bindings.items
+      assert %{status: :valid, check_version: version} = verdict(fixture.file)
+      assert version == ImageProcessor.check_version()
+      assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+    end
+
+    @tag :whitebox
+    test "verdicts of all inherited pins and hydrated bindings load with one query" do
+      fixture = request_fixture!(png_1x1())
+
+      files =
+        for {payload, sequence} <- Enum.with_index([png(2, 1), png(3, 1), jpeg_payload()], 2) do
+          mime_type = if sequence == 4, do: "image/jpeg", else: "image/png"
+
+          {file, _content} =
+            attach_content!(fixture.source_step, fixture.actor, payload, sequence, mime_type)
+
+          file
+        end
+
+      blocks = Enum.flat_map([fixture.file | files], &image_blocks(responses_request(&1)))
+      raw = put_blocks(responses_request(fixture.file), blocks)
+      assert {:ok, prepared} = prepare(raw, scope(fixture))
+      source = publish!(fixture, prepared)
+      verdict_query? = &Regex.match?(~r/FROM "image_verdicts"/, &1)
+
+      {_, queries} =
+        capture_queries(fn ->
+          assert {:ok, inherited} = prepare(raw, scope(fixture), source_step_id: source.id)
+          assert length(inherited.bindings.items) == 4
+          assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
+        end)
+
+      assert Enum.count(queries, verdict_query?) == 1
+
+      {_, queries} = capture_queries(fn -> assert {:ok, _wire} = hydrate(raw, source.id) end)
+      assert Enum.count(queries, verdict_query?) == 1
     end
   end
 
@@ -438,7 +587,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert bindings_for_step(source.id) == []
     end
 
-    test "inherited binding source, MIME, variant, size and payload failures cannot fall back" do
+    test "inherited binding source, MIME and variant failures cannot fall back" do
       fixture = request_fixture!(png_1x1())
       raw = responses_request(fixture.file)
       ref = to_string(fixture.file.external_id)
@@ -447,10 +596,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
         {png_1x1(), "identity:v1", Ash.UUID.generate(),
          {:request_image_binding_source_mismatch, ref}},
         {jpeg_payload(), "identity:v1", ref, {:request_image_binding_mime_mismatch, ref}},
-        {png_1x1(), "unknown:v1", ref,
-         {:unsupported_request_image_binding_variant, "unknown:v1"}},
-        {oversized_png(), "identity:v1", ref, {:request_image_binding_oversized, ref}},
-        {"invalid bytes", "identity:v1", ref, :invalid_image_payload}
+        {png_1x1(), "unknown:v1", ref, {:unsupported_request_image_binding_variant, "unknown:v1"}}
       ]
 
       invalid_pins
@@ -472,55 +618,315 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       end)
     end
 
-    unless match?({:win32, _name}, :os.type()) do
-      test "over-budget reusable pins do not prevent preparing a valid canonical image" do
-        fixture = request_fixture!(png_1x1())
-        raw = responses_request(fixture.file)
-        ref = to_string(fixture.file.external_id)
-        source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+    test "inherited pins above the edge limit become text in validation, hydration and inheritance" do
+      fixture = request_fixture!(png_1x1())
+      raw = four_shape_request(fixture.file)
+      ref = to_string(fixture.file.external_id)
+      source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      assert {:ok, file} = Files.create_from_binary("wide.png", "image/png", oversized_png())
+      create_binding!(source.id, file.id, ref, ref, "identity:v1")
 
-        assert {:ok, file} =
-                 Files.create_from_binary("large.png", "image/png", png_header(100_001, 1_000))
+      assert :ok = validate_snapshot(raw, source.id)
+      assert {:ok, wire} = hydrate(raw, source.id)
+      text = assert_omitted(wire, fixture.file, "exceeds the image input limits")
+      assert text =~ ~s("wide.png")
+      assert text =~ "3000x1500 px"
+      assert {:ok, inherited} = prepare(raw, scope(fixture), source_step_id: source.id)
+      assert inherited.bindings.items == []
+      assert inherited.image_state.images == %{}
+      assert_fallback(inherited.request, text)
+      assert saved_step(source.id).raw_request == raw
+      assert [_binding] = bindings_for_step(source.id)
+    end
 
-        create_binding!(source.id, file.id, ref, ref, "identity:v1")
+    test "reusable pins over the request limits fall back to the canonical image" do
+      fixture = request_fixture!(png_1x1())
+      raw = responses_request(fixture.file)
+      ref = to_string(fixture.file.external_id)
+      source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      assert {:ok, file} = Files.create_from_binary("large.png", "image/png", oversized_png())
+      create_binding!(source.id, file.id, ref, ref, "identity:v1")
 
-        assert {:error, :image_pixel_limit_exceeded} =
-                 prepare(raw, scope(fixture), source_step_id: source.id)
+      assert {:ok, prepared} = prepare(raw, scope(fixture))
+      assert [item] = prepared.bindings.items
+      assert {:ok, {_file, bytes}} = Files.load_payload(item.file_id)
+      assert bytes == fixture.payload
+      assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+    end
 
-        assert {:ok, prepared} = prepare(raw, scope(fixture))
-        assert [item] = prepared.bindings.items
-        assert {:ok, {_file, bytes}} = Files.load_payload(item.file_id)
-        assert bytes == fixture.payload
-        assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
+    test "saved invalid pins become text in validation, hydration and inheritance without canonical fallback" do
+      fixture = request_fixture!(png_1x1())
+      raw = four_shape_request(fixture.file)
+      ref = to_string(fixture.file.external_id)
+      source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      assert {:ok, file} = Files.create_from_binary("truncated.png", "image/png", truncated_png())
+      create_binding!(source.id, file.id, ref, ref, "identity:v1")
+
+      assert :ok = validate_snapshot(raw, source.id)
+      assert {:ok, wire} = hydrate(raw, source.id)
+      text = assert_omitted(wire, fixture.file, "could not be validated as an image")
+      assert text =~ ~s("truncated.png")
+      assert {:ok, inherited} = prepare(raw, scope(fixture), source_step_id: source.id)
+      assert inherited.bindings.items == []
+      assert_fallback(inherited.request, text)
+      assert saved_step(source.id).raw_request == raw
+      assert [_binding] = bindings_for_step(source.id)
+    end
+
+    test "images rejected by the current configuration become text when inherited, hydrated, reused or new" do
+      fixture = request_fixture!(png_1x1())
+      %{id: config} = create_configuration!(fixture.actor)
+      raw = four_shape_request(fixture.file)
+      assert {:ok, prepared} = prepare(raw, scope(fixture), llm_configuration_id: config)
+      source = publish!(fixture, prepared)
+      :ok = ImageProviderVerdicts.mark_rejected([fixture.file.sha256], config, "test: rejected")
+
+      # A warm wire cache from an earlier send must not bypass the rejection either.
+      for cache <- [%{}, prepared.image_state.cache] do
+        assert {:ok, wire} =
+                 hydrate(prepared.request, source.id, cache: cache, llm_configuration_id: config)
+
+        text = assert_omitted(wire, fixture.file, "was rejected by the model provider")
+        assert text =~ "1x1 px"
+        file_count = count_files()
+
+        assert {:ok, retry} =
+                 prepare(prepared.request, scope(fixture),
+                   source_step_id: source.id,
+                   cache: cache,
+                   llm_configuration_id: config
+                 )
+
+        assert count_files() == file_count
+        assert retry.bindings.items == []
+        assert retry.image_state.images == %{}
+        assert retry.image_state.descriptors == %{}
+        assert retry.image_state.cache == %{}
+        assert_fallback(retry.request, text)
+        retry_step = publish!(fixture, retry, 2 + map_size(cache))
+
+        assert {:ok, retry_wire} =
+                 hydrate(retry.request, retry_step.id, llm_configuration_id: config)
+
+        assert_fallback(retry_wire, text)
       end
 
-      test "saved truncated pins fail validation, hydration and inheritance without canonical fallback" do
-        fixture = request_fixture!(png_1x1())
-        raw = responses_request(fixture.file)
-        ref = to_string(fixture.file.external_id)
-        source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      assert :ok = validate_snapshot(prepared.request, source.id)
+      assert {:ok, reused} = prepare(raw, scope(fixture), llm_configuration_id: config)
+      assert reused.bindings.items == []
+      assert_omitted(reused.request, fixture.file, "was rejected by the model provider")
 
-        assert {:ok, file} =
-                 Files.create_from_binary("truncated.png", "image/png", truncated_png())
+      other_chat = request_fixture!(png_1x1())
+      other_raw = four_shape_request(other_chat.file)
+      assert {:ok, new} = prepare(other_raw, scope(other_chat), llm_configuration_id: config)
+      assert new.bindings.items == []
+      assert_omitted(new.request, other_chat.file, "was rejected by the model provider")
+    end
 
-        create_binding!(source.id, file.id, ref, ref, "identity:v1")
+    test "an image rejected by one configuration is still sent to another one" do
+      fixture = request_fixture!(png_1x1())
+      %{id: rejecting} = create_configuration!(fixture.actor)
+      %{id: other} = create_configuration!(fixture.actor)
+      raw = four_shape_request(fixture.file)
+      assert {:ok, prepared} = prepare(raw, scope(fixture), llm_configuration_id: other)
+      source = publish!(fixture, prepared)
 
-        assert {:error, :invalid_image_payload} = validate_snapshot(raw, source.id)
-        assert {:error, :invalid_image_payload} = hydrate(raw, source.id)
+      :ok =
+        ImageProviderVerdicts.mark_rejected([fixture.file.sha256], rejecting, "test: rejected")
 
-        assert {:error, :invalid_image_payload} =
-                 prepare(raw, scope(fixture), source_step_id: source.id)
+      for configuration_id <- [other, nil] do
+        assert {:ok, wire} =
+                 hydrate(prepared.request, source.id,
+                   cache: prepared.image_state.cache,
+                   llm_configuration_id: configuration_id
+                 )
 
-        assert saved_step(source.id).raw_request == raw
-        assert [_binding] = bindings_for_step(source.id)
+        assert_wire_payload(wire, fixture.payload, "image/png")
+
+        assert {:ok, inherited} =
+                 prepare(prepared.request, scope(fixture),
+                   source_step_id: source.id,
+                   llm_configuration_id: configuration_id
+                 )
+
+        assert inherited.request == prepared.request
+        assert [_item] = inherited.bindings.items
+        assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
       end
     end
 
+    test "hydration reports the images it sends natively and whether the configuration accepted them" do
+      fixture = request_fixture!(png_1x1())
+      %{id: config} = create_configuration!(fixture.actor)
+
+      {other, _content} =
+        attach_content!(fixture.source_step, fixture.actor, jpeg_payload(), 2, "image/jpeg")
+
+      first = responses_request(fixture.file)
+      raw = put_blocks(first, image_blocks(first) ++ image_blocks(responses_request(other)))
+      assert {:ok, prepared} = prepare(raw, scope(fixture), llm_configuration_id: config)
+      step = publish!(fixture, prepared)
+      pins = Map.new(bindings_for_step(step.id), &{&1.file.sha256, &1})
+      :ok = ImageProviderVerdicts.record_accepted([fixture.file.sha256], config)
+      parent = self()
+      on_sent = &send(parent, {:sent, &1})
+
+      sent = fn sha256, accepted? ->
+        %{
+          sha256: sha256,
+          file_id: pins[sha256].file_id,
+          source_file_external_id: to_string(pins[sha256].source_file_external_id),
+          accepted?: accepted?
+        }
+      end
+
+      expected =
+        Enum.sort_by([sent.(fixture.file.sha256, true), sent.(other.sha256, false)], & &1.sha256)
+
+      assert {:ok, _wire} =
+               hydrate(prepared.request, step.id, llm_configuration_id: config, on_sent: on_sent)
+
+      assert_receive {:sent, ^expected}
+
+      # Without a configuration nothing is known to be accepted.
+      assert {:ok, _wire} = hydrate(prepared.request, step.id, on_sent: on_sent)
+      unknown = Enum.map(expected, &%{&1 | accepted?: false})
+      assert_receive {:sent, ^unknown}
+
+      # Images replaced by text are not sent.
+      :ok = ImageProviderVerdicts.mark_rejected([other.sha256], config, "test: rejected")
+
+      assert {:ok, _wire} =
+               hydrate(prepared.request, step.id, llm_configuration_id: config, on_sent: on_sent)
+
+      expected_sent = [sent.(fixture.file.sha256, true)]
+      assert_receive {:sent, ^expected_sent}
+
+      assert {:ok, _wire} = hydrate(image_request_without_markers(), nil, on_sent: on_sent)
+      assert_receive {:sent, []}
+    end
+
+    @tag :whitebox
+    test "the facts of the configuration are loaded with one query per preparation and hydration" do
+      fixture = request_fixture!(png_1x1())
+      %{id: config} = create_configuration!(fixture.actor)
+
+      {other, _content} =
+        attach_content!(fixture.source_step, fixture.actor, jpeg_payload(), 2, "image/jpeg")
+
+      first = four_shape_request(fixture.file)
+      raw = put_blocks(first, image_blocks(first) ++ image_blocks(four_shape_request(other)))
+
+      {{:ok, prepared}, queries} =
+        capture_queries(fn -> prepare(raw, scope(fixture), llm_configuration_id: config) end)
+
+      assert length(selects_from(queries, "image_provider_verdicts")) == 1
+      source = publish!(fixture, prepared)
+
+      {{:ok, _wire}, queries} =
+        capture_queries(fn ->
+          hydrate(prepared.request, source.id, llm_configuration_id: config)
+        end)
+
+      assert length(selects_from(queries, "image_provider_verdicts")) == 1
+
+      {{:ok, inherited}, queries} =
+        capture_queries(fn ->
+          prepare(prepared.request, scope(fixture),
+            source_step_id: source.id,
+            llm_configuration_id: config
+          )
+        end)
+
+      assert length(selects_from(queries, "image_provider_verdicts")) == 1
+      assert :ok = RequestImages.discard_staged_bindings(inherited.bindings)
+
+      {{:ok, _wire}, queries} = capture_queries(fn -> hydrate(prepared.request, source.id) end)
+      assert selects_from(queries, "image_provider_verdicts") == []
+    end
+
+    test "legacy thumbnail pins are still validated, hydrated, inherited and reused" do
+      fixture = request_fixture!(png_1x1())
+      ref = to_string(fixture.file.external_id)
+      assert {:ok, prepared} = prepare(four_shape_request(fixture.file), scope(fixture))
+      source = publish!(fixture, prepared)
+      thumbnail = png(20, 10)
+      binding = pin_legacy_thumbnail!(source, thumbnail)
+      assert binding.variant_key == @thumbnail_variant
+
+      assert :ok = validate_snapshot(prepared.request, source.id)
+      assert {:ok, wire} = hydrate(prepared.request, source.id)
+      assert_wire_payload(wire, thumbnail, "image/png")
+
+      for {opts, origin} <- [{[source_step_id: source.id], :inherited}, {[], :reused}] do
+        assert {:ok, staged} = prepare(prepared.request, scope(fixture), opts)
+        assert staged.request == prepared.request
+        assert [item] = staged.bindings.items
+        assert item.variant_key == @thumbnail_variant
+        assert %{^ref => %{sha256: sha256, origin: ^origin}} = staged.image_state.images
+        assert sha256 == binding.file.sha256
+        assert {:ok, {_file, ^thumbnail}} = Files.load_payload(item.file_id)
+        assert :ok = RequestImages.discard_staged_bindings(staged.bindings)
+      end
+    end
+
+    test "legacy exact pins of the raw request backfill are validated, hydrated, inherited and reused" do
+      fixture = request_fixture!(png_1x1())
+      ref = to_string(fixture.file.external_id)
+      raw = legacy_exact_request(fixture.file)
+      source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      exact = png(20, 10)
+      assert {:ok, file} = Files.create_from_binary("exact.png", "image/png", exact)
+      create_binding!(source.id, file.id, ref, ref, @legacy_exact_variant)
+
+      assert :ok = validate_snapshot(raw, source.id)
+      assert {:ok, wire} = hydrate(raw, source.id)
+      assert_wire_payload(wire, exact, "image/png")
+
+      for {request, opts, origin} <- [
+            {raw, [source_step_id: source.id], :inherited},
+            {four_shape_request(fixture.file), [], :reused}
+          ] do
+        assert {:ok, staged} = prepare(request, scope(fixture), opts)
+        assert staged.request == request
+        assert [item] = staged.bindings.items
+        assert item.variant_key == @legacy_exact_variant
+        assert %{^ref => %{origin: ^origin}} = staged.image_state.images
+        assert {:ok, {_file, ^exact}} = Files.load_payload(item.file_id)
+        assert :ok = RequestImages.discard_staged_bindings(staged.bindings)
+      end
+    end
+
+    test "legacy exact pins above the request limits become text and never block new requests" do
+      fixture = request_fixture!(png_1x1())
+      ref = to_string(fixture.file.external_id)
+      raw = legacy_exact_request(fixture.file)
+      source = create_request_step!(fixture.actor, fixture.target_message.id, 1, raw)
+      assert {:ok, file} = Files.create_from_binary("exact.png", "image/png", oversized_png())
+      create_binding!(source.id, file.id, ref, ref, @legacy_exact_variant)
+
+      assert :ok = validate_snapshot(raw, source.id)
+      assert {:ok, wire} = hydrate(raw, source.id)
+      text = assert_omitted(wire, fixture.file, "exceeds the image input limits")
+      assert {:ok, inherited} = prepare(raw, scope(fixture), source_step_id: source.id)
+      assert inherited.bindings.items == []
+      assert_fallback(inherited.request, text)
+
+      # The newest pin of this file in the chat is the oversized exact one; a new
+      # request falls back to the canonical file.
+      assert {:ok, fresh} = prepare(four_shape_request(fixture.file), scope(fixture))
+      assert [item] = fresh.bindings.items
+      assert item.variant_key == "identity:v1"
+      assert {:ok, {_file, bytes}} = Files.load_payload(item.file_id)
+      assert bytes == fixture.payload
+      assert :ok = RequestImages.discard_staged_bindings(fresh.bindings)
+    end
+
     test "a missing inherited rendition payload fails even when canonical bytes are available" do
-      fixture = request_fixture!(oversized_png())
+      fixture = request_fixture!(png_1x1())
       assert {:ok, prepared} = prepare(responses_request(fixture.file), scope(fixture))
       source = publish!(fixture, prepared)
-      [binding] = bindings_for_step(source.id)
+      binding = pin_legacy_thumbnail!(source, png(20, 10))
       assert {:ok, {_file, bytes}} = Files.load_payload(binding.file_id)
 
       without_payload_blob(binding.file.sha256, bytes, fn path ->
@@ -733,44 +1139,6 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert count_files() == count - 1
     end
 
-    test "filesystem GC discovers a resized payload after a successful nested create is rolled back" do
-      fixture = request_fixture!(oversized_png())
-      raw = responses_request(fixture.file)
-      source_before = saved_step(fixture.source_step.id)
-      file_count = count_files()
-      parent = self()
-
-      assert {:error, :late_outer_failure} =
-               Repo.transaction(fn ->
-                 %{step: step} =
-                   Persistence.create_request_step!(
-                     fixture.target_message,
-                     1,
-                     raw,
-                     request_context: %{adapter_module: RequestImagesTestAdapter}
-                   )
-
-                 [binding] = bindings_for_step(step.id)
-                 assert binding.variant_key == "thumbnail:max-edge=2000:preserve-format:v1"
-                 send(parent, {:staged_outer_file, binding.file_id, binding.file.sha256, step.id})
-                 Repo.rollback(:late_outer_failure)
-               end)
-
-      assert_receive {:staged_outer_file, file_id, sha256, step_id}
-      assert steps_for_message(fixture.target_message.id) == []
-      assert bindings_for_step(step_id) == []
-      assert {:error, _} = Ash.get(StoredFile, file_id, authorize?: false)
-      assert count_files() == file_count
-      assert FilesystemStorage.exists?(sha256)
-      assert {:ok, %{deleted: deleted}} = GarbageCollector.collect()
-      assert deleted > 0
-      refute FilesystemStorage.exists?(sha256)
-      assert FilesystemStorage.exists?(fixture.file.sha256)
-      source_after = saved_step(fixture.source_step.id)
-      assert source_after.updated_at == source_before.updated_at
-      assert source_after.raw_request == source_before.raw_request
-    end
-
     test "transactional attachment errors can roll back partial bindings without losing staged ownership" do
       fixture = request_fixture!(png_1x1())
       raw = responses_request(fixture.file)
@@ -831,53 +1199,6 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert {:ok, {_file, payload}} = Files.load_payload(restored.file_id)
       assert payload == fixture.payload
     end
-
-    test "discarded prepared rendition cleanup commits logically and remains retryable by GC" do
-      fixture = request_fixture!(oversized_png())
-
-      assert {:ok, prepared} =
-               prepare(responses_request(fixture.file), scope(fixture))
-
-      [item] = prepared.bindings.items
-      assert {:ok, {file, payload}} = Files.load_payload(item.file_id)
-      replace_payload_with_directory!(file.sha256)
-
-      try do
-        assert :ok = RequestImages.discard_staged_bindings(prepared.bindings)
-        assert {:error, _} = Ash.get(StoredFile, file.id, authorize?: false)
-        assert {:error, _} = GarbageCollector.collect_sha256(file.sha256)
-      after
-        restore_payload!(file.sha256, payload)
-      end
-
-      assert {:ok, :deleted} = GarbageCollector.collect_sha256(file.sha256)
-      assert {:ok, {_file, original}} = Files.load_payload(fixture.file.id)
-      assert original == fixture.payload
-    end
-
-    test "preparation never stages a corrupt existing rendition blob and cleans its new logical row" do
-      fixture = request_fixture!(oversized_png())
-      raw = responses_request(fixture.file)
-      assert {:ok, first} = prepare(raw, scope(fixture))
-      [item] = first.bindings.items
-      assert {:ok, {file, payload}} = Files.load_payload(item.file_id)
-
-      without_payload_blob(file.sha256, payload, fn path ->
-        File.write!(path, "corrupt rendition")
-        count = count_files()
-
-        assert {:error,
-                {:created_request_image_invalid,
-                 {:error, :request_image_payload_integrity_mismatch}}} =
-                 prepare(raw, scope(fixture))
-
-        assert count_files() == count
-        assert steps_for_message(fixture.target_message.id) == []
-        assert File.read!(path) == "corrupt rendition"
-      end)
-
-      assert :ok = RequestImages.discard_staged_bindings(first.bindings)
-    end
   end
 
   describe "access scope" do
@@ -891,7 +1212,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert {:ok, denied} = prepare(raw, other_scope)
       assert denied.bindings.items == []
 
-      assert [%{"type" => "input_text", "text" => @invalid_fallback}] =
+      assert [%{"type" => "input_text", "text" => @unavailable_fallback}] =
                image_blocks(denied.request)
 
       assert {:error, :request_image_source_out_of_scope} =
@@ -976,7 +1297,7 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       assert {:ok, denied} = prepare(future_raw, fork_scope)
       assert denied.bindings.items == []
 
-      assert [%{"type" => "input_text", "text" => @invalid_fallback}] =
+      assert [%{"type" => "input_text", "text" => @unavailable_fallback}] =
                image_blocks(denied.request)
 
       assert {:error, :request_image_source_out_of_scope} =
@@ -1374,6 +1695,22 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     }
   end
 
+  # All four shapes with markers as the former raw request backfill wrote them.
+  defp legacy_exact_request(file), do: file |> four_shape_request() |> put_legacy_rendition()
+
+  defp put_legacy_rendition(%{"$intellectual_club_file" => marker}) do
+    rendition = %{"kind" => "legacy_exact", "format" => "preserve"}
+    %{"$intellectual_club_file" => Map.put(marker, "rendition", rendition)}
+  end
+
+  defp put_legacy_rendition(value) when is_map(value),
+    do: Map.new(value, fn {key, nested} -> {key, put_legacy_rendition(nested)} end)
+
+  defp put_legacy_rendition(value) when is_list(value),
+    do: Enum.map(value, &put_legacy_rendition/1)
+
+  defp put_legacy_rendition(value), do: value
+
   defp responses_request(file) do
     marker = RequestImages.marker(to_string(file.external_id), file.mime_type)
 
@@ -1390,6 +1727,10 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
 
   defp image_blocks(request), do: hd(request["messages"] || request["input"])["content"]
 
+  defp image_request_without_markers do
+    %{"input" => [%{"role" => "user", "content" => [%{"type" => "input_text", "text" => "Hi"}]}]}
+  end
+
   defp put_blocks(request, blocks) do
     key = if Map.has_key?(request, "messages"), do: "messages", else: "input"
     Map.update!(request, key, fn [container] -> [Map.put(container, "content", blocks)] end)
@@ -1405,6 +1746,22 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
     assert anthropic["source"]["media_type"] == mime_type
     assert Base.decode64!(google["data"]) == payload
     assert google["mime_type"] == mime_type
+  end
+
+  defp assert_omitted(request, file, phrase, opts \\ []) do
+    [%{"text" => text} | _blocks] = image_blocks(request)
+    assert_fallback(request, text, opts)
+    assert text =~ "file_id=#{file.external_id}"
+    assert text =~ phrase
+    assert text =~ "The file remains available to file tools."
+    text
+  end
+
+  defp verdict(file) do
+    case Ash.get(ImageVerdict, file.sha256, authorize?: false) do
+      {:ok, verdict} -> verdict
+      {:error, _not_found} -> nil
+    end
   end
 
   defp assert_fallback(request, text, opts \\ []) do
@@ -1453,19 +1810,6 @@ defmodule IntellectualClub.Generation.RequestImagesTest do
       width::little-signed-32, height::little-signed-32, 1::little-16, 24::little-16,
       0::little-32, image_size::little-32, 2_835::little-signed-32, 2_835::little-signed-32,
       0::little-32, 0::little-32>>
-  end
-
-  defp replace_payload_with_directory!(sha256) do
-    {:ok, payload_path} = FilesystemStorage.path_for(sha256)
-    File.rm!(payload_path)
-    File.mkdir!(payload_path)
-    File.write!(Path.join(payload_path, "sentinel"), "not removable as a blob")
-  end
-
-  defp restore_payload!(sha256, payload) do
-    {:ok, payload_path} = FilesystemStorage.path_for(sha256)
-    File.rm_rf!(payload_path)
-    assert {:ok, :created} = FilesystemStorage.store(sha256, payload)
   end
 
   defp create_request_step!(actor, message_id, sequence, raw_request \\ %{}) do
