@@ -818,8 +818,8 @@ defmodule IntellectualClub.Generation.Worker do
   @impl true
   def handle_call(:cancel_and_wait, from, state), do: request_cancel(state, from)
 
-  def handle_call({:tool_interrupted?, call_item_id}, _from, state) do
-    {:reply, MapSet.member?(state.interrupted_tool_calls, call_item_id), state}
+  def handle_call({:tool_execution_canceled?, call_item_id}, _from, state) do
+    {:reply, tool_execution_canceled?(state, call_item_id), state}
   end
 
   def handle_call({:tool_execution_phase, pid, phase}, from, state)
@@ -829,8 +829,7 @@ defmodule IntellectualClub.Generation.Worker do
 
   def handle_call({:tool_execution_phase, pid, phase, call_item_id}, {pid, _ref}, state)
       when phase in [:protected, :interruptible] do
-    if state.tool_cancel_requested? or state.cancel_requested? or state.lease_lost? or
-         MapSet.member?(state.interrupted_tool_calls, call_item_id) do
+    if tool_execution_canceled?(state, call_item_id) do
       {:reply, :canceled, state}
     else
       {monitor, _previous} =
@@ -1839,6 +1838,11 @@ defmodule IntellectualClub.Generation.Worker do
     %{state | tool_cancel_requested?: true}
   end
 
+  defp tool_execution_canceled?(state, call_item_id) do
+    state.tool_cancel_requested? or state.cancel_requested? or state.lease_lost? or
+      MapSet.member?(state.interrupted_tool_calls, call_item_id)
+  end
+
   defp start_provider_session(adapter, context) do
     if function_exported?(adapter, :start_session, 1) do
       case adapter.start_session(context) do
@@ -2374,7 +2378,7 @@ defmodule IntellectualClub.Generation.Worker do
 
       {:exit, {call, reason}}, {results, error} ->
         if reason == :killed and
-             GenServer.call(owner, {:tool_interrupted?, call.item_id}, :infinity) do
+             GenServer.call(owner, {:tool_execution_canceled?, call.item_id}, :infinity) do
           {results, error}
         else
           send(owner, {:tool_batch_failed, self()})

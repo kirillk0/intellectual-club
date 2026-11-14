@@ -6,6 +6,7 @@ defmodule IntellectualClub.Generation.WorkerPersistenceTest do
   """
   use IntellectualClub.DataCase, async: false
 
+  import ExUnit.CaptureLog, only: [capture_log: 2]
   import IntellectualClub.Test.GenerationRuntime
 
   alias IntellectualClub.Chat.QueuedMessages
@@ -285,6 +286,58 @@ defmodule IntellectualClub.Generation.WorkerPersistenceTest do
   end
 
   describe "cancellation" do
+    for {name, action, status} <- [
+          {"canceling an external tool finishes without error logs", :cancel, :canceled},
+          {"an unexpected killed tool remains a logged generation error", :kill, :error}
+        ] do
+      test name do
+        test = self()
+
+        fixture =
+          generation_fixture!(
+            context: %{
+              tool_instances_by_alias: %{"web" => web_search_tool!(fn _, _ -> {:wait, test} end)},
+              test_tool_name: "web__web_search",
+              test_tool_args: %{"query" => "tool termination"}
+            }
+          )
+
+        worker = start_worker!(fixture)
+        monitor = Process.monitor(worker)
+        {provider, _request} = await_provider!(fixture)
+        send(provider, {:complete, :tools})
+        assert_receive {:waiting, request}, 5_000
+        [{external, {_ref, :interruptible}}] = Map.to_list(:sys.get_state(worker).tool_executions)
+
+        try do
+          log =
+            capture_log([level: :error], fn ->
+              case unquote(action) do
+                :cancel -> assert Worker.cancel_and_wait(worker) == :ok
+                :kill -> Process.exit(external, :kill)
+              end
+
+              assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 5_000
+            end)
+
+          if unquote(action) == :cancel do
+            assert log == ""
+          else
+            assert log =~ "[error] Task"
+            assert log =~ "killed"
+          end
+
+          message = message!(fixture)
+          assert message.status == unquote(status)
+          assert message.generation_fence_token == nil
+          assert step!(fixture).status == unquote(status)
+          refute_provider_started(fixture)
+        after
+          send(request, :continue)
+        end
+      end
+    end
+
     test "external cancellation permits late dispatch until validation but cannot revive the message" do
       fixture = generation_fixture!()
       Barrier.gate_persistence(fixture.message.id, queued_steers: :stop)
