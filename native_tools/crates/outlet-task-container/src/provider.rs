@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -700,9 +700,11 @@ fn split_file_path(path: &str) -> Result<(String, String)> {
 }
 fn make_archive(source: &Path, target: &Path, name: &str) -> Result<()> {
     let mut input = std::fs::File::open(source)?;
+    let metadata = input.metadata()?;
     let mut builder = tar::Builder::new(std::fs::File::create(target)?);
     let mut header = tar::Header::new_gnu();
-    header.set_size(input.metadata()?.len());
+    header.set_size(metadata.len());
+    header.set_mtime(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs());
     header.set_mode(0o644);
     header.set_entry_type(tar::EntryType::Regular);
     header.set_cksum();
@@ -835,6 +837,34 @@ mod tests {
         assert_eq!(size, 8);
         assert_eq!(std::fs::read(output).unwrap(), b"\0binary\xff");
         assert!(read_single_file_archive(&archive, &dir.path().join("small"), 1).is_err());
+    }
+    #[test]
+    fn archive_preserves_file_modification_time() {
+        let dir = TempDir::new().unwrap();
+        let input = dir.path().join("in");
+        let archive = dir.path().join("tar");
+        let output = dir.path().join("out");
+        let modified = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::write(&input, b"document").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&input)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        make_archive(&input, &archive, "document.pdf").unwrap();
+        tar::Archive::new(std::fs::File::open(&archive).unwrap())
+            .unpack(&output)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::metadata(output.join("document.pdf"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            modified
+        );
     }
     #[test]
     fn archive_symlinks_are_never_followed() {
