@@ -449,6 +449,7 @@ export function useChatViewModel() {
   const queueRuntime = useChatQueueRuntime({
     chatId,
     queuedMessages,
+    composerDraft: composerRuntime.draft,
     readOnly: sharedReadonly,
     activeGenerationId,
     cancelingGenerationId,

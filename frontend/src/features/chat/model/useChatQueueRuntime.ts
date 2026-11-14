@@ -18,6 +18,7 @@ import { translate } from '@/i18n';
 type Params = {
   chatId: ComputedRef<number>;
   queuedMessages: Ref<ChatQueuedMessage[]>;
+  composerDraft: Ref<string>;
   readOnly: ComputedRef<boolean>;
   activeGenerationId: Ref<number | null>;
   cancelingGenerationId: Ref<number | null>;
@@ -314,6 +315,7 @@ export function useChatQueueRuntime(params: Params) {
     if (params.readOnly.value || queueActionId.value || !isEditableQueuedMessage(message)) return;
     if (!window.confirm(translate('Remove this message from the queue?'))) return;
 
+    const text = queuedMessageText(message);
     queueActionId.value = message.id;
     params.loadError.value = '';
     try {
@@ -321,6 +323,9 @@ export function useChatQueueRuntime(params: Params) {
         `/api/bff/chat-queued-messages/${message.id}`
       );
       upsertQueuedMessage(payload.queued_message);
+      if (payload.queued_message.chat_id === params.chatId.value && params.composerDraft.value === '') {
+        params.composerDraft.value = text;
+      }
     } catch (error) {
       console.error(error);
       params.loadError.value = mutationError(error, 'Failed to remove queued message.');

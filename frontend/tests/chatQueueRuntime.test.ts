@@ -61,6 +61,7 @@ const createRuntime = (
   waitForConfigSync?: () => Promise<boolean>
 ) => {
   const queuedMessages = ref<ChatQueuedMessage[]>(messages);
+  const composerDraft = ref('');
   const loadError = ref('');
   const chatId = ref(2);
   const activeGenerationId = ref<number | null>(8);
@@ -76,6 +77,7 @@ const createRuntime = (
     activeGenerationId,
     cancelingGenerationId,
     queuedMessages,
+    composerDraft,
     readOnly: computed(() => readOnly),
     loadError,
     fileUploadPolicy: computed(() => ({
@@ -91,7 +93,7 @@ const createRuntime = (
     waitForConfigSync,
   });
 
-  return { runtime, queuedMessages, loadError, refreshChat, chatId, activeGenerationId, cancelingGenerationId };
+  return { runtime, queuedMessages, composerDraft, loadError, refreshChat, chatId, activeGenerationId, cancelingGenerationId };
 };
 
 describe('chat queue runtime', () => {
@@ -152,17 +154,79 @@ describe('chat queue runtime', () => {
     expect(runtime.editingQueuedMessage.value).toBeNull();
   });
 
-  it('removes an editable item using the authoritative canceled response', async () => {
+  it('restores removed text to an empty composer after the server clears queued contents', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     apiMocks.del.mockResolvedValueOnce({
-      queued_message: { ...followUp(), status: 'canceled' },
+      queued_message: {
+        ...followUp(),
+        status: 'canceled',
+        contents: [],
+      },
     });
-    const { runtime, queuedMessages } = createRuntime();
+    const { runtime, queuedMessages, composerDraft } = createRuntime();
 
     await runtime.removeFromQueue(followUp());
 
     expect(apiMocks.del).toHaveBeenCalledWith('/api/bff/chat-queued-messages/10');
     expect(queuedMessages.value).toEqual([]);
+    expect(composerDraft.value).toBe('First\nfollow-up');
+  });
+
+  it.each(['Existing draft', ' \n'])('preserves nonempty composer text %j when removing a queued item', async (text) => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    apiMocks.del.mockResolvedValueOnce({ queued_message: { ...followUp(), status: 'canceled' } });
+    const { runtime, queuedMessages, composerDraft } = createRuntime();
+    composerDraft.value = text;
+
+    await runtime.removeFromQueue(followUp());
+
+    expect(queuedMessages.value).toEqual([]);
+    expect(composerDraft.value).toBe(text);
+  });
+
+  it('preserves text entered while removing a queued item', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let finishRemoval!: () => void;
+    apiMocks.del.mockReturnValueOnce(new Promise((resolve) => {
+      finishRemoval = () => resolve({ queued_message: { ...followUp(), status: 'canceled' } });
+    }));
+    const { runtime, composerDraft } = createRuntime();
+
+    const removing = runtime.removeFromQueue(followUp());
+    composerDraft.value = 'New draft';
+    finishRemoval();
+    await removing;
+
+    expect(composerDraft.value).toBe('New draft');
+  });
+
+  it('does not restore removed text into another chat', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let finishRemoval!: () => void;
+    apiMocks.del.mockReturnValueOnce(new Promise((resolve) => {
+      finishRemoval = () => resolve({ queued_message: { ...followUp(), status: 'canceled' } });
+    }));
+    const { runtime, composerDraft, chatId } = createRuntime();
+
+    const removing = runtime.removeFromQueue(followUp());
+    chatId.value = 3;
+    finishRemoval();
+    await removing;
+
+    expect(composerDraft.value).toBe('');
+  });
+
+  it('leaves the composer empty when queue removal fails', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    apiMocks.del.mockRejectedValueOnce(new Error('refused'));
+    const { runtime, queuedMessages, composerDraft, loadError } = createRuntime();
+
+    await runtime.removeFromQueue(followUp());
+
+    expect(queuedMessages.value).toEqual([followUp()]);
+    expect(composerDraft.value).toBe('');
+    expect(loadError.value).toBe('Failed to remove queued message.');
   });
 
   it('sends only the follow-up head and refreshes server generation state', async () => {
