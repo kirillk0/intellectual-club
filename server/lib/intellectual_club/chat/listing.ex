@@ -135,7 +135,8 @@ defmodule IntellectualClub.Chat.Listing do
   defp section_candidates(query, true) do
     Ash.Query.filter(
       query,
-      subagent == false or exists(drafts, user_id == ^Ash.Expr.actor(:id) and text != "")
+      subagent == false or
+        exists(drafts, user_id == ^Ash.Expr.actor(:id) and (text != "" or attachment_count > 0))
     )
   end
 
@@ -163,7 +164,11 @@ defmodule IntellectualClub.Chat.Listing do
   def apply_section_sort(query, _section), do: apply_sort(query)
 
   def apply_section(query, "drafts"),
-    do: Ash.Query.filter(query, exists(drafts, user_id == ^Ash.Expr.actor(:id) and text != ""))
+    do:
+      Ash.Query.filter(
+        query,
+        exists(drafts, user_id == ^Ash.Expr.actor(:id) and (text != "" or attachment_count > 0))
+      )
 
   def apply_section(query, "unread"), do: Ash.Query.filter(query, inbox_unread == true)
 

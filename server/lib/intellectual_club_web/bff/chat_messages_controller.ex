@@ -139,7 +139,8 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
                   %{
                     content: content,
                     file_ids: file_ids,
-                    draft_revision: params["draft_revision"]
+                    draft_revision: params["draft_revision"],
+                    draft_attachments: params["draft_attachments"] || []
                   },
                   actor
                 )

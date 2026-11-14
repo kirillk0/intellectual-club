@@ -44,22 +44,23 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
              explicit_parent? and not linked_fork?,
              params["draft_revision"]
            ),
-         :ok <- publish_accepted_draft(chat_id, actor, params["draft_revision"]),
+         :ok <- publish_accepted_draft(chat_id, actor, params),
          {:ok, context} <- GenerationSupervisor.start_prepared_context(context) do
       {:ok, branch_generation_payload(chat_id, context, actor)}
     end
   end
 
-  defp publish_accepted_draft(chat_id, actor, revision) when is_integer(revision) do
-    ChatDraft.publish_current(chat_id, actor)
+  defp publish_accepted_draft(chat_id, actor, params) do
+    if is_integer(params["draft_revision"]) or List.wrap(params["draft_attachments"]) != [] do
+      ChatDraft.publish_current(chat_id, actor)
+    end
+
     :ok
   end
 
-  defp publish_accepted_draft(_chat_id, _actor, _revision), do: :ok
-
   defp validate_send_payload(content, prepared_uploads) when is_map(prepared_uploads) do
     has_uploads? =
-      [:upload_ids, :copy_content_ids, :legacy_uploads]
+      [:upload_ids, :copy_content_ids, :legacy_uploads, :draft_attachments]
       |> Enum.any?(fn key -> List.wrap(Map.get(prepared_uploads, key, [])) != [] end)
 
     if to_string(content || "") != "" or has_uploads? do
@@ -191,7 +192,14 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationFlow do
                    explicit_parent?,
                    actor
                  ) do
-            ChatDraft.consume(chat_id, content, draft_revision, actor)
+            ChatDraft.consume(
+              chat_id,
+              content,
+              draft_revision,
+              actor,
+              prepared_uploads.draft_attachments
+            )
+
             {:ok, message}
           end
         end)

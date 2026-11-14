@@ -1322,6 +1322,7 @@ export function useChatViewModel() {
     addPendingFiles: composerRuntime.addPendingFiles,
     onPendingFilesSelected: composerRuntime.onPendingFilesSelected,
     removePendingFile: composerRuntime.removePendingFile,
+    retryPendingFile: composerRuntime.retryPendingFile,
     setPendingFileOriginal: composerRuntime.setPendingFileOriginal,
     sending: composerRuntime.sending,
     steeringGenerationId: composerRuntime.steeringGenerationId,

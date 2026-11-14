@@ -41,7 +41,7 @@ vi.mock('@/features/chat/upload', async (importOriginal) => ({
 
 import { useChatComposerRuntime } from '@/features/chat/model/useChatComposerRuntime';
 import { UploadAbortedError } from '@/features/chat/upload';
-import type { PendingChatFile } from '@/features/chat/attachments';
+import type { DraftAttachmentSnapshot, PendingChatFile } from '@/features/chat/attachments';
 import type { ChatQueuedMessage } from '@/features/chat/model/chatViewModel.shared';
 import type { ChatBranchMessage } from '@/types/api';
 
@@ -239,6 +239,149 @@ describe('chat composer runtime', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe('durable draft attachments', () => {
+    const mockDraftServer = () => {
+      const snapshots = new Map<string, DraftAttachmentSnapshot>();
+      const uploads = new Map<string, { filename: string; mime_type: string; size_bytes: number }>();
+      let nextUpload = 0;
+      let text = { text: '', revision: 0, updated_at: null };
+      apiMocks.get.mockImplementation(async (url: string) => url.endsWith('/attachments')
+        ? { attachments: [...snapshots.values()].filter((item) => item.status !== 'deleted') }
+        : { draft: { ...text } });
+      apiMocks.put.mockImplementation(async (url: string, body) => {
+        if (!url.includes('/attachments/')) {
+          text = { ...text, text: body.text, revision: text.revision + 1 };
+          return { draft: { ...text } };
+        }
+        const id = url.split('/').at(-1)!;
+        let snapshot = snapshots.get(id);
+        if (body.operation === 'start' && !snapshot) {
+          snapshot = { id, revision: 0, status: 'pending', keep_original: false,
+            metadata: body, original: null, compressed: null };
+        } else if (body.operation === 'finish' && snapshot?.status === 'pending') {
+          const stored = (uploadId: string) => {
+            const upload = uploads.get(uploadId);
+            return upload ? { name: upload.filename, size: upload.size_bytes, type: upload.mime_type, url: `${url}/${uploadId}` } : null;
+          };
+          snapshot = { ...snapshot, revision: 1, status: 'ready', keep_original: body.keep_original,
+            metadata: body.image, original: stored(body.original_upload_id), compressed: stored(body.compressed_upload_id) };
+        } else if (body.operation === 'select' && snapshot && snapshot.revision === body.expected_revision) {
+          snapshot = { ...snapshot, revision: snapshot.revision + 1, keep_original: body.keep_original };
+        }
+        snapshots.set(id, snapshot!);
+        return { attachment: { ...snapshot } };
+      });
+      apiMocks.post.mockImplementation(async (url: string, body) => {
+        if (url.includes('/chat-uploads/')) {
+          const id = `upload-${++nextUpload}`;
+          uploads.set(id, body);
+          return { upload: { upload_id: id, ...body, uploaded_bytes: 0, chunk_size_bytes: 1024, status: 'uploading' } };
+        }
+        for (const spec of body.draft_attachments ?? []) snapshots.delete(spec.id);
+        return { branch: [], generation: null, queued_message: queuedMessage() };
+      });
+      uploadMocks.uploadChatChunk.mockImplementation(async (_chat, id: string) => ({
+        upload_id: id, ...uploads.get(id), uploaded_bytes: uploads.get(id)!.size_bytes,
+        chunk_size_bytes: 1024, status: 'uploaded',
+      }));
+      apiMocks.del.mockImplementation(async (url: string) => {
+        const id = url.split('/').at(-1)!;
+        const snapshot = snapshots.get(id);
+        if (snapshot) snapshots.set(id, { ...snapshot, status: 'deleted', revision: snapshot.revision + 1 });
+        return {};
+      });
+      return { snapshots, uploads };
+    };
+
+    it('uploads both image versions immediately and restores the selected version on another device', async () => {
+      const server = mockDraftServer();
+      const original = new File(['original'], 'photo.heic', { type: 'image/heic' });
+      const compressed = new File(['small'], 'photo.jpg', { type: 'image/jpeg' });
+      imageMocks.inspectImageFile.mockResolvedValue({ action: 'convert', header: { width: 4000, height: 3000 } });
+      imageMocks.convertImageFile.mockResolvedValue({ kind: 'converted', file: compressed,
+        width: 2000, height: 1500, sourceWidth: 4000, sourceHeight: 3000 });
+      const first = createRuntime(null, false, [], undefined, true);
+      await flushPromises();
+      first.runtime.addPendingFiles([original]);
+      await flushPromises();
+      expect(server.uploads.size).toBe(2);
+      expect(first.runtime.pendingFiles.value[0]).toMatchObject({ uploadStatus: 'uploaded', name: 'photo.jpg' });
+      expect(apiMocks.post.mock.calls.every(([url]) => String(url).includes('/chat-uploads/'))).toBe(true);
+      const id = first.runtime.pendingFiles.value[0]!.id;
+      first.runtime.setPendingFileOriginal(id, true);
+      await flushPromises();
+      await first.runtime.dispose();
+      const second = createRuntime(null, false, [], undefined, true);
+      await flushPromises();
+      expect(second.runtime.pendingFiles.value[0]).toMatchObject({ name: 'photo.heic', image: { keepOriginal: true, compressed: { width: 2000 } } });
+      second.runtime.setPendingFileOriginal(id, false);
+      await flushPromises();
+      expect(second.runtime.pendingFiles.value[0]!.name).toBe('photo.jpg');
+      expect(server.uploads.size).toBe(2);
+      await second.runtime.sendMessage();
+      expect(apiMocks.post).toHaveBeenLastCalledWith('/api/bff/chat-generation/12/send', expect.objectContaining({
+        draft_attachments: [{ id, revision: 3 }],
+      }));
+      expect(second.runtime.pendingFiles.value).toEqual([]);
+      await second.runtime.dispose();
+    });
+
+    it.each(['send', 'queue', 'steer'] as const)('submits saved attachment references through %s without reuploading', async (action) => {
+      const server = mockDraftServer();
+      const { runtime } = createRuntime(action === 'steer' ? 31 : null, false, [], undefined, true);
+      await flushPromises();
+      runtime.addPendingFiles([new File(['note'], 'note.txt', { type: 'text/plain' })]);
+      await flushPromises();
+      const attachment = runtime.pendingFiles.value[0]!.draftAttachment!;
+      if (action === 'send') await runtime.sendMessage();
+      if (action === 'queue') await runtime.queueMessage();
+      if (action === 'steer') await runtime.steerGeneration();
+      expect(server.uploads.size).toBe(1);
+      expect(apiMocks.post).toHaveBeenLastCalledWith(expect.stringMatching(/send$|queue$|steer$/), expect.objectContaining({
+        draft_attachments: [{ id: attachment.id, revision: attachment.revision }],
+      }));
+      expect(runtime.pendingFiles.value).toEqual([]);
+      await runtime.dispose();
+    });
+
+    it('finishes an upload in its original chat after navigation and restores it on return', async () => {
+      mockDraftServer();
+      const { runtime, chatId } = createRuntime(null, false, [], undefined, true);
+      await flushPromises();
+      let finish!: (value: unknown) => void;
+      uploadMocks.uploadChatChunk.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      runtime.addPendingFiles([new File(['note'], 'note.txt', { type: 'text/plain' })]);
+      await flushPromises();
+      chatId.value = 13;
+      await nextTick();
+      finish({ upload_id: 'upload-1', uploaded_bytes: 4, status: 'uploaded' });
+      await flushPromises();
+      expect(apiMocks.put).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/bff\/chat-drafts\/12\/attachments\//), expect.objectContaining({ operation: 'finish' }), expect.any(Object));
+      chatId.value = 12;
+      await flushPromises();
+      expect(runtime.pendingFiles.value[0]).toMatchObject({ name: 'note.txt', uploadStatus: 'uploaded' });
+      await runtime.dispose();
+    });
+
+    it('keeps saved files when message acceptance fails and removes them only on explicit deletion', async () => {
+      mockDraftServer();
+      const { runtime } = createRuntime(null, false, [], undefined, true);
+      await flushPromises();
+      runtime.addPendingFiles([new File(['note'], 'note.txt', { type: 'text/plain' })]);
+      await flushPromises();
+      const id = runtime.pendingFiles.value[0]!.id;
+      apiMocks.post.mockRejectedValueOnce(new Error('rejected'));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await runtime.sendMessage();
+      expect(runtime.pendingFiles.value[0]).toMatchObject({ id, uploadStatus: 'uploaded' });
+      runtime.removePendingFile(id);
+      await flushPromises();
+      expect(runtime.pendingFiles.value).toEqual([]);
+      expect(apiMocks.del).toHaveBeenCalledWith(`/api/bff/chat-drafts/12/attachments/${id}`, expect.any(Object));
+      await runtime.dispose();
+    });
   });
 
   it('starts attachment uploads with the configuration the message is composed for', async () => {

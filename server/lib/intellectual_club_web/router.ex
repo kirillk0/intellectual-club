@@ -112,6 +112,10 @@ defmodule IntellectualClubWeb.Router do
   scope "/api/bff", IntellectualClubWeb.Bff do
     pipe_through :api_mixed_session
     get "/chat-events", ChatEventsController, :index
+    get "/chat-drafts/:id/attachments", ChatDraftsController, :attachments
+    put "/chat-drafts/:id/attachments/:attachment_id", ChatDraftsController, :mutate_attachment
+    delete "/chat-drafts/:id/attachments/:attachment_id", ChatDraftsController, :mutate_attachment
+    get "/chat-drafts/:id/attachments/:attachment_id/:variant", ChatDraftsController, :attachment
     get "/chat-drafts/:id", ChatDraftsController, :show
     put "/chat-drafts/:id", ChatDraftsController, :update
   end

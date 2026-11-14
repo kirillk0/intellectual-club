@@ -14,6 +14,23 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Threads
 
   describe "grouped chat list" do
+    test "attachment-only drafts include descendants in both grouped and paginated lists", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      parent = create_chat!(actor)
+      child = create_subchat!(actor, parent, :spawn)
+      create_chat_draft_attachment!(actor, child.id)
+
+      grouped =
+        conn |> get("/api/bff/chat-list", %{sections: "drafts,other"}) |> json_response(200)
+
+      assert grouped["sections"]["drafts"]["ids"] == [child.id]
+      paged = conn |> get("/api/bff/chat-list", %{section: "drafts"}) |> json_response(200)
+      assert Enum.map(paged["chats"], & &1["id"]) == [child.id]
+    end
+
     test "archive mode filters before pagination, includes descendant drafts and changes idle revisions",
          %{conn: conn} do
       %{user: actor} = fixture = user_fixture()

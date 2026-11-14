@@ -92,6 +92,23 @@ defmodule IntellectualClub.Chat.Uploads do
 
   # A message composed for another configuration (branch options) validates its
   # files against that configuration instead of the chat's current one.
+  defp start_upload_policy(chat_id, %{"purpose" => "draft"}, actor) do
+    case IntellectualClub.Chat.Chat
+         |> Ash.Query.filter(id == ^chat_id and owner_id == ^actor.id)
+         |> Ash.read_one(actor: actor) do
+      {:ok, %IntellectualClub.Chat.Chat{}} ->
+        {:ok,
+         %{
+           allow_any_files: true,
+           allow_images: true,
+           max_file_size_bytes: UploadPolicy.default_max_file_size_bytes()
+         }}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
   defp start_upload_policy(chat_id, attrs, actor) do
     case Map.get(attrs, "llm_configuration_id") do
       value when value in [nil, ""] ->

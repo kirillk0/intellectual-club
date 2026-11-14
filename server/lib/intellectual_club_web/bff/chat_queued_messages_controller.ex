@@ -38,7 +38,8 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
                  %{
                    content: Map.get(params, "content", ""),
                    file_ids: file_ids,
-                   draft_revision: params["draft_revision"]
+                   draft_revision: params["draft_revision"],
+                   draft_attachments: params["draft_attachments"] || []
                  },
                  actor
                )
@@ -142,7 +143,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
     content = params |> Map.get("content", "") |> to_string()
 
     has_attachments? =
-      Enum.any?([:upload_ids, :copy_content_ids, :legacy_uploads], fn key ->
+      Enum.any?([:upload_ids, :copy_content_ids, :legacy_uploads, :draft_attachments], fn key ->
         List.wrap(Map.get(prepared_uploads, key, [])) != []
       end)
 

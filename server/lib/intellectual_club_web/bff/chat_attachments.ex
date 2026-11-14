@@ -3,6 +3,7 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
   Helpers for preparing chat attachment file ids from uploads, copies, and legacy multipart files.
   """
 
+  alias IntellectualClub.Chat.ChatDraftAttachment
   alias IntellectualClub.Chat.ChatMessageContent
   alias IntellectualClub.Chat.Uploads
   alias IntellectualClub.Files
@@ -10,6 +11,7 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
   alias IntellectualClubWeb.Bff.Helpers
 
   @type prepared_uploads :: %{
+          draft_attachments: [map()],
           upload_ids: [String.t()],
           copy_content_ids: [integer()],
           legacy_uploads: [Plug.Upload.t()]
@@ -17,11 +19,13 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
 
   @spec parse_prepared_uploads(map()) :: {:ok, prepared_uploads()} | {:error, String.t()}
   def parse_prepared_uploads(params) when is_map(params) do
-    with {:ok, upload_ids} <- parse_upload_ids(params),
+    with {:ok, draft_attachments} <- parse_draft_attachments(params),
+         {:ok, upload_ids} <- parse_upload_ids(params),
          {:ok, copy_content_ids} <- parse_copy_content_ids(params),
          {:ok, legacy_uploads} <- parse_legacy_uploads(params) do
       {:ok,
        %{
+         draft_attachments: draft_attachments,
          upload_ids: upload_ids,
          copy_content_ids: copy_content_ids,
          legacy_uploads: legacy_uploads
@@ -42,8 +46,10 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
     copy_content_ids = Map.get(prepared, :copy_content_ids, [])
     legacy_uploads = Map.get(prepared, :legacy_uploads, [])
 
+    draft_attachments = Map.get(prepared, :draft_attachments, [])
+
     with {:ok, materialized} <- materialize_uploads(chat_id, upload_ids, actor, upload_policy) do
-      case duplicate_copied_attachments(copy_content_ids, chat_id, actor) do
+      case copy_attachments(copy_content_ids, draft_attachments, chat_id, actor, upload_policy) do
         {:ok, copied_file_ids} ->
           case persist_legacy_uploads(legacy_uploads, upload_policy) do
             {:ok, legacy_file_ids} ->
@@ -74,6 +80,37 @@ defmodule IntellectualClubWeb.Bff.ChatAttachments do
     else
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp copy_attachments(content_ids, draft_attachments, chat_id, actor, policy) do
+    with {:ok, copied} <- duplicate_copied_attachments(content_ids, chat_id, actor) do
+      case ChatDraftAttachment.copy_files(chat_id, draft_attachments, policy, actor) do
+        {:ok, draft_files} ->
+          {:ok, copied ++ draft_files}
+
+        error ->
+          rollback_created_files(copied)
+          error
+      end
+    end
+  end
+
+  defp parse_draft_attachments(params) do
+    case Map.get(params, "draft_attachments", []) do
+      values when is_list(values) and length(values) <= 100 ->
+        if Enum.all?(values, fn
+             %{"id" => id, "revision" => revision} ->
+               match?({:ok, _}, Ecto.UUID.cast(id)) and is_integer(revision) and revision >= 0
+
+             _ ->
+               false
+           end) and length(Enum.uniq_by(values, & &1["id"])) == length(values),
+           do: {:ok, values},
+           else: {:error, "Invalid draft attachments."}
+
+      _ ->
+        {:error, "Invalid draft attachments."}
     end
   end
 

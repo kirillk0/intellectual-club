@@ -347,6 +347,11 @@
                       />
                     </div>
                     <button
+                      v-if="item.uploadStatus === 'error' && !('url' in item.file)"
+                      type="button"
+                      @click.stop="vm.retryPendingFile(item.id)"
+                    >{{ translate('Retry') }}</button>
+                    <button
                       class="pending-file__remove"
                       type="button"
                       aria-label="Remove attachment"
@@ -462,7 +467,6 @@
                 <div class="chat-draft-status" aria-live="polite" role="status">
                   <span v-if="vm.draftStatusLabel">{{ vm.draftStatusLabel }}</span>
                   <button v-if="vm.draftProblem && vm.draftProblem !== 'conflict'" type="button" @click="vm.retryDraft()">{{ translate('Retry') }}</button>
-                  <span v-if="vm.pendingFiles.length" class="chat-draft-attachments">{{ translate('Attachments are only available on this device until sent.') }}</span>
                 </div>
                 <details v-if="vm.draftConflict" class="chat-draft-conflict">
                   <summary>{{ translate('Compare draft versions') }}</summary>

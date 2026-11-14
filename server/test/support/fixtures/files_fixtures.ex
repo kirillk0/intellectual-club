@@ -23,6 +23,62 @@ defmodule IntellectualClub.FilesFixtures do
     file
   end
 
+  @doc "Creates a completed private chat upload using the chunk transport domain."
+  def create_chat_upload!(actor, chat_id, attrs \\ %{}) do
+    attrs =
+      merge_attrs(%{filename: "file.txt", mime_type: "text/plain", payload: "content"}, attrs)
+
+    {:ok, upload} =
+      IntellectualClub.Chat.Uploads.start_upload(chat_id, actor, %{
+        "filename" => attrs.filename,
+        "mime_type" => attrs.mime_type,
+        "size_bytes" => byte_size(attrs.payload),
+        "purpose" => "draft"
+      })
+
+    {:ok, upload} =
+      IntellectualClub.Chat.Uploads.append_chunk(
+        chat_id,
+        upload.external_id,
+        0,
+        attrs.payload,
+        actor
+      )
+
+    upload
+  end
+
+  @doc "Creates a durable draft attachment, optionally retaining a compressed variant."
+  def create_chat_draft_attachment!(actor, chat_id, attrs \\ %{}) do
+    attrs =
+      merge_attrs(
+        %{filename: "file.txt", mime_type: "text/plain", payload: "content", compressed: nil},
+        attrs
+      )
+
+    id = Ecto.UUID.generate()
+    {:ok, _} = IntellectualClub.Chat.ChatDraftAttachment.mutate(chat_id, id, :start, %{}, actor)
+    original = create_chat_upload!(actor, chat_id, attrs)
+
+    compressed =
+      if attrs.compressed,
+        do: create_chat_upload!(actor, chat_id, Map.merge(attrs, %{payload: attrs.compressed}))
+
+    {:ok, %{attachment: attachment}} =
+      IntellectualClub.Chat.ChatDraftAttachment.mutate(
+        chat_id,
+        id,
+        :finish,
+        %{
+          "original_upload_id" => original.external_id,
+          "compressed_upload_id" => compressed && compressed.external_id
+        },
+        actor
+      )
+
+    attachment
+  end
+
   @doc """
   Replaces the single request-file pin of `step` (a record or an id) with a
   downscaled rendition as earlier releases created them: variant

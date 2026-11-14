@@ -2,6 +2,38 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
   use IntellectualClubWeb.ConnCase, async: false
   alias IntellectualClub.Chat.QueuedMessages
 
+  test "queue and steer consume saved attachment snapshots without another upload", %{conn: conn} do
+    %{user: actor} = fixture = user_fixture()
+    conn = sign_in_conn(conn, fixture)
+    bot = create_artifact_bot!(actor, "Draft files")
+    chat = create_chat!(actor, bot_id: bot.id)
+    message = create_generating_message!(actor, chat, user_text: "Question")
+
+    for path <- [
+          "/api/bff/chat-generation/#{chat.id}/queue",
+          "/api/bff/chat-messages/#{message.id}/steer"
+        ] do
+      attachment =
+        create_chat_draft_attachment!(actor, chat.id, %{payload: "original", compressed: "small"})
+
+      topic = IntellectualClub.Chat.ReadStateEvents.topic(actor.id)
+      Phoenix.PubSub.subscribe(IntellectualClub.PubSub, topic)
+
+      result =
+        conn
+        |> post(path, %{draft_attachments: [%{id: attachment.id, revision: attachment.revision}]})
+        |> json_response(201)
+
+      assert [content] = result["queued_message"]["contents"]
+      assert content["kind"] == "media"
+      assert content["file"]["size_bytes"] == 5 or content["file"]["size"] == 5
+      chat_id = chat.id
+      assert_receive {:chat_draft_changed, ^chat_id, 0}
+      Phoenix.PubSub.unsubscribe(IntellectualClub.PubSub, topic)
+      assert {:ok, []} = IntellectualClub.Chat.ChatDraftAttachment.list(chat.id, actor)
+    end
+  end
+
   test "accepted queued text consumes only its submitted draft version", %{conn: conn} do
     %{user: actor} = fixture = user_fixture()
     conn = sign_in_conn(conn, fixture)

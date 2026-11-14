@@ -594,7 +594,9 @@ export function useChatInspectors(params: Params) {
       const pending = findPendingAttachment(item.fileId, item.scope);
       if (!pending) throw new Error('Attachment is no longer available.');
 
-      await saveBlobAsFile(pending.file, pending.name, pending.mimeType);
+      if (pending.file instanceof File) await saveBlobAsFile(pending.file, pending.name, pending.mimeType);
+      else if (pending.file.url) await saveUrlAsFile(pending.file.url, pending.name, pending.mimeType);
+      else throw new Error('Attachment is still uploading.');
     } catch (error) {
       if (!isFileSaveAbort(error)) {
         alert(errorMessage(error, 'Failed to download attachment.'));
@@ -693,9 +695,9 @@ export function useChatInspectors(params: Params) {
     }
 
     const kind = getPendingAttachmentPreviewKind(pending);
-    const objectUrl = URL.createObjectURL(pending.file);
+    const objectUrl = pending.file instanceof File ? URL.createObjectURL(pending.file) : pending.file.url;
 
-    attachmentPreviewObjectUrl = objectUrl;
+    attachmentPreviewObjectUrl = pending.file instanceof File ? objectUrl : '';
     attachmentPreviewTitle.value = pending.name;
     attachmentPreviewUrl.value = objectUrl;
     attachmentPreviewKind.value = kind;
@@ -704,7 +706,11 @@ export function useChatInspectors(params: Params) {
     if (!attachmentPreviewLoading.value) return;
 
     try {
-      const text = await pending.file.text();
+      const text = pending.file instanceof File ? await pending.file.text() : await (async () => {
+        const response = await fetch(objectUrl);
+        if (!response.ok) throw new Error('Failed to load attachment');
+        return response.text();
+      })();
       if (attachmentPreviewRequestToken.value !== token) return;
       attachmentPreviewText.value = text;
     } catch (error) {

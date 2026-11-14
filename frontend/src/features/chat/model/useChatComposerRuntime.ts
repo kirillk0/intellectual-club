@@ -49,6 +49,7 @@ import {
   preserveStreamingMessageContent,
 } from '@/features/chat/model/generationPolling';
 import { useSyncedTextDraft, type DraftProblem, type DraftSubmission } from '@/features/app/useSyncedTextDraft';
+import { useChatDraftAttachments } from '@/features/chat/model/useChatDraftAttachments';
 import { useLocalTextDraft } from '@/features/app/useLocalTextDraft';
 import { publishChatChange } from '@/features/chat/chatEvents';
 import { translate } from '@/i18n';
@@ -373,6 +374,7 @@ export function useChatComposerRuntime(params: Params) {
       }
     }
 
+    if (!(file.file instanceof File)) throw new Error('Attachment is already stored in the draft.');
     return createChatUploadSession(chatIdValue, file.file, options);
   };
 
@@ -385,6 +387,7 @@ export function useChatComposerRuntime(params: Params) {
     let offset = Math.min(upload.uploaded_bytes || 0, file.size);
 
     if (upload.status !== 'uploading' && upload.status !== 'uploaded') {
+      if (!(file.file instanceof File)) throw new Error('Attachment is already stored in the draft.');
       upload = await createChatUploadSession(chatIdValue, file.file, options);
       offset = 0;
     }
@@ -472,6 +475,7 @@ export function useChatComposerRuntime(params: Params) {
       if (!liveFile) return null;
 
       const chunkSize = Math.min(upload.chunk_size_bytes || liveFile.size, liveFile.size - offset);
+      if (!(liveFile.file instanceof File)) throw new Error('Attachment is already stored in the draft.');
       const chunk = liveFile.file.slice(offset, offset + chunkSize);
 
       try {
@@ -785,7 +789,7 @@ export function useChatComposerRuntime(params: Params) {
     setError(errors[0] || '');
 
     for (const item of created) {
-      if (!item.image) continue;
+      if (!item.image || !(item.file instanceof File)) continue;
       const preparation = preparePendingFile(filesRef, item.id, item.file, sizeLimitBytes)
         .catch((error) => {
           console.error('Failed to prepare attachment', error);
@@ -840,6 +844,19 @@ export function useChatComposerRuntime(params: Params) {
       await abortUploadSessionQuietly(params.chatId.value, item.uploadId);
     }
   };
+
+  const draftAttachments = useChatDraftAttachments({
+    target: computed(() => {
+      const userId = params.draftUserId?.value;
+      return userId && params.chatId.value && draftReady.value && !params.readOnly.value
+        ? { userId, chatId: params.chatId.value } : null;
+    }),
+    files: pendingFiles, policy: params.fileUploadPolicy, error: params.loadError,
+    upload: uploadPendingFile,
+  });
+  const prepareComposerFiles = async (ids: ReadonlySet<string>) => draftAttachments.enabled.value
+    ? { uploadIds: [] as string[], attachments: await draftAttachments.ensureSaved(ids) }
+    : { uploadIds: ids.size ? await ensurePendingFilesUploaded(pendingFiles, ids) : [], attachments: [] };
 
   const generatingMessageIdInBranch = computed<number | null>(() => {
     const list = params.branch.value || [];
@@ -1224,11 +1241,12 @@ export function useChatComposerRuntime(params: Params) {
   const createQueuedMessage = async (
     content: string,
     uploadIds: string[],
-    draftRevision?: number
+    draftRevision?: number,
+    attachments: { id: string; revision: number }[] = []
   ) => {
     const payload = await api.post<QueuedMessagePayload>(
       `/api/bff/chat-generation/${params.chatId.value}/queue`,
-      { ...buildSendPayload(content, uploadIds), ...(draftRevision !== undefined ? { draft_revision: draftRevision } : {}) }
+      { ...buildSendPayload(content, uploadIds), ...(attachments.length ? { draft_attachments: attachments } : {}), ...(draftRevision !== undefined ? { draft_revision: draftRevision } : {}) }
     );
     if (payload.queued_message) params.onQueuedMessageCreated?.(payload.queued_message);
     if (params.chatId.value) {
@@ -1270,10 +1288,9 @@ export function useChatComposerRuntime(params: Params) {
 
       if (!isCurrentBranch()) return;
       const hasUserText = content !== '';
-      const uploadIds = pendingFileIds.size > 0
-        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
-        : [];
-      const hasPendingFiles = uploadIds.length > 0;
+      const { uploadIds, attachments } = pendingFileIds.size
+        ? await prepareComposerFiles(pendingFileIds) : { uploadIds: [], attachments: [] };
+      const hasPendingFiles = uploadIds.length > 0 || attachments.length > 0;
       if (!hasUserText && !hasPendingFiles) return;
 
       if (!isCurrentBranch()) return;
@@ -1284,7 +1301,7 @@ export function useChatComposerRuntime(params: Params) {
       try {
         payload = await api.post<GenerationStartPayload>(
           `/api/bff/chat-generation/${requestedChatId}/send`,
-          { ...buildSendPayload(content, uploadIds), parent_id: parentId,
+          { ...buildSendPayload(content, uploadIds), ...(attachments.length ? { draft_attachments: attachments } : {}), parent_id: parentId,
             ...(draftSubmission?.revision !== undefined ? { draft_revision: draftSubmission.revision } : {}) }
         );
       } catch (error) {
@@ -1295,8 +1312,9 @@ export function useChatComposerRuntime(params: Params) {
           ['queue_not_empty', 'generation_active'].includes(apiErrorCode(error) || '')
         ) {
           sendingMode.value = 'queue';
-          await createQueuedMessage(content, uploadIds, draftSubmission?.revision);
+          await createQueuedMessage(content, uploadIds, draftSubmission?.revision, attachments);
           draftAccepted = true;
+          draftAttachments.acknowledge(pendingFileIds, requestedChatId);
           clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSend);
           return;
         }
@@ -1304,6 +1322,7 @@ export function useChatComposerRuntime(params: Params) {
       }
 
       draftAccepted = true;
+      draftAttachments.acknowledge(pendingFileIds, requestedChatId);
       // Acceptance owns the submitted snapshot, not the currently visible history.
       clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSend);
       if (!isCurrentBranch()) return;
@@ -1346,16 +1365,16 @@ export function useChatComposerRuntime(params: Params) {
         return;
       }
 
-      const uploadIds = pendingFileIds.size > 0
-        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
-        : [];
-      if (content === '' && uploadIds.length === 0) return;
+      const { uploadIds, attachments } = pendingFileIds.size
+        ? await prepareComposerFiles(pendingFileIds) : { uploadIds: [], attachments: [] };
+      if (content === '' && uploadIds.length === 0 && attachments.length === 0) return;
 
       if (params.chatId.value !== requestedChatId) return;
       if (params.draftUserId) draftSubmission = await draftSync.beginSubmission(content);
       if (params.chatId.value !== requestedChatId) return;
-      await createQueuedMessage(content, uploadIds, draftSubmission?.revision);
+      await createQueuedMessage(content, uploadIds, draftSubmission?.revision, attachments);
       draftAccepted = true;
+      draftAttachments.acknowledge(pendingFileIds, requestedChatId);
       clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeQueue);
     } catch (error) {
       console.error(error);
@@ -1414,6 +1433,7 @@ export function useChatComposerRuntime(params: Params) {
     const content = draft.value;
     const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
 
+    const requestedChatId = params.chatId.value;
     const draftStorageKeyBeforeSteer = chatDraftStorageKey.value;
     let draftSubmission: DraftSubmission | undefined;
     let draftAccepted = false;
@@ -1421,21 +1441,21 @@ export function useChatComposerRuntime(params: Params) {
     params.loadError.value = '';
 
     try {
-      const uploadIds = pendingFileIds.size > 0
-        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
-        : [];
-      if (content === '' && uploadIds.length === 0) return;
+      const { uploadIds, attachments } = pendingFileIds.size
+        ? await prepareComposerFiles(pendingFileIds) : { uploadIds: [], attachments: [] };
+      if (content === '' && uploadIds.length === 0 && attachments.length === 0) return;
       if (chatDraftStorageKey.value !== draftStorageKeyBeforeSteer) return;
       if (params.draftUserId) draftSubmission = await draftSync.beginSubmission(content);
       if (chatDraftStorageKey.value !== draftStorageKeyBeforeSteer) return;
       const payload = await api.post<QueuedMessagePayload>(
         `/api/bff/chat-messages/${messageId}/steer`,
-        { ...buildSendPayload(content, uploadIds), ...(draftSubmission?.revision !== undefined ? { draft_revision: draftSubmission.revision } : {}) }
+        { ...buildSendPayload(content, uploadIds), ...(attachments.length ? { draft_attachments: attachments } : {}), ...(draftSubmission?.revision !== undefined ? { draft_revision: draftSubmission.revision } : {}) }
       );
 
       if (payload.queued_message) params.onQueuedMessageCreated?.(payload.queued_message);
 
       draftAccepted = true;
+      draftAttachments.acknowledge(pendingFileIds, requestedChatId);
       clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSteer);
 
       if (params.activeGenerationId.value === messageId) {
@@ -1501,12 +1521,14 @@ export function useChatComposerRuntime(params: Params) {
   const addPendingFiles = (files: File[]) => {
     if (params.readOnly.value) return;
     if (!files.length) return;
+    if (draftAttachments.enabled.value) { draftAttachments.add(files); return; }
     addPendingFilesToCollection(pendingFiles, files, params.fileUploadPolicy.value, (error) => {
       params.loadError.value = error;
     });
   };
 
   const removePendingFile = (id: string) => {
+    if (draftAttachments.enabled.value) { void draftAttachments.remove(id); return; }
     void removePendingFileFromCollection(pendingFiles, id);
   };
 
@@ -1516,6 +1538,7 @@ export function useChatComposerRuntime(params: Params) {
   const setPendingFileOriginal = (id: string, keepOriginal: boolean) => {
     const current = findPendingFile(pendingFiles, id);
     if (!current || isPendingFileLockedForSend(current)) return;
+    if (draftAttachments.enabled.value) { void draftAttachments.select(id, keepOriginal).catch(() => {}); return; }
     setPendingFileOriginalInCollection(pendingFiles, id, keepOriginal);
   };
 
@@ -1539,7 +1562,8 @@ export function useChatComposerRuntime(params: Params) {
 
   const dispose = async () => {
     draftSync.dispose();
-    await clearPendingFilesCollection(pendingFiles);
+    draftAttachments.dispose();
+    if (!params.draftUserId) await clearPendingFilesCollection(pendingFiles);
     stopPolling();
   };
 
@@ -1552,7 +1576,7 @@ export function useChatComposerRuntime(params: Params) {
     draftProblem: draftSync.problem,
     draftSyncState: draftSync.state,
     draftConflict: draftSync.conflict,
-    refreshDraft: draftSync.refresh,
+    refreshDraft: () => Promise.all([draftSync.refresh(), draftAttachments.refresh()]),
     retryDraft: draftSync.flush,
     resolveDraft: draftSync.resolve,
     sending,
@@ -1587,6 +1611,7 @@ export function useChatComposerRuntime(params: Params) {
     onPendingFilesSelected,
     addPendingFiles,
     removePendingFile,
+    retryPendingFile: draftAttachments.retry,
     setPendingFileOriginal,
     dispose,
   };

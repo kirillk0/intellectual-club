@@ -21,7 +21,8 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   @type enqueue_attrs :: %{
           optional(:content) => String.t(),
           optional(:file_ids) => [integer()],
-          optional(:draft_revision) => non_neg_integer() | nil
+          optional(:draft_revision) => non_neg_integer() | nil,
+          optional(:draft_attachments) => [map()]
         }
 
   @doc "Enqueues a durable follow-up anchored to the current chat leaf."
@@ -45,7 +46,14 @@ defmodule IntellectualClub.Chat.QueuedMessages do
               actor
             )
 
-          ChatDraft.consume(chat.id, content, Map.get(attrs, :draft_revision), actor)
+          ChatDraft.consume(
+            chat.id,
+            content,
+            Map.get(attrs, :draft_revision),
+            actor,
+            Map.get(attrs, :draft_attachments, [])
+          )
+
           queued
         end
       end)
@@ -75,7 +83,15 @@ defmodule IntellectualClub.Chat.QueuedMessages do
              :ok <- ensure_message_chat(message, chat),
              :ok <- validate_steering_target_state(message) do
           queued = enqueue_steer_for_generation_state!(message, content, file_ids, actor)
-          ChatDraft.consume(chat.id, content, Map.get(attrs, :draft_revision), actor)
+
+          ChatDraft.consume(
+            chat.id,
+            content,
+            Map.get(attrs, :draft_revision),
+            actor,
+            Map.get(attrs, :draft_attachments, [])
+          )
+
           queued
         end
       end)
@@ -83,11 +99,11 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
-  defp publish_draft_after_accept({:ok, _queued} = result, chat_id, actor, %{
-         draft_revision: revision
-       })
-       when is_integer(revision) do
-    ChatDraft.publish_current(chat_id, actor)
+  defp publish_draft_after_accept({:ok, _queued} = result, chat_id, actor, attrs) do
+    if is_integer(Map.get(attrs, :draft_revision)) or Map.get(attrs, :draft_attachments, []) != [] do
+      ChatDraft.publish_current(chat_id, actor)
+    end
+
     result
   end
 

@@ -8,7 +8,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     domain: IntellectualClub.Chat,
     authorizers: [Ash.Policy.Authorizer]
 
-  alias IntellectualClub.Chat.{Chat, ReadStateEvents}
+  alias IntellectualClub.Chat.{Chat, ChatDraftAttachment, ReadStateEvents}
   alias IntellectualClub.Repo
   require Ash.Query
   require Logger
@@ -26,7 +26,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     end
 
     custom_indexes do
-      index([:user_id, :updated_at], where: "text <> ''")
+      index([:user_id, :updated_at], where: "text <> '' OR attachment_count > 0")
     end
   end
 
@@ -40,6 +40,8 @@ defmodule IntellectualClub.Chat.ChatDraft do
       constraints: [trim?: false, allow_empty?: true]
 
     attribute :revision, :integer, allow_nil?: false, default: 0
+    attribute :attachment_count, :integer, allow_nil?: false, default: 0
+    attribute :attachment_revision, :integer, allow_nil?: false, default: 0
     attribute :updated_at, :utc_datetime_usec, allow_nil?: false
   end
 
@@ -65,14 +67,43 @@ defmodule IntellectualClub.Chat.ChatDraft do
       end
     end
 
+    action :touch_attachments, :boolean do
+      transaction? true
+      argument :chat_id, :integer, allow_nil?: false
+      argument :count, :integer, allow_nil?: false
+
+      run fn input, context ->
+        with :ok <- owned_chat(input.arguments.chat_id, context.actor, true) do
+          Repo.query!(
+            """
+            INSERT INTO chat_drafts (chat_id, user_id, text, revision, attachment_count, attachment_revision, updated_at)
+            VALUES ($1, $2, '', 0, $3, 1, $4)
+            ON CONFLICT (chat_id, user_id) DO UPDATE
+            SET attachment_count = $3, attachment_revision = chat_drafts.attachment_revision + 1, updated_at = $4
+            """,
+            [input.arguments.chat_id, context.actor.id, input.arguments.count, DateTime.utc_now()]
+          )
+
+          {:ok, true}
+        end
+      end
+    end
+
     action :consume, :boolean do
       transaction? true
       argument :chat_id, :integer, allow_nil?: false
       argument :text, :string, allow_nil?: false, constraints: [trim?: false, allow_empty?: true]
-      argument :revision, :integer, allow_nil?: false
+      argument :revision, :integer
+      argument :attachments, {:array, :map}, default: []
 
       run fn input, context ->
         with :ok <- owned_chat(input.arguments.chat_id, context.actor, true) do
+          ChatDraftAttachment.consume(
+            input.arguments.chat_id,
+            input.arguments.attachments,
+            context.actor
+          )
+
           result =
             Repo.query!(
               """
@@ -100,7 +131,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
       authorize_if expr(chat.owner_id == ^actor(:id))
     end
 
-    policy action([:save, :consume]) do
+    policy action([:save, :consume, :touch_attachments]) do
       authorize_if actor_present()
     end
   end
@@ -127,17 +158,28 @@ defmodule IntellectualClub.Chat.ChatDraft do
   end
 
   @doc "Consumes only an acknowledged snapshot, inside the caller's acceptance transaction."
-  def consume(chat_id, text, revision, actor)
-      when is_integer(revision) and revision >= 0 and revision <= @max_revision and
-             is_binary(text) do
+  def consume(chat_id, text, revision, actor, attachments \\ []) do
+    revision =
+      if is_integer(revision) and revision >= 0 and revision <= @max_revision,
+        do: revision,
+        else: nil
+
     __MODULE__
-    |> Ash.ActionInput.for_action(:consume, %{chat_id: chat_id, text: text, revision: revision},
+    |> Ash.ActionInput.for_action(
+      :consume,
+      %{chat_id: chat_id, text: text, revision: revision, attachments: attachments},
       actor: actor
     )
     |> Ash.run_action!(actor: actor, authorize?: true)
   end
 
-  def consume(_chat_id, _text, _revision, _actor), do: false
+  def touch_attachments(chat_id, count, actor) do
+    __MODULE__
+    |> Ash.ActionInput.for_action(:touch_attachments, %{chat_id: chat_id, count: count},
+      actor: actor
+    )
+    |> Ash.run_action!(actor: actor, authorize?: true)
+  end
 
   @doc "Publishes after the acceptance transaction has committed."
   def publish_current(chat_id, actor) do
@@ -160,7 +202,7 @@ defmodule IntellectualClub.Chat.ChatDraft do
     ids = Enum.map(chats, & &1.id)
 
     __MODULE__
-    |> Ash.Query.filter(chat_id in ^ids and text != "")
+    |> Ash.Query.filter(chat_id in ^ids and (text != "" or attachment_count > 0))
     |> Ash.Query.select([:chat_id, :updated_at])
     |> Ash.read!(actor: actor)
     |> Map.new(
@@ -169,9 +211,21 @@ defmodule IntellectualClub.Chat.ChatDraft do
   end
 
   def list_marker(actor) do
-    Ash.aggregate!(__MODULE__, [{:row_count, :count}, {:revision_sum, :sum, field: :revision}],
+    Ash.aggregate!(
+      __MODULE__,
+      [
+        {:row_count, :count},
+        {:revision_sum, :sum, field: :revision},
+        {:attachment_revision_sum, :sum, field: :attachment_revision}
+      ],
       actor: actor
     )
+    |> then(fn marker ->
+      %{
+        row_count: marker.row_count,
+        revision_sum: (marker.revision_sum || 0) + (marker.attachment_revision_sum || 0)
+      }
+    end)
   end
 
   defp owned_chat(chat_id, actor, lock? \\ false) do

@@ -187,4 +187,211 @@ defmodule IntellectualClubWeb.Bff.ChatDraftsControllerTest do
     assert conn.resp_body =~ ~s("revision":4)
     refute conn.resp_body =~ "text"
   end
+
+  describe "attachments" do
+    alias IntellectualClub.Chat.{ChatDraftAttachment, QueuedMessages}
+    alias IntellectualClub.Files
+    alias IntellectualClubWeb.Bff.ChatAttachments
+
+    test "both image variants survive reload and selection without changing the text revision", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+      {:ok, _} = ChatDraft.save(chat.id, %{"text" => "typing", "expected_revision" => 0}, actor)
+      id = Ecto.UUID.generate()
+      path = "/api/bff/chat-drafts/#{chat.id}/attachments/#{id}"
+
+      assert %{"attachment" => %{"status" => "pending"}} =
+               conn
+               |> put(path, %{operation: "start", filename: "image.png"})
+               |> json_response(200)
+
+      original =
+        create_chat_upload!(actor, chat.id, %{
+          filename: "image.png",
+          mime_type: "image/png",
+          payload: "original"
+        })
+
+      compressed =
+        create_chat_upload!(actor, chat.id, %{
+          filename: "small.png",
+          mime_type: "image/png",
+          payload: "small"
+        })
+
+      params = %{
+        operation: "finish",
+        original_upload_id: original.external_id,
+        compressed_upload_id: compressed.external_id,
+        image: %{width: 4000, height: 3000, compressed_width: 2000, compressed_height: 1500}
+      }
+
+      saved = conn |> put(path, params) |> json_response(200)
+      assert saved["attachment"]["revision"] == 1
+      assert conn |> put(path, params) |> json_response(200) == saved
+      assert conn |> get(saved["attachment"]["original"]["url"]) |> response(200) == "original"
+      assert conn |> get(saved["attachment"]["compressed"]["url"]) |> response(200) == "small"
+
+      assert %{"attachment" => %{"keep_original" => true, "revision" => 2}} =
+               conn
+               |> put(path, %{operation: "select", expected_revision: 1, keep_original: true})
+               |> json_response(200)
+
+      assert %{
+               "attachments" => [
+                 %{"keep_original" => true, "original" => %{}, "compressed" => %{}}
+               ]
+             } =
+               conn |> get("/api/bff/chat-drafts/#{chat.id}/attachments") |> json_response(200)
+
+      assert {:ok, %{text: "typing", revision: 1}} = ChatDraft.get(chat.id, actor)
+
+      assert %{"attachment" => %{"keep_original" => true, "revision" => 2}} =
+               conn
+               |> put(path, %{operation: "select", expected_revision: 1, keep_original: false})
+               |> json_response(200)
+    end
+
+    test "attachment-only drafts are listed and files are private to their owner", %{conn: conn} do
+      %{user: actor} = owner = user_fixture()
+      other = user_fixture()
+      chat = create_chat!(actor)
+      attachment = create_chat_draft_attachment!(actor, chat.id)
+      assert %{has_draft: true} = ChatDraft.load_many([chat], actor)[chat.id]
+      assert Ash.load!(chat, :personal_draft_updated_at, actor: actor).personal_draft_updated_at
+      conn = sign_in_conn(conn, other)
+      assert conn |> get(attachment.original.url) |> json_response(404)
+      assert conn |> get("/api/bff/chat-drafts/#{chat.id}/attachments") |> json_response(404)
+
+      assert conn
+             |> delete("/api/bff/chat-drafts/#{chat.id}/attachments/#{attachment.id}")
+             |> json_response(404)
+
+      conn = sign_in_conn(build_conn(), owner)
+      assert conn |> get(attachment.original.url) |> response(200) == "content"
+    end
+
+    test "deletion tombstones reject late registration and completed uploads" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      id = Ecto.UUID.generate()
+
+      assert {:ok, %{attachment: %{status: :deleted}}} =
+               ChatDraftAttachment.mutate(chat.id, id, :delete, %{}, actor)
+
+      assert {:ok, %{attachment: %{status: :deleted}}} =
+               ChatDraftAttachment.mutate(chat.id, id, :start, %{}, actor)
+
+      assert {:ok, %{attachment: %{status: :deleted}}} =
+               ChatDraftAttachment.mutate(chat.id, id, :finish, %{}, actor)
+
+      assert {:ok, []} = ChatDraftAttachment.list(chat.id, actor)
+      assert ChatDraft.load_many([chat], actor) == %{}
+    end
+
+    test "accepting a queue entry consumes only submitted attachments and keeps its selected bytes" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+
+      selected =
+        create_chat_draft_attachment!(actor, chat.id, %{
+          payload: "original",
+          compressed: "compressed"
+        })
+
+      later = create_chat_draft_attachment!(actor, chat.id, %{payload: "later"})
+      specs = [%{"id" => selected.id, "revision" => selected.revision}]
+      prepared = %{draft_attachments: specs}
+      policy = %{allow_any_files: true, allow_images: true, max_file_size_bytes: 1000}
+
+      assert {:ok, queued} =
+               ChatAttachments.with_prepared_file_ids(chat.id, actor, policy, prepared, fn ids ->
+                 QueuedMessages.enqueue_follow_up(
+                   chat.id,
+                   %{file_ids: ids, draft_attachments: specs},
+                   actor
+                 )
+               end)
+
+      queued = Ash.load!(queued, :contents, actor: actor)
+      assert [content] = queued.contents
+      assert {:ok, {_, "compressed"}} = Files.load_payload(content.file_id)
+      assert {:ok, [%{id: remaining_id}]} = ChatDraftAttachment.list(chat.id, actor)
+      assert remaining_id == later.id
+
+      assert {:error, :not_found} =
+               ChatDraftAttachment.load_file(chat.id, selected.id, "original", actor)
+    end
+
+    test "stale selection cannot be consumed and failed acceptance preserves both variants" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+
+      attachment =
+        create_chat_draft_attachment!(actor, chat.id, %{
+          payload: "original",
+          compressed: "compressed"
+        })
+
+      old_specs = [%{"id" => attachment.id, "revision" => attachment.revision}]
+
+      {:ok, %{attachment: selected}} =
+        ChatDraftAttachment.mutate(
+          chat.id,
+          attachment.id,
+          :select,
+          %{"expected_revision" => attachment.revision, "keep_original" => true},
+          actor
+        )
+
+      policy = %{allow_any_files: true, allow_images: true, max_file_size_bytes: 1000}
+
+      assert {:error, _} =
+               ChatAttachments.with_prepared_file_ids(
+                 chat.id,
+                 actor,
+                 policy,
+                 %{draft_attachments: old_specs},
+                 fn _ -> flunk("stale snapshot accepted") end
+               )
+
+      specs = [%{"id" => selected.id, "revision" => selected.revision}]
+
+      assert {:error, :rejected} =
+               ChatAttachments.with_prepared_file_ids(
+                 chat.id,
+                 actor,
+                 policy,
+                 %{draft_attachments: specs},
+                 fn _ -> {:error, :rejected} end
+               )
+
+      assert {:error, :rejected} =
+               IntellectualClub.Repo.transaction(fn ->
+                 ChatDraft.consume(chat.id, "", nil, actor, specs)
+                 IntellectualClub.Repo.rollback(:rejected)
+               end)
+
+      assert {:ok, {_, _}} =
+               ChatDraftAttachment.load_file(chat.id, selected.id, "original", actor)
+
+      assert {:ok, {_, _}} =
+               ChatDraftAttachment.load_file(chat.id, selected.id, "compressed", actor)
+    end
+
+    test "chat deletion removes both logical draft files" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      attachment = create_chat_draft_attachment!(actor, chat.id, %{compressed: "smaller"})
+      record = Ash.get!(ChatDraftAttachment, attachment.id, actor: actor)
+      Ash.destroy!(chat, actor: actor)
+
+      for id <- [record.original_file_id, record.compressed_file_id] do
+        assert {:error, _} = Ash.get(Files.File, id, authorize?: false)
+      end
+    end
+  end
 end

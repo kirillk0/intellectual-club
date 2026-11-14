@@ -14,6 +14,27 @@ defmodule IntellectualClubWeb.Bff.ChatGenerationTest do
   alias IntellectualClub.Llm.LlmProvider
 
   describe "POST /api/bff/chat-generation/:id/send" do
+    test "sends a saved attachment without text and consumes its draft", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      bot = create_artifact_bot!(actor, "Draft files")
+      chat = create_chat!(actor, bot_id: bot.id)
+
+      attachment =
+        create_chat_draft_attachment!(actor, chat.id, %{payload: "original", compressed: "small"})
+
+      payload =
+        conn
+        |> post("/api/bff/chat-generation/#{chat.id}/send", %{
+          draft_attachments: [%{id: attachment.id, revision: attachment.revision}]
+        })
+        |> json_response(200)
+
+      assert Enum.any?(payload["branch"], &(&1["role"] == "user"))
+      assert {:ok, []} = IntellectualClub.Chat.ChatDraftAttachment.list(chat.id, actor)
+      wait_for_generation_to_finish(conn, payload["generation"]["message_id"])
+    end
+
     test "acceptance consumes the submitted draft without deleting a newer device revision", %{
       conn: conn
     } do

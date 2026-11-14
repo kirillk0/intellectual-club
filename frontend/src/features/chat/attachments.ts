@@ -7,6 +7,18 @@ export type ChatAttachmentOpenPayload = {
   contents?: ChatMessageContent[] | null;
 } & ({ content: ChatMessageContent } | { fileId: string });
 
+export type StoredAttachmentFile = { name: string; size: number; type: string; url: string };
+export type AttachmentFile = File | StoredAttachmentFile;
+export type DraftAttachmentSnapshot = {
+  id: string;
+  revision: number;
+  status: 'pending' | 'ready' | 'deleted';
+  keep_original: boolean;
+  metadata: Record<string, unknown>;
+  original: StoredAttachmentFile | null;
+  compressed: StoredAttachmentFile | null;
+};
+
 // Browser-side normalization of a pending image (see imageNormalization.ts).
 export type PendingImageState = {
   // 'inspecting' until the header is read, 'processing' while a compressed copy is
@@ -17,7 +29,7 @@ export type PendingImageState = {
   // Whether the untouched file reaches the model as an image; null while unknown.
   originalEmbeddable: boolean | null;
   original: { width: number | null; height: number | null; size: number };
-  compressed: { file: File; width: number; height: number } | null;
+  compressed: { file: AttachmentFile; width: number; height: number } | null;
   // The browser could not prepare a compressed copy, so the original is uploaded.
   failed: boolean;
   // Largest upload the policy accepted when the file was added; null without a limit.
@@ -28,12 +40,14 @@ export type PendingImageState = {
 export type PendingChatFile = {
   id: string;
   // The variant that is uploaded; `name`, `size` and `mimeType` describe it.
-  file: File;
+  file: AttachmentFile;
   name: string;
   size: number;
   mimeType: string;
   // The file as selected by the user; defaults to `file`.
-  sourceFile?: File;
+  sourceFile?: AttachmentFile;
+  draftAttachment?: DraftAttachmentSnapshot;
+  uploadTotalBytes?: number;
   // Absent for files that are not images.
   image?: PendingImageState | null;
   // Bumped whenever the uploaded variant changes, so in-flight uploads notice they are stale.
@@ -80,8 +94,8 @@ export const formatFileBytes = (value: number) => {
 };
 
 export const createPendingChatFiles = (files: File[]): PendingChatFile[] =>
-  files.map((file, index) => ({
-    id: `${Date.now()}-${index}-${file.name}-${file.size}`,
+  files.map((file) => ({
+    id: crypto.randomUUID(),
     file,
     sourceFile: file,
     name: file.name,
@@ -99,7 +113,7 @@ export const createPendingChatFiles = (files: File[]): PendingChatFile[] =>
 
 export const isImageMimeType = (mimeType: string) => mimeType.trim().toLowerCase().startsWith('image/');
 
-export const initialPendingImageState = (file: File, sizeLimitBytes: number | null = null): PendingImageState => ({
+export const initialPendingImageState = (file: AttachmentFile, sizeLimitBytes: number | null = null): PendingImageState => ({
   phase: 'inspecting',
   keepOriginal: false,
   originalEmbeddable: null,
@@ -150,7 +164,7 @@ export const pendingImageStateAfterConversion = (
 const pendingSourceFile = (item: PendingChatFile) => item.sourceFile ?? item.file;
 
 /** The file to upload, or null while its compressed copy is still being prepared. */
-export const pendingFileUploadTarget = (item: PendingChatFile): File | null => {
+export const pendingFileUploadTarget = (item: PendingChatFile): AttachmentFile | null => {
   const image = item.image;
   if (!image || image.keepOriginal) return pendingSourceFile(item);
   if (image.phase !== 'ready') return null;
@@ -274,7 +288,7 @@ const formatUploadEta = (etaSeconds: number | null) => {
 
 export const describePendingFileUploadStatus = (file: PendingChatFile) => {
   if (file.uploadStatus === 'uploaded') {
-    return 'Uploaded';
+    return file.draftAttachment ? translate('Saved in draft') : 'Uploaded';
   }
 
   if (file.uploadStatus === 'error') {
@@ -284,7 +298,7 @@ export const describePendingFileUploadStatus = (file: PendingChatFile) => {
   if (file.uploadStatus === 'uploading') {
     const details = [
       `${pendingFileProgressPercent(file)}%`,
-      `${formatFileBytes(file.uploadedBytes)} / ${formatFileBytes(file.size)}`,
+      `${formatFileBytes(file.uploadedBytes)} / ${formatFileBytes(file.uploadTotalBytes ?? file.size)}`,
       formatUploadSpeed(file.speedBps),
       formatUploadEta(file.etaSeconds),
     ].filter(Boolean);
@@ -311,9 +325,9 @@ export const overallPendingUploadProgress = (files: PendingChatFile[]) => {
     return { active: false, progress: 0 };
   }
 
-  const totalBytes = relevantFiles.reduce((sum, file) => sum + Math.max(0, file.size), 0);
+  const totalBytes = relevantFiles.reduce((sum, file) => sum + Math.max(0, file.uploadTotalBytes ?? file.size), 0);
   const uploadedBytes = relevantFiles.reduce(
-    (sum, file) => sum + Math.min(Math.max(0, file.uploadedBytes), Math.max(0, file.size)),
+    (sum, file) => sum + Math.min(Math.max(0, file.uploadedBytes), Math.max(0, file.uploadTotalBytes ?? file.size)),
     0
   );
 
@@ -364,7 +378,7 @@ const fileSizeLimitError = (name: string, maxFileSizeBytes: number) =>
   `File ${JSON.stringify(name)} exceeds the maximum size of ${formatFileBytes(maxFileSizeBytes)}.`;
 
 // Policy checks other than the size limit.
-const fileKindPolicyError = (file: File, policy: ChatUploadPolicy) => {
+const fileKindPolicyError = (file: AttachmentFile, policy: ChatUploadPolicy) => {
   if (!policy.allowsFiles) return 'File uploads are disabled for the current bot and configuration.';
   if (policy.imagesOnly && !file.type.toLowerCase().startsWith('image/')) {
     return `Only image files are allowed. ${JSON.stringify(file.name)} was rejected.`;

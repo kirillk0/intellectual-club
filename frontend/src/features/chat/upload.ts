@@ -42,6 +42,7 @@ export const isRetryableUploadChunkError = (error: unknown) => {
 };
 
 export type ChatUploadSessionOptions = {
+  purpose?: 'draft';
   // Validates the file against this configuration instead of the chat's current
   // one (a message composed for another configuration, e.g. branch options).
   llmConfigurationId?: number | null;
@@ -53,6 +54,7 @@ export const createChatUploadSession = async (
   options: ChatUploadSessionOptions = {}
 ) => {
   const payload = await api.post<ChatUploadResponse>(`/api/bff/chat-uploads/${chatId}`, {
+    ...(options.purpose ? { purpose: options.purpose } : {}),
     filename: file.name,
     mime_type: file.type || 'application/octet-stream',
     size_bytes: file.size,
