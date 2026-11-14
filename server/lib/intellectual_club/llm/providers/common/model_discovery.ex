@@ -31,7 +31,6 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
       Req.get!(
         url: url,
         headers: headers,
-        connect_options: [timeout: 10_000],
         receive_timeout: 30_000,
         retry: false
       )

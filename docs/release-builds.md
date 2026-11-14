@@ -40,6 +40,13 @@ assets retain their existing conventions.
 
 ## Local builds
 
+Req manages the application's outgoing HTTP pools. Each origin gets up to 500
+HTTP/1 connections by default, shared by provider streams and other Req clients.
+Set `HTTP_POOL_SIZE` to override the limit at startup; the desktop launcher sets
+it to 500. Pool metrics are enabled. Custom connection timeouts retain the same
+pool capacity, and requests with identical connection settings reuse a pool.
+Responses WebSocket sessions use Mint directly and do not use these pools.
+
 Local builds compile web assets themselves unless explicitly given an artifact.
 Development bundles always build their own development assets.
 

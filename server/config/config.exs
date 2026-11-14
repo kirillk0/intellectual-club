@@ -10,7 +10,6 @@ import Config
 config :intellectual_club,
   ecto_repos: [IntellectualClub.Repo],
   generators: [timestamp_type: :utc_datetime],
-  responses_http_pool: [size: 500, connect_timeout_ms: 10_000],
   ash_domains: [
     IntellectualClub.Accounts,
     IntellectualClub.BackgroundTasks,
@@ -24,6 +23,16 @@ config :intellectual_club,
     IntellectualClub.Tools,
     IntellectualClub.Outlets
   ]
+
+config :req, :default_options,
+  finch: [
+    size: 500,
+    count: 1,
+    start_pool_metrics?: true,
+    conn_opts: [transport_opts: [timeout: 10_000]]
+  ]
+
+config :ash, default_string_length_count: :codepoints
 
 # Configure the endpoint
 config :intellectual_club, IntellectualClubWeb.Endpoint,
@@ -82,7 +91,7 @@ config :intellectual_club, :openai_oauth,
   lock_stale_after_ms: 60_000
 
 if match?({:win32, _name}, :os.type()) do
-  config :phoenix_live_view, :colocated_js, disable_symlink_warning: true
+  config :phoenix_live_view, :colocated_assets, disable_symlink_warning: true
 end
 
 # Import environment specific config. This must remain at the bottom

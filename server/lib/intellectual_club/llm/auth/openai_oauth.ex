@@ -122,7 +122,7 @@ defmodule IntellectualClub.Llm.Auth.OpenAIOAuth do
           {"refresh_token", refresh_token},
           {"client_id", client_id}
         ],
-        connect_options: [timeout: connect_timeout_ms()],
+        finch: IntellectualClub.HttpClient.finch_options(connect_timeout_ms()),
         receive_timeout: request_timeout_ms()
       ]
       |> Keyword.merge(req_options())

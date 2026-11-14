@@ -9,7 +9,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
   alias IntellectualClub.Generation.RuntimeTrace
   alias IntellectualClub.Llm.Providers.Responses.Api
   alias IntellectualClub.Llm.Providers.Responses.Endpoint
-  alias IntellectualClub.Llm.Providers.Responses.HttpPool
 
   @hydration_opts %{
     model_name: "gpt-4.1",
@@ -103,16 +102,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
       assert error.status_code == 400
       assert error.raw_request == payload
     end
-  end
-
-  test "uses the dedicated Finch pool with the default connection timeout" do
-    base_url = completed_response_server!("resp_pool")
-    pool = Finch.Pool.new(base_url)
-    assert Finch.find_pool(HttpPool, pool) == :error
-
-    assert %{} = base_url |> stream_events!() |> response_complete!()
-    assert {:ok, pool_pid} = Finch.find_pool(HttpPool, pool)
-    assert is_pid(pool_pid)
   end
 
   test "preserves the provider identity supplied by the transport coordinator" do
@@ -615,40 +604,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.ApiTest do
     end
   end
 
-  describe "HttpPool" do
-    test "starts a named Finch with the configured default pool" do
-      assert is_pid(Process.whereis(HttpPool))
-
-      assert %{
-               id: HttpPool,
-               start:
-                 {Finch, :start_link,
-                  [
-                    [
-                      name: HttpPool,
-                      pools: %{
-                        default: [
-                          size: configured_size,
-                          count: 1,
-                          conn_opts: [transport_opts: [timeout: configured_timeout]]
-                        ]
-                      }
-                    ]
-                  ]}
-             } = HttpPool.child_spec([])
-
-      assert configured_size == HttpPool.pool_size()
-      assert configured_timeout == HttpPool.connect_timeout_ms()
-    end
-
-    test "uses the named pool only for the standard connection timeout" do
-      assert HttpPool.req_options(HttpPool.connect_timeout_ms()) == [finch: HttpPool]
-      assert HttpPool.req_options(1_234) == [connect_options: [timeout: 1_234]]
-      assert HttpPool.req_options(0) == [connect_options: [timeout: 0]]
-    end
-  end
-
-  # Without `connect_timeout_ms` the request goes through the shared HttpPool.
   defp stream_events!(base_url, opts \\ %{}) do
     run_and_capture_events!(
       Api,

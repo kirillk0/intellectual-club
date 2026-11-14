@@ -9,7 +9,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
-  alias IntellectualClub.Llm.Providers.Responses.HttpPool
   alias IntellectualClub.Llm.Providers.Responses.StreamEvents
   alias Req.Response
 
@@ -81,11 +80,11 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
             method: :post,
             headers: headers,
             json: wire_request,
+            finch: IntellectualClub.HttpClient.finch_options(connect_timeout_ms),
             receive_timeout: timeout_ms,
             into: :self,
             retry: false
           ]
-          |> Keyword.merge(HttpPool.req_options(connect_timeout_ms))
           |> Keyword.merge(extra_req_options())
 
         try do

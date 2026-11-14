@@ -59,13 +59,13 @@ trim_env = fn name ->
   end
 end
 
-if responses_http_pool_size = trim_env.("RESPONSES_HTTP_POOL_SIZE") do
-  case Integer.parse(responses_http_pool_size) do
+if http_pool_size = trim_env.("HTTP_POOL_SIZE") do
+  case Integer.parse(http_pool_size) do
     {size, ""} when size > 0 ->
-      config :intellectual_club, :responses_http_pool, size: size
+      config :req, :default_options, finch: [size: size]
 
     _other ->
-      raise "RESPONSES_HTTP_POOL_SIZE must be a positive integer"
+      raise "HTTP_POOL_SIZE must be a positive integer"
   end
 end
 

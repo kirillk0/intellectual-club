@@ -98,9 +98,15 @@ defmodule IntellectualClub.Chat.ThreadsTest do
              ]
     end
 
-    test "preserves all notifications for the caller's Ash transaction" do
+    test "preserves the activity notification until the caller dispatches it" do
       %{user: actor} = user_fixture()
       chat = create_empty_chat!(actor)
+      chat_id = chat.id
+
+      Phoenix.PubSub.subscribe(
+        IntellectualClub.PubSub,
+        IntellectualClub.Chat.ReadStateEvents.topic(actor.id)
+      )
 
       assert {:ok, {:ok, message}, notifications} =
                Ash.transact(
@@ -108,23 +114,23 @@ defmodule IntellectualClub.Chat.ThreadsTest do
                  fn ->
                    Threads.add_message_with_items(
                      chat,
-                     :user,
-                     [%{type: :input, contents: [%{kind: :text, content_text: "Input"}]}],
+                     :assistant,
+                     [%{type: :answer, contents: [%{kind: :text, content_text: "Answer"}]}],
                      actor: actor
                    )
                  end,
                  return_notifications?: true
                )
 
-      assert Enum.any?(notifications, fn notification ->
-               notification.resource == Chat and notification.data.last_message_id == message.id
-             end)
-
-      for resource <- [ChatMessage, ChatMessageStep, ChatMessageItem, ChatMessageContent] do
-        assert Enum.count(notifications, &(&1.resource == resource)) == 1
-      end
+      assert [notification] = notifications
+      assert notification.resource == ChatMessage
+      assert notification.data.id == message.id
+      assert Ash.get!(Chat, chat.id, actor: actor).last_message_id == message.id
+      refute_received {:chat_state_changed, ^chat_id}
 
       assert Ash.Notifier.notify(notifications) == []
+      assert_receive {:chat_state_changed, ^chat_id}
+      refute_received {:chat_state_changed, ^chat_id}
     end
 
     test "rolls back the whole message when an item cannot be persisted" do

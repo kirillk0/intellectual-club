@@ -32,7 +32,7 @@ use crate::fs_utils::{
 };
 use crate::status::{PathsPayload, RuntimeStatus, ServiceState, ServiceStatus, StatusPayload};
 
-const LOCAL_RESPONSES_HTTP_POOL_SIZE: &str = "500";
+const LOCAL_HTTP_POOL_SIZE: &str = "500";
 
 #[cfg(windows)]
 const POSTGRES_SERVER_FILE: &str = "postgres.exe";
@@ -363,7 +363,7 @@ fn create_admin_release_command(config: &LauncherConfig, database_url: &str) -> 
         .env("FILE_STORAGE_PATH", &config.files_data_dir)
         .env("PORT", config.app_port.to_string())
         .env("POOL_SIZE", "10")
-        .env("RESPONSES_HTTP_POOL_SIZE", LOCAL_RESPONSES_HTTP_POOL_SIZE)
+        .env("HTTP_POOL_SIZE", LOCAL_HTTP_POOL_SIZE)
         .env("SECRET_KEY_BASE", &config.secret_key_base)
         .env("TOKEN_SIGNING_SECRET", &config.token_signing_secret);
     configure_background_release_process(&mut command);
@@ -914,7 +914,7 @@ async fn start_app(config: &LauncherConfig, database_url: &str, log_path: &Path)
         .env("PHX_SCHEME", "http")
         .env("PHX_PORT", config.app_port.to_string())
         .env("POOL_SIZE", "10")
-        .env("RESPONSES_HTTP_POOL_SIZE", LOCAL_RESPONSES_HTTP_POOL_SIZE)
+        .env("HTTP_POOL_SIZE", LOCAL_HTTP_POOL_SIZE)
         .env("SECRET_KEY_BASE", &config.secret_key_base)
         .env("TOKEN_SIGNING_SECRET", &config.token_signing_secret)
         .stdin(Stdio::null())
@@ -2408,8 +2408,7 @@ mod tests {
             key == "FILE_STORAGE_PATH" && value == Some(config.files_data_dir.as_os_str())
         }));
         assert!(command.get_envs().any(|(key, value)| {
-            key == "RESPONSES_HTTP_POOL_SIZE"
-                && value == Some(std::ffi::OsStr::new(LOCAL_RESPONSES_HTTP_POOL_SIZE))
+            key == "HTTP_POOL_SIZE" && value == Some(std::ffi::OsStr::new(LOCAL_HTTP_POOL_SIZE))
         }));
 
         let _ = fs::remove_dir_all(root);

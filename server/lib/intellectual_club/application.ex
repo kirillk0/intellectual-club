@@ -16,7 +16,6 @@ defmodule IntellectualClub.Application do
       {Ecto.Migrator, repos: [IntellectualClub.Repo], skip: skip_migrations?()},
       {IntellectualClub.Secrets.StartupMigrator, []},
       {IntellectualClub.Tools.WebSearch.StartupMigrator, []},
-      {IntellectualClub.Llm.Providers.Responses.HttpPool, []},
       IntellectualClub.Llm.Auth.OpenAIOAuthCache,
       {IntellectualClub.Files.GarbageCollector, []},
       {Task.Supervisor, name: IntellectualClub.Generation.LeaseCleanupSupervisor},

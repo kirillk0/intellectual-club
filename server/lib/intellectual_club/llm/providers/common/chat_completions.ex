@@ -70,7 +70,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
           method: :post,
           headers: headers,
           json: wire_request,
-          connect_options: [timeout: connect_timeout_ms],
+          finch: IntellectualClub.HttpClient.finch_options(connect_timeout_ms),
           receive_timeout: timeout_ms,
           into: :self,
           retry: false

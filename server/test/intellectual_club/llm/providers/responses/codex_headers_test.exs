@@ -62,25 +62,27 @@ defmodule IntellectualClub.Llm.Providers.Responses.CodexHeadersTest do
     test_pid = self()
 
     Req.default_options(
-      plug: fn conn ->
-        send(
-          test_pid,
-          {:account_header, conn.request_path, get_req_header(conn, "chatgpt-account-id")}
-        )
+      Keyword.merge(previous_options,
+        plug: fn conn ->
+          send(
+            test_pid,
+            {:account_header, conn.request_path, get_req_header(conn, "chatgpt-account-id")}
+          )
 
-        case conn.request_path do
-          "/backend-api/codex/responses" ->
-            event = %{
-              "type" => "response.completed",
-              "response" => %{"id" => "resp_account", "status" => "completed", "output" => []}
-            }
+          case conn.request_path do
+            "/backend-api/codex/responses" ->
+              event = %{
+                "type" => "response.completed",
+                "response" => %{"id" => "resp_account", "status" => "completed", "output" => []}
+              }
 
-            send_resp(conn, 200, "data: " <> Jason.encode!(event) <> "\n\n")
+              send_resp(conn, 200, "data: " <> Jason.encode!(event) <> "\n\n")
 
-          "/backend-api/codex/models" ->
-            Req.Test.json(conn, %{"models" => [%{"slug" => "test-model"}]})
+            "/backend-api/codex/models" ->
+              Req.Test.json(conn, %{"models" => [%{"slug" => "test-model"}]})
+          end
         end
-      end
+      )
     )
 
     Api.stream_generate(

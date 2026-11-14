@@ -13,7 +13,7 @@ defmodule IntellectualClub.Tools.WebSearch.Http do
       retry: false,
       redirect: false,
       receive_timeout: cfg.timeout_ms,
-      connect_options: [timeout: min(cfg.timeout_ms, 10_000)]
+      finch: IntellectualClub.HttpClient.finch_options(min(cfg.timeout_ms, 10_000))
     ]
 
     options =
