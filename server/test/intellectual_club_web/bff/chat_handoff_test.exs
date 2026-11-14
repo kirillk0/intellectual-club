@@ -410,6 +410,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       assert parent_relation["message_id"] == assistant_message.id
       assert parent_relation["kind"] == "fork"
       assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
+      assert parent_relation["parent_tool_name"] == nil
       assert parent_relation["parent_step_id"] == step.id
       assert parent_relation["parent_step_sequence"] == step.sequence
       assert parent_relation["parent_item_sequence"] == tool_call_item.sequence
@@ -480,21 +481,20 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       step = first_step!(actor, assistant_message.id)
       tool_call_item = create_tool_call_item!(step.id, 2, actor)
 
+      create_content!(actor, tool_call_item,
+        kind: :opaque,
+        content_json: %{"name" => "reviewer__spawn", "arguments" => %{}}
+      )
+
+      tool = create_tool_instance!(actor, name: "Code reviewer", alias: "reviewer")
+
       spawn =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create_empty,
-          %{
-            note: "Investigate without copied history",
-            parent_chat_id: source.id,
-            parent_message_id: assistant_message.id,
-            parent_tool_call_item_id: tool_call_item.id,
-            parent_relation_kind: :spawn,
-            subagent: true
-          },
-          actor: actor
+        create_subchat!(actor, source, :spawn,
+          note: "Investigate without copied history",
+          parent_message_id: assistant_message.id,
+          parent_tool_call_item_id: tool_call_item.id,
+          parent_tool_instance_id: tool.id
         )
-        |> Ash.create!(actor: actor)
 
       source_payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
 
@@ -505,6 +505,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
 
       assert relation["chat_id"] == spawn.id
       assert relation["kind"] == "spawn"
+      assert relation["parent_tool_name"] == "Code reviewer"
       assert relation["parent_tool_call_item_id"] == tool_call_item.id
       assert relation["parent_step_id"] == step.id
       assert relation["parent_step_sequence"] == step.sequence
@@ -526,6 +527,7 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       assert parent_relation["chat_id"] == source.id
       assert parent_relation["message_id"] == assistant_message.id
       assert parent_relation["kind"] == "spawn"
+      assert parent_relation["parent_tool_name"] == "Code reviewer"
       assert parent_relation["parent_tool_call_item_id"] == tool_call_item.id
       assert parent_relation["parent_step_id"] == step.id
       assert parent_relation["parent_step_sequence"] == step.sequence
@@ -536,6 +538,80 @@ defmodule IntellectualClubWeb.Bff.ChatHandoffTest do
       assert parent_relation["anchor_step_sequence"] == nil
       assert parent_relation["anchor_item_sequence"] == nil
       assert parent_relation["background_task"] == false
+    end
+
+    test "identify subchat tools by display name for both spawn functions", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+      source = create_empty_chat!(actor)
+      message = create_message!(actor, source)
+      step = create_step!(actor, message)
+
+      tools = [
+        create_tool_instance!(actor, name: "Code reviewer", alias: "reviewer"),
+        create_tool_instance!(actor, name: "Research assistant", alias: "researcher")
+      ]
+
+      calls = for tool <- tools, function <- ["spawn", "spawn_background"], do: {tool, function}
+
+      expected_names =
+        calls
+        |> Enum.with_index(1)
+        |> Map.new(fn {{tool, function}, sequence} ->
+          item = create_item!(actor, step, type: :tool_call, sequence: sequence)
+
+          create_content!(actor, item,
+            kind: :opaque,
+            content_json: %{"name" => "#{tool.alias}__#{function}"}
+          )
+
+          child =
+            create_subchat!(actor, source, :spawn,
+              parent_message_id: message.id,
+              parent_tool_call_item_id: item.id,
+              parent_tool_instance_id: tool.id
+            )
+
+          {child.id, tool.name}
+        end)
+
+      payload = conn |> get(~p"/api/bff/chat-state/#{source.id}") |> json_response(200)
+      relations = payload["relations"]["children_by_message_id"][Integer.to_string(message.id)]
+
+      assert Map.new(relations, &{&1["chat_id"], &1["parent_tool_name"]}) == expected_names
+    end
+
+    test "omit unavailable tool names without falling back to function names", %{conn: conn} do
+      %{user: actor, password: password} = user_fixture()
+      conn = sign_in_conn(conn, actor.username, password)
+      anchor = create_tool_call_anchor!(actor)
+      deleted_tool = create_tool_instance!(actor, name: "Deleted reviewer")
+      private_tool = create_tool_instance!(user_fixture().user, name: "Private reviewer")
+
+      for {tool, sequence} <- Enum.with_index([deleted_tool, private_tool], 2) do
+        item = create_item!(actor, anchor.step, type: :tool_call, sequence: sequence)
+
+        create_content!(actor, item,
+          kind: :opaque,
+          content_json: %{"name" => "#{tool.alias}__spawn"}
+        )
+
+        create_subchat!(actor, anchor.chat, :spawn,
+          parent_message_id: anchor.message.id,
+          parent_tool_call_item_id: item.id,
+          parent_tool_instance_id: tool.id
+        )
+      end
+
+      Ash.destroy!(deleted_tool, actor: actor)
+
+      payload = conn |> get(~p"/api/bff/chat-state/#{anchor.chat.id}") |> json_response(200)
+
+      relations =
+        payload["relations"]["children_by_message_id"][Integer.to_string(anchor.message.id)]
+
+      assert length(relations) == 2
+      assert Enum.all?(relations, &is_nil(&1["parent_tool_name"]))
     end
 
     test "mark background subchat relations by target or source tool call",

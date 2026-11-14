@@ -9,6 +9,7 @@ defmodule IntellectualClub.Chat.Relations do
   alias IntellectualClub.Chat.ChatMessageStep
   alias IntellectualClub.Chat.Fork
   alias IntellectualClub.Generation.History
+  alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
 
@@ -17,6 +18,7 @@ defmodule IntellectualClub.Chat.Relations do
           kind: atom() | nil,
           message_id: integer() | nil,
           parent_tool_call_item_id: integer() | nil,
+          parent_tool_name: String.t() | nil,
           parent_step_id: integer() | nil,
           parent_step_sequence: integer() | nil,
           parent_item_sequence: integer() | nil,
@@ -94,6 +96,7 @@ defmodule IntellectualClub.Chat.Relations do
     |> Ash.read(actor: actor)
     |> case do
       {:ok, [%Chat{} = parent]} ->
+        chat = Ash.load!(chat, [parent_tool_instance: [:name]], actor: actor, strict?: true)
         parent_anchor = relation_anchor(chat.parent_tool_call_item_id, actor)
 
         anchor =
@@ -181,6 +184,7 @@ defmodule IntellectualClub.Chat.Relations do
       kind: relation_source.parent_relation_kind,
       message_id: relation_source.parent_message_id,
       parent_tool_call_item_id: relation_source.parent_tool_call_item_id,
+      parent_tool_name: parent_tool_name(relation_source),
       parent_step_id: anchor_value(parent_anchor, :step_id),
       parent_step_sequence: anchor_value(parent_anchor, :step_sequence),
       parent_item_sequence: anchor_value(parent_anchor, :item_sequence),
@@ -354,6 +358,9 @@ defmodule IntellectualClub.Chat.Relations do
 
   defp loaded_relation_anchor(_item), do: nil
 
+  defp parent_tool_name(%Chat{parent_tool_instance: %ToolInstance{name: name}}), do: name
+  defp parent_tool_name(_chat), do: nil
+
   defp anchor_value(anchor, key) when is_map(anchor), do: Map.get(anchor, key)
   defp anchor_value(_anchor, _key), do: nil
 
@@ -368,6 +375,12 @@ defmodule IntellectualClub.Chat.Relations do
       |> Ash.Query.select([:id, :chat_message_step_id, :sequence])
       |> Ash.Query.load(chat_message_step: step_query)
 
-    [:bot, :last_message, :read_state, parent_tool_call_item: item_query]
+    [
+      :bot,
+      :last_message,
+      :read_state,
+      parent_tool_instance: [:name],
+      parent_tool_call_item: item_query
+    ]
   end
 end

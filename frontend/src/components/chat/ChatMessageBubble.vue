@@ -135,6 +135,7 @@
             >
               <span>{{ forkRelationLabel(entry) }}</span>
               <strong>{{ relationTitle(entry.relation) }}</strong>
+              <ChatRelationToolLabel :name="entry.relation.parent_tool_name" />
               <ChatRelationIndicators
                 v-if="entry.direction === 'child'"
                 :relation="entry.relation"
@@ -371,6 +372,7 @@ import { RouterLink } from 'vue-router';
 import ChatGenerationStateIndicator from '@/components/chat/ChatGenerationStateIndicator.vue';
 import ChatMediaList from '@/components/chat/ChatMediaList.vue';
 import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
+import ChatRelationToolLabel from '@/components/chat/ChatRelationToolLabel.vue';
 import {
   chatMessageContainsHandoffSystemEvent,
   chatMessageDisplayItemIdentity,
@@ -1362,6 +1364,17 @@ const handleMessageContentClick = async (event: MouseEvent) => {
 
 .message-fork-card__indicators {
   margin-left: auto;
+}
+
+@media (max-width: 600px) {
+  .message-fork-card {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+
+  .message-fork-card strong {
+    flex: 1 1 0;
+  }
 }
 
 .message-fork-entry__meta {

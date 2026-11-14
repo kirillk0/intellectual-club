@@ -254,6 +254,8 @@ export const ruMessages: Record<string, string> = {
   'Spawn': 'Спавн',
   'Spawned from': 'Спавн из',
   'Spawned into': 'Спавн в',
+  'via {tool}': 'через {tool}',
+  'Tool: {tool}': 'Инструмент: {tool}',
   'Started as a background task': 'Запущен как фоновая задача',
   'Nested subchats limit': 'Лимит вложенных сабчатов',
   'How many additional subchats a subagent may create. 0 disables fork and spawn inside subchats.':

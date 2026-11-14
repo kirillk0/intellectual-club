@@ -290,7 +290,7 @@ describe('ChatMessageBubble fork timeline', () => {
     expect(entries[2]?.text()).toContain('Child answer');
   });
 
-  it('uses spawn labels for positioned spawn relations', () => {
+  it('uses spawn labels and identifies each tool for positioned spawn relations', async () => {
     const message: ChatBranchMessage = {
       id: 10,
       role: 'assistant',
@@ -302,6 +302,7 @@ describe('ChatMessageBubble fork timeline', () => {
       chat_id: 6,
       kind: 'spawn',
       note: 'Fresh subchat',
+      parent_tool_name: 'Code reviewer',
       background_task: true,
       last_message_status: 'canceled',
       anchor_message_id: 10,
@@ -314,7 +315,7 @@ describe('ChatMessageBubble fork timeline', () => {
       props: {
         message,
         index: 0,
-        forkRelations: [spawn],
+        forkRelations: [spawn, { ...spawn, chat_id: 7, parent_tool_name: 'Research assistant' }],
       },
       global: {
         stubs: {
@@ -328,10 +329,23 @@ describe('ChatMessageBubble fork timeline', () => {
     const relation = wrapper.get('.message-fork-card');
     expect(relation.text()).toContain('Spawned into');
     expect(relation.text()).toContain('Fresh subchat');
+    expect(wrapper.findAll('.chat-relation-tool').map((label) => label.text())).toEqual([
+      'via Code reviewer',
+      'via Research assistant',
+    ]);
+    expect(relation.get('.chat-relation-tool').attributes('title')).toBe('Tool: Code reviewer');
     expect(relation.find('.chat-relation-indicators__background-task').exists()).toBe(true);
     expect(relation.get('.chat-generation-state').classes()).toContain(
       'chat-generation-state--canceled'
     );
+
+    setPreferredLocale('ru');
+    await wrapper.setProps({ forkRelations: [{ ...spawn, parent_tool_name: 'Code reviewer' }] });
+    expect(wrapper.get('.chat-relation-tool').text()).toBe('через Code reviewer');
+    expect(wrapper.get('.chat-relation-tool').attributes('title')).toBe('Инструмент: Code reviewer');
+
+    await wrapper.setProps({ forkRelations: [{ ...spawn, parent_tool_name: null }] });
+    expect(wrapper.find('.chat-relation-tool').exists()).toBe(false);
   });
 
   it('distinguishes copying the final answer from copying all answer items', async () => {

@@ -161,6 +161,7 @@
             >
               <span>{{ parentRelationLabel(vm.parentRelationBanner) }}</span>
               <strong>{{ relationTitle(vm.parentRelationBanner) }}</strong>
+              <ChatRelationToolLabel :name="vm.parentRelationBanner.parent_tool_name" />
             </RouterLink>
 
             <ChatForkContext v-if="vm.forkContext" :context="vm.forkContext" />
@@ -222,6 +223,7 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
+                <ChatRelationToolLabel :name="relation.parent_tool_name" />
                 <ChatRelationIndicators
                   :relation="relation"
                   class="chat-relation-banner__indicators"
@@ -249,6 +251,7 @@
               >
                 <span>{{ childRelationLabel(relation) }}</span>
                 <strong>{{ relationTitle(relation) }}</strong>
+                <ChatRelationToolLabel :name="relation.parent_tool_name" />
                 <ChatRelationIndicators
                   :relation="relation"
                   class="chat-relation-banner__indicators"
@@ -872,6 +875,7 @@ import ChatForkContext from '@/components/chat/ChatForkContext.vue';
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue';
 import ChatQueuedMessagesPanel from '@/components/chat/ChatQueuedMessagesPanel.vue';
 import ChatRelationIndicators from '@/components/chat/ChatRelationIndicators.vue';
+import ChatRelationToolLabel from '@/components/chat/ChatRelationToolLabel.vue';
 import ShareWithGroupsModal from '@/components/ShareWithGroupsModal.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
 import ChatBranchOptions from '@/features/chat/components/ChatBranchOptions.vue';
@@ -1373,6 +1377,17 @@ onBeforeUnmount(() => {
 
 .chat-page .chat-relation-banner__indicators {
   margin-left: auto;
+}
+
+@media (max-width: 600px) {
+  .chat-page .chat-relation-banner {
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+
+  .chat-page .chat-relation-banner strong {
+    flex: 1 1 0;
+  }
 }
 
 .chat-page .chat-relation-banner--parent {

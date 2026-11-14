@@ -185,6 +185,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
       parent_chat_id: Keyword.get(opts, :parent_chat_id, chat.parent_chat_id),
       parent_message_id: Keyword.get(opts, :parent_message_id, chat.parent_message_id),
       parent_tool_call_item_id: Keyword.get(opts, :parent_tool_call_item_id),
+      parent_tool_name: Keyword.get(opts, :parent_tool_name),
       parent_step_id: Keyword.get(opts, :parent_step_id),
       parent_step_sequence: Keyword.get(opts, :parent_step_sequence),
       parent_item_sequence: Keyword.get(opts, :parent_item_sequence),

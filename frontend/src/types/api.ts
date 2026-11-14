@@ -232,6 +232,7 @@ export type ChatRelationSummary = {
   parent_chat_id?: number | null;
   parent_message_id?: number | null;
   parent_tool_call_item_id?: number | null;
+  parent_tool_name?: string | null;
   parent_step_id?: number | null;
   parent_step_sequence?: number | null;
   parent_item_sequence?: number | null;
