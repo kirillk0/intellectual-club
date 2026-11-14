@@ -45,6 +45,14 @@ or reloading the page asks for the browser's standard leave confirmation.
 Network errors retain local text and retry with backoff. Foreground/reconnect and
 personal SSE invalidations reload the server snapshot.
 
+Before each write, local recovery also records its text and expected revision.
+Until the outcome is known, retries repeat that same write while newer edits stay
+in the editor. A snapshot at exactly the next revision with the attempted text
+acknowledges the write even if its HTTP response was lost. Newer local edits then
+save against that revision without a conflict, including after a page reload.
+An uncertain write keeps recovery dirty even if the user undoes back to the base
+text, so that undo is not overwritten by a late acknowledgement.
+
 A clean editor adopts the remote version. Unsynchronized local changes based on
 an outdated revision trigger a conflict instead of a silent overwrite. The editor
 shows both texts and lets the user keep the local text or use the server version.

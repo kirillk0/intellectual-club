@@ -3,8 +3,10 @@ import { api, isHttpError } from '@/api/client';
 
 export type TextDraftSnapshot = { text: string; revision: number; updated_at: string | null };
 type Target = { key: string; endpoint: string; accountId: number; legacyKey?: string };
+type DraftWrite = { text: string; revision: number };
 type Session = {
   target: Target; text: string; base: TextDraftSnapshot; initialized: boolean; dirty: boolean;
+  write: DraftWrite | null;
   conflict: TextDraftSnapshot | null; error: boolean; failed: boolean; localSaved: boolean; saving: boolean;
   consumedRevision: number | null; paused: number; pending: Promise<void> | null; timer: ReturnType<typeof setTimeout> | null;
   maxTimer: ReturnType<typeof setTimeout> | null; retry: number; active: boolean;
@@ -49,7 +51,7 @@ export function useSyncedTextDraft(options: {
   const persist = (s: Session) => {
     try {
       const payload = JSON.stringify({ version: 1, text: s.text, base: s.base, dirty: s.dirty,
-        consumedRevision: s.consumedRevision, writer: recoveryId });
+        write: s.write, consumedRevision: s.consumedRevision, writer: recoveryId });
       // Each tab owns its recovery slot; late replies cannot erase another tab's edits.
       if (s.dirty || s.consumedRevision !== null) localStorage.setItem(recoveryKey(s.target), payload);
       else localStorage.removeItem(recoveryKey(s.target));
@@ -82,13 +84,20 @@ export function useSyncedTextDraft(options: {
   const adopt = (s: Session, remote: TextDraftSnapshot) => {
     if (!accountMatches(s)) return;
     if (remote.revision < s.base.revision) return;
+    if (s.write && remote.revision > s.write.revision) {
+      // A committed write can lose its HTTP response; recognize it before checking for external edits.
+      if (remote.revision === s.write.revision + 1 && remote.text === s.write.text) {
+        s.base = remote; s.dirty = s.text !== remote.text; s.conflict = null; s.failed = false;
+      }
+      s.write = null;
+    }
     if (s.consumedRevision !== null && remote.revision > s.consumedRevision) {
       if (remote.revision === s.consumedRevision + 1 && remote.text === '' && s.base.revision === s.consumedRevision) {
         s.base = remote;
       }
       s.consumedRevision = null;
     }
-    if (s.text === remote.text) {
+    if (s.text === remote.text && !s.write) {
       s.base = remote; s.dirty = false; s.conflict = null;
     } else if (!s.dirty) {
       s.text = remote.text; s.base = remote; s.conflict = null;
@@ -130,15 +139,20 @@ export function useSyncedTextDraft(options: {
     if (!accountMatches(s) || (s.paused && !allowPaused) || s.conflict) return;
     if (!online.value) { s.error = true; changed(); return; }
     const work = (async () => {
+      let retryingWrite = false;
       try {
         if (!s.initialized || s.error) await fetchRemote(s);
         if (!s.dirty || s.conflict || !accountMatches(s)) return;
-        const text = s.text;
-        const revision = s.base.revision;
+        // Retry the same write until its outcome is known, even if newer text is already in the editor.
+        retryingWrite = s.write !== null;
+        const write = s.write ?? { text: s.text, revision: s.base.revision };
+        s.write = write;
+        persist(s);
         s.saving = true; changed();
         const payload = await api.put<{ draft: TextDraftSnapshot }>(s.target.endpoint,
-          { text, expected_revision: revision }, requestOptions);
+          { text: write.text, expected_revision: write.revision }, requestOptions);
         if (!accountMatches(s)) return;
+        s.write = null;
         s.base = payload.draft;
         s.dirty = s.text !== payload.draft.text;
         s.error = s.failed = false; s.retry = 1_000;
@@ -148,7 +162,14 @@ export function useSyncedTextDraft(options: {
         const remote = isHttpError(error) && error.status === 409
           ? (error.bodyJson as { draft?: TextDraftSnapshot } | null)?.draft : null;
         if (remote) adopt(s, remote);
-        else { s.error = s.failed = true; s.retry = Math.min(s.retry * 2, 30_000); }
+        else {
+          if (s.saving && !retryingWrite && isHttpError(error) && error.status >= 400 && error.status < 500 && error.status !== 408) {
+            s.write = null;
+            s.dirty = s.text !== s.base.text;
+          }
+          s.error = s.failed = true; s.retry = Math.min(s.retry * 2, 30_000);
+          persist(s);
+        }
       } finally { s.saving = false; changed(); }
     })();
     s.pending = work;
@@ -170,7 +191,7 @@ export function useSyncedTextDraft(options: {
     if (existing) {
       existing.active = true; current.value = existing; display(existing); void refresh(existing); return;
     }
-    const s: Session = { target, text: '', base: empty(), initialized: false, dirty: false,
+    const s: Session = { target, text: '', base: empty(), initialized: false, dirty: false, write: null,
       conflict: null, error: false, failed: false, localSaved: true, saving: false, consumedRevision: null, paused: 0,
       pending: null, timer: null, maxTimer: null, retry: 1_000, active: true };
     try {
@@ -180,6 +201,9 @@ export function useSyncedTextDraft(options: {
         if (saved.version === 1 && typeof saved.text === 'string' && typeof saved.dirty === 'boolean' &&
           typeof saved.base?.text === 'string' && Number.isSafeInteger(saved.base?.revision)) {
           s.text = saved.text; s.base = saved.base; s.dirty = saved.dirty;
+          if (typeof saved.write?.text === 'string' && saved.write.revision === s.base.revision) {
+            s.write = saved.write; s.dirty = true;
+          }
           s.consumedRevision = Number.isSafeInteger(saved.consumedRevision) ? saved.consumedRevision : null;
         }
       } else if (target.legacyKey) {
@@ -197,7 +221,7 @@ export function useSyncedTextDraft(options: {
   const stopValueWatch = watch(options.value, (text) => {
     const s = current.value;
     if (applying || !s) return;
-    s.text = text; s.dirty = text !== s.base.text;
+    s.text = text; s.dirty = text !== s.base.text || s.write !== null;
     persist(s); schedule(s);
   }, { flush: 'sync' });
   const state = computed(() => {
@@ -233,7 +257,7 @@ export function useSyncedTextDraft(options: {
     const s = current.value;
     if (!s?.conflict) return;
     const remote = s.conflict;
-    s.base = remote; s.conflict = null;
+    s.base = remote; s.conflict = null; s.write = null;
     if (choice === 'server') s.text = remote.text;
     s.dirty = s.text !== remote.text;
     persist(s); display(s);
@@ -244,7 +268,7 @@ export function useSyncedTextDraft(options: {
     if (!s) return { session: null, text };
     s.paused++; clearTimers(s);
     await flush(s, true);
-    return { session: s, text, ...(s.initialized && !s.conflict && s.base.text === text ? { revision: s.base.revision } : {}) };
+    return { session: s, text, ...(s.initialized && !s.conflict && !s.write && s.base.text === text ? { revision: s.base.revision } : {}) };
   };
   const finishSubmission = async (token: DraftSubmission, accepted: boolean) => {
     const s = token.session;
@@ -255,7 +279,7 @@ export function useSyncedTextDraft(options: {
         s.consumedRevision = token.revision;
       }
       if (s.text === token.text) s.text = '';
-      s.dirty = s.text !== s.base.text;
+      s.dirty = s.text !== s.base.text || s.write !== null;
       persist(s); display(s);
       options.onSaved?.(s.target, s.base);
     }

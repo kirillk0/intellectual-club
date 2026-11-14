@@ -7,7 +7,11 @@ import { useSyncedTextDraft, type TextDraftSnapshot } from '@/features/app/useSy
 const snapshot = (text = '', revision = 0): TextDraftSnapshot => ({ text, revision, updated_at: null });
 let server: TextDraftSnapshot;
 const scopes: ReturnType<typeof effectScope>[] = [];
-const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
+const deferred = <T>() => {
+  let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
 function create(initialAccount = 1, initialChat = 12) {
   const value = ref(''); const account = ref<number | null>(initialAccount); const chat = ref(initialChat);
   const scope = effectScope(); scopes.push(scope);
@@ -96,6 +100,100 @@ it('retries a failed write without a notification or losing the local text', asy
   value.value = 'recover'; await vi.advanceTimersByTimeAsync(1_000); expect(sync.state.value).toBe('error');
   await vi.advanceTimersByTimeAsync(2_000); expect(server.text).toBe('recover'); expect(sync.state.value).toBe('saved');
 });
+
+it.each(['retry', 'reconnect', 'reload'])('preserves newer edits after a lost save response on %s', async (recovery) => {
+  let editor = create(); await flushPromises();
+  const pending = deferred<{ draft: TextDraftSnapshot }>(); mocks.put.mockReturnValueOnce(pending.promise);
+  editor.value.value = 'first'; await vi.advanceTimersByTimeAsync(1_000);
+  server = snapshot('first', 1);
+  editor.value.value = 'first and more'; pending.reject(new Error('Response lost')); await flushPromises();
+
+  if (recovery === 'retry') {
+    await vi.advanceTimersByTimeAsync(2_000);
+  } else {
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false); window.dispatchEvent(new Event('offline'));
+    if (recovery === 'reload') editor.scope.stop();
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
+    if (recovery === 'reload') editor = create();
+    else window.dispatchEvent(new Event('online'));
+    await flushPromises(); await vi.advanceTimersByTimeAsync(1_000);
+  }
+
+  expect(editor.value.value).toBe('first and more'); expect(editor.sync.conflict.value).toBeNull();
+  expect(server).toEqual(snapshot('first and more', 2)); expect(editor.sync.state.value).toBe('saved');
+});
+
+it('preserves an undo to the base text when a save response is lost', async () => {
+  server = snapshot('base', 1);
+  const { value, sync } = create(); await flushPromises();
+  const pending = deferred<{ draft: TextDraftSnapshot }>(); mocks.put.mockReturnValueOnce(pending.promise);
+  value.value = 'changed'; await vi.advanceTimersByTimeAsync(1_000);
+  value.value = 'base'; expect(sync.unsaved.value).toBe(true);
+  server = snapshot('changed', 2); pending.reject(new Error('Response lost')); await flushPromises();
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(value.value).toBe('base'); expect(server).toEqual(snapshot('base', 3));
+  expect(sync.conflict.value).toBeNull(); expect(sync.unsaved.value).toBe(false);
+});
+
+it('retries an uncertain write unchanged if a read arrives before the original write commits', async () => {
+  const { value, sync } = create(); await flushPromises();
+  mocks.put.mockRejectedValueOnce(new Error('Request timed out'));
+  value.value = 'first'; await vi.advanceTimersByTimeAsync(1_000);
+  value.value = 'newer';
+  mocks.put.mockImplementationOnce(async () => {
+    server = snapshot('first', 1);
+    throw { status: 409, bodyJson: { draft: { ...server } } };
+  });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(mocks.put).toHaveBeenLastCalledWith('/drafts/12', { text: 'first', expected_revision: 0 }, expect.anything());
+  expect(value.value).toBe('newer'); expect(sync.conflict.value).toBeNull();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(server).toEqual(snapshot('newer', 2)); expect(sync.state.value).toBe('saved');
+});
+
+it('retains an uncertain write across a rejected recovery read', async () => {
+  const { value, sync } = create(); await flushPromises();
+  mocks.put.mockRejectedValueOnce(new Error('Response lost'));
+  value.value = 'first'; await vi.advanceTimersByTimeAsync(1_000);
+  value.value = 'newer'; server = snapshot('first', 1);
+  mocks.get.mockRejectedValueOnce({ status: 429 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(sync.problem.value).toBe('error');
+  await vi.advanceTimersByTimeAsync(4_000);
+  expect(value.value).toBe('newer'); expect(server).toEqual(snapshot('newer', 2));
+  expect(sync.conflict.value).toBeNull(); expect(sync.state.value).toBe('saved');
+});
+
+it('allows correcting text after a rejected write', async () => {
+  const { value, sync } = create(); await flushPromises();
+  mocks.put.mockRejectedValueOnce({ status: 422 });
+  value.value = 'invalid'; await vi.advanceTimersByTimeAsync(1_000);
+  value.value = 'corrected'; await vi.advanceTimersByTimeAsync(1_000);
+  expect(server).toEqual(snapshot('corrected', 1)); expect(sync.state.value).toBe('saved');
+});
+
+it('keeps an undo pending when a retry is rejected before the original write commits', async () => {
+  const { value, sync } = create(); await flushPromises();
+  mocks.put.mockRejectedValueOnce(new Error('Request timed out')).mockRejectedValueOnce({ status: 429 });
+  value.value = 'first'; await vi.advanceTimersByTimeAsync(1_000);
+  value.value = ''; await vi.advanceTimersByTimeAsync(1_000);
+  expect(sync.unsaved.value).toBe(true); expect(mocks.put).toHaveBeenCalledTimes(2);
+  server = snapshot('first', 1); await vi.advanceTimersByTimeAsync(2_000);
+  expect(value.value).toBe(''); expect(server).toEqual(snapshot('', 2));
+  expect(sync.conflict.value).toBeNull(); expect(sync.unsaved.value).toBe(false);
+});
+
+it.each([['another device', 1], ['first', 2]] as const)(
+  'still detects an external change to %s at revision %s after a lost response', async (text, revision) => {
+    const { value, sync } = create(); await flushPromises();
+    mocks.put.mockRejectedValueOnce(new Error('Response lost'));
+    value.value = 'first'; await vi.advanceTimersByTimeAsync(1_000);
+    value.value = 'newer'; server = snapshot(text, revision);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(value.value).toBe('newer'); expect(sync.conflict.value).toEqual(server);
+    expect(mocks.put).toHaveBeenCalledTimes(1);
+  },
+);
 
 it('reports only problems of unsynchronized edits and keeps a failure visible across retries', async () => {
   const { value, sync } = create(); await flushPromises();
