@@ -7,6 +7,7 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
 
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.ReadState
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Generation.RuntimeTrace
@@ -224,6 +225,198 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
     results
   end
 
+  describe "generation archive state" do
+    test "starting generation returns the chat to the inbox before any terminal activity", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor)
+
+      assert {:ok, %{read_state: %{is_archived: true}}} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 0,
+                   "observed_revision" => 0
+                 },
+                 actor
+               )
+
+      {:ok, _user_message} =
+        Threads.add_message_to_end(chat, :user, "Next question", actor: actor)
+
+      assert ReadState.load_many([chat], actor)[chat.id].is_archived
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          IntellectualClub.PubSub,
+          IntellectualClub.Chat.ReadStateEvents.topic(actor.id)
+        )
+
+      message = create_generating_message!(actor, chat)
+      assert message.status == :generating
+      assert_receive {:chat_state_changed, chat_id} when chat_id == chat.id
+
+      state = ReadState.load_many([chat], actor)[chat.id]
+      refute state.is_archived
+      refute state.is_unread
+      assert state.activity_revision == 0
+      assert state.state_version == 2
+
+      for {view, expected_ids} <- [{"inbox", [chat.id]}, {"archive", []}] do
+        list =
+          conn
+          |> get("/api/bff/chat-list", %{view: view, sections: "working"})
+          |> json_response(200)
+
+        assert list["sections"]["working"]["ids"] == expected_ids
+      end
+
+      assert {:ok, %{conflict: true}} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 1,
+                   "observed_revision" => 0
+                 },
+                 actor
+               )
+    end
+
+    test "retrying generation unarchives without consuming personal read or reminder state" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      message = create_generating_message!(actor, chat)
+      message = set_message_status!(actor, message, :error)
+
+      assert {:ok, _} =
+               ReadState.mutate(
+                 chat.id,
+                 %{"action" => "read", "expected_state_version" => 0, "observed_revision" => 1},
+                 actor
+               )
+
+      assert {:ok, _} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "snooze",
+                   "expected_state_version" => 1,
+                   "snoozed_until" =>
+                     DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+                 },
+                 actor
+               )
+
+      assert {:ok, %{read_state: archived}} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 2,
+                   "observed_revision" => 1
+                 },
+                 actor
+               )
+
+      assert archived.is_archived
+      message = set_message_status!(actor, message, :generating)
+      state = ReadState.load_many([chat], actor)[chat.id]
+      assert state == %{archived | is_archived: false, state_version: 4}
+
+      assert {:ok, %{read_state: rearchived}} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 4,
+                   "observed_revision" => 1
+                 },
+                 actor
+               )
+
+      set_message_status!(actor, message, :generating)
+      assert ReadState.load_many([chat], actor)[chat.id] == rearchived
+    end
+
+    test "generation start and unarchiving roll back together" do
+      %{user: actor} = user_fixture()
+      chat = create_chat!(actor)
+      message = create_generating_message!(actor, chat)
+      message = set_message_status!(actor, message, :error)
+
+      assert {:ok, %{read_state: archived}} =
+               ReadState.mutate(
+                 chat.id,
+                 %{
+                   "action" => "archive",
+                   "expected_state_version" => 0,
+                   "observed_revision" => 1
+                 },
+                 actor
+               )
+
+      assert {:error, :rollback} =
+               IntellectualClub.Repo.transaction(fn ->
+                 message
+                 |> Ash.Changeset.for_update(:set_generation_state, %{status: :generating},
+                   actor: actor
+                 )
+                 |> Ash.update!(actor: actor, return_notifications?: true)
+
+                 refute ReadState.load_many([chat], actor)[chat.id].is_archived
+                 IntellectualClub.Repo.rollback(:rollback)
+               end)
+
+      assert Ash.get!(ChatMessage, message.id, actor: actor).status == :error
+      assert ReadState.load_many([chat], actor)[chat.id] == archived
+    end
+
+    test "only the owner can clear shared viewers' archives when generation starts" do
+      %{user: owner} = user_fixture()
+      %{user: viewer} = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, viewer]})
+      bot = create_bot!(owner)
+      configuration = create_configuration!(owner)
+      share_bot!(owner, bot, group)
+      share_configuration!(owner, configuration, group)
+      chat = create_chat!(owner, bot_id: bot.id, llm_configuration_id: configuration.id)
+      share_chat!(owner, chat, group)
+
+      for actor <- [owner, viewer] do
+        assert {:ok, %{read_state: %{is_archived: true}}} =
+                 ReadState.mutate(
+                   chat.id,
+                   %{
+                     "action" => "archive",
+                     "expected_state_version" => 0,
+                     "observed_revision" => 0
+                   },
+                   actor
+                 )
+      end
+
+      viewer_state = Ash.get!(ReadState, %{chat_id: chat.id, user_id: viewer.id}, actor: viewer)
+
+      assert {:error, %Ash.Error.Forbidden{}} =
+               viewer_state
+               |> Ash.Changeset.for_update(:unarchive_for_generation, %{}, actor: viewer)
+               |> Ash.update(actor: viewer)
+
+      create_generating_message!(owner, chat)
+
+      for actor <- [owner, viewer] do
+        state = ReadState.load_many([chat], actor)[chat.id]
+        refute state.is_archived
+        assert state.activity_revision == 0
+        assert state.state_version == 2
+      end
+    end
+  end
+
   describe "durable terminal activity" do
     test "each terminal result returns an archived chat while subchat activity leaves its parent archived" do
       %{user: actor} = user_fixture()
@@ -245,9 +438,25 @@ defmodule IntellectualClubWeb.Bff.ChatActivityTest do
                  )
 
         child_message = create_generating_message!(actor, child)
+        assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
         set_message_status!(actor, child_message, status)
         assert IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
         message = create_generating_message!(actor, chat)
+
+        state = ReadState.load_many([chat], actor)[chat.id]
+        refute state.is_archived
+
+        assert {:ok, %{read_state: %{is_archived: true}}} =
+                 ReadState.mutate(
+                   chat.id,
+                   %{
+                     "action" => "archive",
+                     "expected_state_version" => state.state_version,
+                     "observed_revision" => state.activity_revision
+                   },
+                   actor
+                 )
+
         set_message_status!(actor, message, status)
         refute IntellectualClub.Chat.ReadState.load_many([chat], actor)[chat.id].is_archived
       end

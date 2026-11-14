@@ -16,6 +16,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
   alias IntellectualClub.Chat.Changes.SetChatLastMessage
   alias IntellectualClub.Chat.Changes.SetDefaultParentFromChatLastMessage
   alias IntellectualClub.Chat.Changes.ValidateParentMessage
+  alias IntellectualClub.Chat.Changes.UnarchiveOnGenerationStart
   alias IntellectualClub.Chat.Validations.PreventDestroyWithChildren
   alias IntellectualClub.Ownership.Changes.RequireRelatedAccessByActor
   alias IntellectualClub.TokenCounter
@@ -294,6 +295,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change({ValidateParentMessage, []})
       change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
+      change(UnarchiveOnGenerationStart)
     end
 
     create :add_user_message do
@@ -363,6 +365,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       change(set_attribute(:status, :generating))
       change({SetFinishedAtFromStatus, []})
       change({SetChatLastMessage, []})
+      change(UnarchiveOnGenerationStart)
     end
 
     update :reparent do
@@ -406,6 +409,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
       ])
 
       require_atomic?(false)
+      change(UnarchiveOnGenerationStart)
     end
 
     update :set_generation_recovery do

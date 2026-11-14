@@ -44,6 +44,12 @@ defmodule IntellectualClub.Chat.ReadState do
   actions do
     defaults([:read])
 
+    update :unarchive_for_generation do
+      accept([])
+      change(set_attribute(:archived_revision, nil))
+      change(increment(:state_version))
+    end
+
     action :mutate, :map do
       transaction? true
       argument :chat_id, :integer, allow_nil?: false
@@ -77,6 +83,10 @@ defmodule IntellectualClub.Chat.ReadState do
 
     policy action([:mutate, :archive_other]) do
       authorize_if actor_present()
+    end
+
+    policy action(:unarchive_for_generation) do
+      authorize_if expr(chat.owner_id == ^actor(:id))
     end
   end
 

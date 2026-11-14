@@ -17,9 +17,13 @@ not a field on the shared chat and does not change chat activity ordering.
 
 `is_archived = archived_revision IS NOT NULL AND activity_revision <= archived_revision`.
 Archiving is personal, including for shared read-only viewers, and preserves read
-state, snooze, drafts, and chat ordering. A new terminal generation (`done`,
-`error`, or `canceled`) returns the chat to the inbox without rewriting personal
-rows. Reading, opening, or completing a subchat does not unarchive its parent.
+state, snooze, drafts, and chat ordering. Starting an assistant generation,
+including retrying an existing message, clears the chat's personal archive
+markers and advances their state versions in the same transaction. Read revisions,
+manual unread, and snooze remain unchanged. A new terminal generation (`done`,
+`error`, or `canceled`) also returns a chat archived during generation to the inbox
+without rewriting personal rows. Reading, opening, or generating in a subchat does
+not unarchive its parent.
 Only standalone chats (`subagent=false`) can be archived directly. Subchats,
 including their draft section entries, follow the nearest standalone parent’s
 list mode. Independent forks remain independent.
