@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportPayload do
       :handoff_history,
       :handoff_message
     ],
-    "assistant" => [:handoff_summary, :artifact, :handoff_history, :handoff_message]
+    "assistant" => [:handoff_summary, :artifact, :steering, :handoff_history, :handoff_message]
   }
 
   @spec build(Chat.t(), map()) :: map()

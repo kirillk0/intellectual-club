@@ -397,8 +397,8 @@
                         vm.cancelingGenerationId === vm.activeGenerationId
                       "
                       :title="
-                        !vm.draft
-                          ? translate('Type a text instruction to steer the active generation.')
+                        !vm.hasSendPayload
+                          ? translate('Add text or an attachment to steer the active generation.')
                           : undefined
                       "
                       @click="runComposerAction(vm.steerGeneration)"
@@ -628,7 +628,7 @@
         :pending-files="vm.queuedEditPendingFiles"
         :error="vm.queuedEditError"
         :attachments-enabled="
-          vm.editingQueuedMessage?.kind === 'follow_up' && vm.canAttachFiles && !vm.savingQueuedEdit
+          vm.canAttachFiles && !vm.savingQueuedEdit
         "
         :attachment-accept="vm.fileInputAccept"
         :attachment-help="vm.editAttachmentHelp"

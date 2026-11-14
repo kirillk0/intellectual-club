@@ -134,16 +134,14 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
     steering_steps =
       steering_items
-      |> Steering.texts()
-      |> Enum.map(fn text ->
-        %{"type" => "user_input", "content" => [%{"type" => "text", "text" => text}]}
-      end)
+      |> Steering.history()
+      |> Payload.build_input_steps(Steering.media_options(context, type()))
 
     raw_request =
       payload

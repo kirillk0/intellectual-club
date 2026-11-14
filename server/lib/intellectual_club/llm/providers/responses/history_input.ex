@@ -150,12 +150,12 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
         project_indexed_items(rest, opts, result_refs, last_answer_index)
 
       _other ->
-        project_indexed_item(indexed_item, result_refs, last_answer_index) ++
+        project_indexed_item(indexed_item, opts, result_refs, last_answer_index) ++
           project_indexed_items(rest, opts, result_refs, last_answer_index)
     end
   end
 
-  defp project_indexed_item({item, item_index}, result_refs, last_answer_index) do
+  defp project_indexed_item({item, item_index}, opts, result_refs, last_answer_index) do
     case History.item_type(item) do
       :reasoning ->
         case extract_responses_item(item) do
@@ -190,18 +190,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.HistoryInput do
         end
 
       :steering ->
-        case History.item_text(item) do
-          "" ->
-            []
-
-          text ->
-            [
-              %{
-                "type" => "message",
-                "role" => "user",
-                "content" => [%{"type" => "input_text", "text" => text}]
-              }
-            ]
+        case Media.responses_message_content(History.contents(item), opts) do
+          [] -> []
+          content -> [%{"type" => "message", "role" => "user", "content" => content}]
         end
 
       _other ->

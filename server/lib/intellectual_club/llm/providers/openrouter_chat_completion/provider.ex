@@ -139,9 +139,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion do
     messages =
       payload
       |> RequestPayload.messages()
-      |> Kernel.++(
-        Enum.map(Steering.texts(steering_items), &%{"role" => "user", "content" => &1})
-      )
+      |> Kernel.++(Steering.chat_messages(steering_items, context, type()))
       |> ChatAdapterHelpers.apply_followup_cache_control(context)
 
     raw_request = Map.put(payload, "messages", messages)

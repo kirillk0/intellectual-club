@@ -31,6 +31,76 @@ defmodule IntellectualClub.Llm.Providers.SteeringProjectionTest do
     end
   end
 
+  test "steering attachments survive injection and canonical history projection for every provider" do
+    file = %IntellectualClub.Files.File{
+      id: 42,
+      external_id: "11111111-1111-4111-8111-111111111111",
+      filename: "direction.png",
+      mime_type: "image/png",
+      size_bytes: 3,
+      sha256: String.duplicate("a", 64)
+    }
+
+    media = %{
+      kind: :media,
+      sequence: 2,
+      external_id: Ash.UUID.generate(),
+      file_id: file.id,
+      file: file
+    }
+
+    text = %{kind: :text, sequence: 1, content_text: "Use this image"}
+
+    for contents <- [[media], [text, media]],
+        {provider, key, image_type} <- [
+          {Responses, "input", "input_image"},
+          {ResponsesWss, "input", "input_image"},
+          {AnthropicMessages, "messages", "image"},
+          {OpenRouterChatCompletion, "messages", "image_url"},
+          {IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion, "messages", "image_url"},
+          {GoogleInteractions, "input", "image"}
+        ] do
+      context = %{supports_image_input: true, cache_control_enabled: false}
+      request = %{"model" => "test-model", key => []}
+      injected = provider.inject_steering(request, [%{contents: contents}], context).raw_request
+      [user] = injected[key]
+      assert Enum.any?(user["content"], &(&1["type"] == image_type))
+      assert Jason.encode!(user) =~ file.external_id
+      assert Jason.encode!(user) =~ "direction.png"
+
+      history = [
+        %{
+          role: :assistant,
+          steps: [
+            %{
+              sequence: 1,
+              items: [
+                %{
+                  type: :steering,
+                  sequence: 1,
+                  contents: contents
+                }
+              ]
+            }
+          ]
+        }
+      ]
+
+      rebuilt =
+        provider.build_initial_request(
+          Map.merge(context, %{
+            history: history,
+            model_name: "test-model",
+            parameters: %{},
+            tools: [],
+            system_prompt: nil
+          })
+        ).raw_request
+
+      assert rebuilt[key] == injected[key]
+    end
+  end
+
   test "canonical steering is projected at its exact position for every history format" do
     history = IntellectualClub.Generation.History.for_mode(canonical_history(), :agent, nil)
 

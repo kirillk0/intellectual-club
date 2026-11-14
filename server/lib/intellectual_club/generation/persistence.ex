@@ -15,6 +15,7 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Chat.ChatMessageStepRequestFile
   alias IntellectualClub.Chat.QueuedMessage
   alias IntellectualClub.Chat.QueuedMessageContent
+  alias IntellectualClub.Chat.QueuedMessages
   alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.PersistenceFailure
@@ -25,6 +26,7 @@ defmodule IntellectualClub.Generation.Persistence do
   alias IntellectualClub.Generation.ToolCall
   alias IntellectualClub.Generation.ToolResult
   alias IntellectualClub.Llm.LlmUsageRecord
+  alias IntellectualClub.Llm.Providers.Common.Steering
   alias IntellectualClub.TokenCounter
 
   require Ash.Query
@@ -558,6 +560,11 @@ defmodule IntellectualClub.Generation.Persistence do
 
     raw_request = if is_map(raw_request), do: raw_request, else: previous_request
 
+    opts =
+      if kind in [:queued_steering, :queued_followup],
+        do: queued_steering_image_scope(message, specs, actor, opts),
+        else: opts
+
     PreparedRequests.with_prepared!(message, raw_request, opts, fn prepared ->
       prepared = prepare_request_step!(message_id, next_sequence, prepared, actor, opts)
 
@@ -588,7 +595,7 @@ defmodule IntellectualClub.Generation.Persistence do
                   steering =
                     create_steering_item!(
                       next_step,
-                      queued_steering_text(queued_message),
+                      %{contents: QueuedMessages.content_specs(queued_message)},
                       :before_response,
                       actor
                     )
@@ -599,7 +606,7 @@ defmodule IntellectualClub.Generation.Persistence do
                 Enum.each(specs, fn spec ->
                   create_steering_item!(
                     next_step,
-                    Map.fetch!(spec, :text),
+                    spec,
                     :before_response,
                     actor
                   )
@@ -1161,6 +1168,26 @@ defmodule IntellectualClub.Generation.Persistence do
       raise ArgumentError, "Retry source changed during request preparation"
     end
 
+    # Transfer steering files to the replacement step without deleting their logical IDs.
+    item_ids =
+      steering_specs
+      |> Enum.filter(&(steering_file_ids(Steering.contents(&1)) != []))
+      |> Enum.map(&Map.fetch!(&1, :item_id))
+
+    if item_ids != [] do
+      ChatMessageContent
+      |> Ash.Query.filter(
+        chat_message_item_id in ^item_ids and kind == :media and
+          chat_message_item.chat_message_step_id == ^source_step_id
+      )
+      |> Ash.read!(actor: actor)
+      |> Enum.each(fn content ->
+        content
+        |> Ash.Changeset.for_update(:update, %{file_id: nil}, actor: actor)
+        |> Ash.update!(actor: actor)
+      end)
+    end
+
     Enum.each(
       steps,
       &IntellectualClub.Chat.LinkedForkCleanup.destroy!(&1, :destroy, operation, actor)
@@ -1617,8 +1644,8 @@ defmodule IntellectualClub.Generation.Persistence do
     end)
   end
 
-  defp create_steering_item!(%ChatMessageStep{} = step, text, placement, actor)
-       when is_binary(text) and placement in [:before_response, :after_response] do
+  defp create_steering_item!(%ChatMessageStep{} = step, spec, placement, actor)
+       when placement in [:before_response, :after_response] do
     step = load_step_with_items!(step, actor)
 
     sequence =
@@ -1655,30 +1682,66 @@ defmodule IntellectualClub.Generation.Persistence do
         actor
       )
 
+    contents =
+      spec
+      |> Steering.contents()
+      |> Enum.with_index(1)
+      |> Enum.map(fn {content, sequence} ->
+        %{
+          external_id: Ash.UUID.generate(),
+          sequence: sequence,
+          kind: content.kind,
+          content_text: Map.get(content, :content_text) || "",
+          content_json: nil,
+          file_id: Map.get(content, :file_id)
+        }
+      end)
+
     create_contents!(
       item,
-      [
-        %{
-          external_id: Ash.UUID.generate(),
-          sequence: 1,
-          kind: :text,
-          content_text: text,
-          content_json: nil,
-          file_id: nil
-        },
-        %{
-          external_id: Ash.UUID.generate(),
-          sequence: @opaque_sequence,
-          kind: :opaque,
-          content_text: "",
-          content_json: %{"placement" => Atom.to_string(placement)},
-          file_id: nil
-        }
-      ],
+      contents ++
+        [
+          %{
+            external_id: Ash.UUID.generate(),
+            sequence: @opaque_sequence,
+            kind: :opaque,
+            content_text: "",
+            content_json: %{"placement" => Atom.to_string(placement)},
+            file_id: nil
+          }
+        ],
       actor
     )
 
     load_item_with_contents!(item, actor)
+  end
+
+  defp steering_file_ids(contents) do
+    contents |> Enum.filter(&(&1.kind == :media)) |> Enum.map(& &1.file_id)
+  end
+
+  defp queued_steering_image_scope(message, specs, actor, opts) do
+    ids = for spec <- specs, steering_file_ids(Steering.contents(spec)) != [], do: spec.id
+
+    if ids == [] do
+      opts
+    else
+      # Only the owned pending entries being delivered grant temporary image access.
+      files =
+        QueuedMessageContent
+        |> Ash.Query.filter(
+          kind == :media and queued_message_id in ^ids and
+            queued_message.kind == :steer and queued_message.status == :pending and
+            queued_message.target_generation_message_id == ^message.id and
+            queued_message.chat_id == ^message.chat_id
+        )
+        |> Ash.read!(actor: actor, load: [:file])
+        |> Enum.map(&to_string(&1.file.external_id))
+
+      context = Keyword.get(opts, :request_context) || %{}
+      context = Map.update(context, :available_file_external_ids, files, &Enum.uniq(&1 ++ files))
+      Keyword.put(opts, :request_context, context)
+    end
   end
 
   defp lock_queued_steers!(message_id, specs)
@@ -1718,7 +1781,14 @@ defmodule IntellectualClub.Generation.Persistence do
           Map.get(spec, :updated_at) == queued_message.updated_at
       end)
 
-    if actual == expected and revisions_match?,
+    files_match? =
+      Enum.all?(queued_messages, fn queued ->
+        spec = Enum.find(specs, &(Map.get(&1, :id) == queued.id)) || %{}
+        actual_ids = queued |> QueuedMessages.content_specs() |> steering_file_ids()
+        actual_ids == spec |> Steering.contents() |> steering_file_ids()
+      end)
+
+    if actual == expected and revisions_match? and files_match?,
       do: :ok,
       else: {:error, :queued_steering_changed}
   end
@@ -1799,6 +1869,7 @@ defmodule IntellectualClub.Generation.Persistence do
   defp steering_item_payload(%ChatMessageItem{} = item) do
     %{
       item_id: item.id,
+      contents: item |> ordered_contents() |> Enum.filter(&(&1.kind in [:text, :media])),
       text:
         item
         |> ordered_contents()
@@ -2576,16 +2647,14 @@ defmodule IntellectualClub.Generation.Persistence do
   defp restore_steering_specs_in_transaction!(%ChatMessageStep{} = step, specs, actor)
        when is_list(specs) do
     Enum.each(specs, fn spec ->
-      text = to_string(Map.get(spec, :text, ""))
-
       placement =
         case Map.get(spec, :placement) do
           :before_response -> :before_response
           _other -> :after_response
         end
 
-      if text != "" do
-        create_steering_item!(step, text, placement, actor)
+      if Steering.contents(spec) != [] do
+        create_steering_item!(step, spec, placement, actor)
       end
     end)
   end

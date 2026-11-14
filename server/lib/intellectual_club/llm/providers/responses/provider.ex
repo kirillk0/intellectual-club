@@ -171,20 +171,14 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
     steering_input_items =
       steering_items
-      |> Steering.texts()
-      |> Enum.map(fn text ->
-        %{
-          "type" => "message",
-          "role" => "user",
-          "content" => [%{"type" => "input_text", "text" => text}]
-        }
-      end)
+      |> Steering.history()
+      |> HistoryInput.build_input_items(Steering.media_options(context, type()))
 
     raw_request =
       payload

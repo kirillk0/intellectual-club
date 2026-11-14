@@ -56,7 +56,9 @@ defmodule IntellectualClub.Test.GenerationRuntime.ScriptedAdapter do
       raise ArgumentError, "Injected steering-only preparation failure"
     end
 
-    steering = Enum.map(texts, &%{"role" => "user", "content" => &1})
+    steering =
+      IntellectualClub.Llm.Providers.Common.Steering.chat_messages(items, context, "demo")
+
     request = Map.update(raw_request, "messages", steering, &(&1 ++ steering))
     %{raw_request: request, request_snapshot: request_snapshot(request)}
   end

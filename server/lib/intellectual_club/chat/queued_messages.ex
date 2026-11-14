@@ -65,8 +65,8 @@ defmodule IntellectualClub.Chat.QueuedMessages do
         _other -> %{}
       end
 
-    with {:ok, content, []} <- normalize_contents(Map.put(attrs, :file_ids, [])),
-         :ok <- validate_nonempty(content, []),
+    with {:ok, content, file_ids} <- normalize_contents(attrs),
+         :ok <- validate_nonempty(content, file_ids),
          {:ok, %ChatMessage{} = preliminary} <- fetch_owned_generation(message_id, actor),
          :ok <- validate_steering_target_state(preliminary) do
       transact(fn ->
@@ -74,7 +74,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
              {:ok, %ChatMessage{} = message} <- lock_owned_generation(message_id, actor),
              :ok <- ensure_message_chat(message, chat),
              :ok <- validate_steering_target_state(message) do
-          queued = enqueue_steer_for_generation_state!(message, content, actor)
+          queued = enqueue_steer_for_generation_state!(message, content, file_ids, actor)
           ChatDraft.consume(chat.id, content, Map.get(attrs, :draft_revision), actor)
           queued
         end
@@ -165,7 +165,6 @@ defmodule IntellectualClub.Chat.QueuedMessages do
       transact(fn ->
         with {:ok, %QueuedMessage{} = queued_message} <- lock_one(id, actor),
              :ok <- ensure_mutable(queued_message),
-             :ok <- ensure_attachment_update_allowed(queued_message, file_ids),
              {:ok, current_contents} <- load_contents(queued_message, actor),
              :ok <- validate_media_removals(current_contents, remove_ids),
              :ok <-
@@ -393,6 +392,32 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
+  @doc false
+  def steering_spec(%QueuedMessage{} = queued_message) do
+    contents =
+      queued_message.contents
+      |> loaded_list()
+      |> Enum.sort_by(& &1.sequence)
+      |> Enum.map(fn content ->
+        spec = Map.take(content, [:sequence, :kind, :content_text, :file_id])
+
+        case content.file do
+          %IntellectualClub.Files.File{} = file ->
+            Map.merge(spec, %{file: file, external_id: file.external_id})
+
+          _other ->
+            spec
+        end
+      end)
+
+    %{
+      id: queued_message.id,
+      text: contents |> Enum.filter(&(&1.kind == :text)) |> Enum.map_join("", & &1.content_text),
+      contents: contents,
+      updated_at: queued_message.updated_at
+    }
+  end
+
   defp ensure_generating_steering_target(%ChatMessage{role: :assistant, status: :generating}),
     do: :ok
 
@@ -420,7 +445,12 @@ defmodule IntellectualClub.Chat.QueuedMessages do
       |> Enum.filter(&(&1.kind == :text))
       |> Enum.map_join("", & &1.content_text)
 
+    file_ids = fn contents ->
+      contents |> Enum.filter(&(&1.kind == :media)) |> Enum.map(& &1.file_id)
+    end
+
     spec.id == queued_message.id and spec.text == text and
+      file_ids.(content_specs(queued_message)) == file_ids.(Map.get(spec, :contents, [])) and
       (not Map.has_key?(spec, :updated_at) or spec.updated_at == queued_message.updated_at)
   end
 
@@ -820,6 +850,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   defp enqueue_steer_for_generation_state!(
          %ChatMessage{role: :assistant, status: :generating} = message,
          content,
+         file_ids,
          actor
        ) do
     create_queued_message!(
@@ -829,7 +860,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
         target_generation_message_id: message.id
       },
       content,
-      [],
+      file_ids,
       actor
     )
   end
@@ -837,6 +868,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
   defp enqueue_steer_for_generation_state!(
          %ChatMessage{role: :assistant, status: status} = message,
          content,
+         file_ids,
          actor
        )
        when status in [:done, :error, :canceled] do
@@ -850,7 +882,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
           anchor_message_id: destination.anchor_message_id
         },
         content,
-        [],
+        file_ids,
         actor
       )
 
@@ -868,7 +900,7 @@ defmodule IntellectualClub.Chat.QueuedMessages do
     end
   end
 
-  defp enqueue_steer_for_generation_state!(%ChatMessage{}, _content, _actor),
+  defp enqueue_steer_for_generation_state!(%ChatMessage{}, _content, _file_ids, _actor),
     do: {:error, :generation_not_active}
 
   defp late_follow_up_destination(%ChatMessage{status: :done} = message, actor) do
@@ -939,12 +971,6 @@ defmodule IntellectualClub.Chat.QueuedMessages do
 
   defp ensure_follow_up(%QueuedMessage{kind: :follow_up}), do: :ok
   defp ensure_follow_up(%QueuedMessage{}), do: {:error, :follow_up_required}
-
-  defp ensure_attachment_update_allowed(%QueuedMessage{kind: :steer}, file_ids)
-       when file_ids != [],
-       do: {:error, :steer_attachments_not_supported}
-
-  defp ensure_attachment_update_allowed(%QueuedMessage{}, _file_ids), do: :ok
 
   defp ensure_mutable(%QueuedMessage{status: status}) when status in @active_statuses, do: :ok
   defp ensure_mutable(%QueuedMessage{}), do: {:error, :already_dispatched}

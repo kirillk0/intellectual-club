@@ -124,16 +124,14 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
   end
 
   @impl true
-  def inject_steering(raw_request, steering_items, _context)
+  def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) do
     payload = RequestPayload.stringify_keys(raw_request)
 
     messages =
       payload
       |> RequestPayload.messages()
-      |> Kernel.++(
-        Enum.map(Steering.texts(steering_items), &%{"role" => "user", "content" => &1})
-      )
+      |> Kernel.++(Steering.chat_messages(steering_items, context, type()))
 
     raw_request =
       payload

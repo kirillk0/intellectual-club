@@ -1,6 +1,50 @@
 defmodule IntellectualClub.Llm.Providers.Common.Steering do
   @moduledoc false
 
+  @doc "Projects steering into user history using the ordinary attachment pipeline."
+  def history(items) do
+    items
+    |> List.wrap()
+    |> Enum.map(&contents/1)
+    |> Enum.reject(&(&1 == []))
+    |> Enum.map(fn contents ->
+      %{
+        role: :user,
+        steps: [%{sequence: 1, items: [%{type: :input, sequence: 1, contents: contents}]}]
+      }
+    end)
+  end
+
+  def contents(item) do
+    blocks = if is_map(item), do: item_contents(item), else: []
+
+    if blocks == [] do
+      item
+      |> texts()
+      |> Enum.with_index(1)
+      |> Enum.map(fn {text, sequence} ->
+        %{kind: :text, content_text: text, sequence: sequence}
+      end)
+    else
+      Enum.filter(blocks, &(Map.get(&1, :kind) in [:text, :media]))
+    end
+  end
+
+  def media_options(context, provider_type) do
+    [
+      supports_image_input: Map.get(context, :supports_image_input, false),
+      provider_type: provider_type
+    ]
+  end
+
+  def chat_messages(items, context, provider_type) do
+    items
+    |> history()
+    |> IntellectualClub.Llm.Providers.Common.ChatHistory.build_messages(
+      media_options(context, provider_type)
+    )
+  end
+
   @spec texts(term()) :: [String.t()]
   def texts(items) do
     items

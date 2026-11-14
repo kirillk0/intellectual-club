@@ -582,7 +582,7 @@ defmodule IntellectualClubWeb.Bff.Serializer do
 
     media_types =
       if role == :assistant,
-        do: ["artifact", "handoff_summary", "handoff_history", "handoff_message"],
+        do: ["artifact", "steering", "handoff_summary", "handoff_history", "handoff_message"],
         else: text_types
 
     Enum.reduce(Map.get(step, :items, []), %{items: [], parts: [], media: []}, fn item, acc ->

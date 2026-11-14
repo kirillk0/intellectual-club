@@ -157,7 +157,7 @@ export function useChatComposerRuntime(params: Params) {
     )
   );
   const canSteerGeneration = computed(
-    () => Boolean(params.activeGenerationId.value) && hasDraftText.value
+    () => Boolean(params.activeGenerationId.value) && hasSendPayload.value
   );
 
   const sendButtonLabel = computed(() => {
@@ -1412,7 +1412,7 @@ export function useChatComposerRuntime(params: Params) {
     if (steeringGenerationId.value || params.cancelingGenerationId.value === messageId) return;
 
     const content = draft.value;
-    if (content === '') return;
+    const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
 
     const draftStorageKeyBeforeSteer = chatDraftStorageKey.value;
     let draftSubmission: DraftSubmission | undefined;
@@ -1421,20 +1421,22 @@ export function useChatComposerRuntime(params: Params) {
     params.loadError.value = '';
 
     try {
+      const uploadIds = pendingFileIds.size > 0
+        ? await ensurePendingFilesUploaded(pendingFiles, pendingFileIds)
+        : [];
+      if (content === '' && uploadIds.length === 0) return;
+      if (chatDraftStorageKey.value !== draftStorageKeyBeforeSteer) return;
       if (params.draftUserId) draftSubmission = await draftSync.beginSubmission(content);
       if (chatDraftStorageKey.value !== draftStorageKeyBeforeSteer) return;
       const payload = await api.post<QueuedMessagePayload>(
         `/api/bff/chat-messages/${messageId}/steer`,
-        { content, ...(draftSubmission?.revision !== undefined ? { draft_revision: draftSubmission.revision } : {}) }
+        { ...buildSendPayload(content, uploadIds), ...(draftSubmission?.revision !== undefined ? { draft_revision: draftSubmission.revision } : {}) }
       );
 
       if (payload.queued_message) params.onQueuedMessageCreated?.(payload.queued_message);
 
       draftAccepted = true;
-      if (chatDraftStorageKey.value === draftStorageKeyBeforeSteer && draft.value === content) {
-        draft.value = '';
-        if (!params.draftUserId) chatTextDraft.clear(draftStorageKeyBeforeSteer);
-      }
+      clearAcknowledgedComposerSnapshot(content, pendingFileIds, draftStorageKeyBeforeSteer);
 
       if (params.activeGenerationId.value === messageId) {
         void startPolling(messageId);

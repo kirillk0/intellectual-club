@@ -227,8 +227,7 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
               :empty_message,
               :invalid_file_ids,
               :invalid_remove_content_ids,
-              :follow_up_required,
-              :steer_attachments_not_supported
+              :follow_up_required
             ] do
     conn
     |> put_status(:unprocessable_entity)
@@ -254,9 +253,6 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesController do
   defp error_message(:invalid_file_ids), do: "Invalid queued attachment ids."
   defp error_message(:invalid_remove_content_ids), do: "Some queued attachments cannot be edited."
   defp error_message(:follow_up_required), do: "Only follow-up messages can be sent next."
-
-  defp error_message(:steer_attachments_not_supported),
-    do: "Steering messages do not support attachments."
 
   defp error_message(:already_dispatched), do: "This queued message is already finished."
   defp error_message(:generation_active), do: "Wait for the active generation to finish."

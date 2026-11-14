@@ -109,10 +109,19 @@ user message or the assistant's parent) through
 New attachments of a branch message follow the configuration the branch is sent
 with. `POST /api/bff/chat-uploads/:chat_id` accepts the same optional
 `llm_configuration_id` so a file can be staged for a configuration the chat does
-not use yet, and every consumer of staged uploads (send, queue, edit, branches)
+not use yet, and every consumer of staged uploads (send, queue, steer, edit, branches)
 revalidates them against its own upload policy when they are materialized; the
 policy at upload start may be stale. Copied existing attachments are not
 revalidated: providers already degrade unsupported history media.
+
+Steering accepts the same attachments as ordinary messages, including an
+attachment-only instruction. The composer uploads its submitted file snapshot
+before queueing the steer and clears those files only after acceptance. Pending
+steering attachments can be edited. Delivery transfers their logical files from
+the queue into canonical steering contents; request preparation grants temporary
+image access only to the owned pending entries being delivered. All provider
+projections include these contents in both live requests and replayed history.
+Retrying the receiving step preserves its steering files and their UUIDs.
 
 The SPA exposes these options only in the user-message branch dialog; the dialog's
 attach button, accepted types and client validation use the selected

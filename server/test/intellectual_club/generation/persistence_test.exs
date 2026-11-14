@@ -480,6 +480,113 @@ defmodule IntellectualClub.Generation.PersistenceTest do
       assert {:error, _error} = Ash.get(ChatMessageItem, first_call.item_id, actor: actor)
     end
 
+    test "queued image steering is pinned, transferred and retained when its step is retried" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+      provider = IntellectualClub.Llm.Providers.Responses
+      images = IntellectualClub.Generation.RequestImages
+      context = %{adapter_module: provider, supports_image_input: true}
+      original = %{"model" => "test-model", "input" => []}
+      step_id = Persistence.ensure_step_started!(message.id, 1, original, [])
+      file = create_file!(filename: "steer.png", mime_type: "image/png", payload: png_1x1())
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_steer(message.id, %{file_ids: [file.id]}, actor)
+
+      spec = QueuedMessages.steering_spec(queued)
+      request = provider.inject_steering(original, [spec], context).raw_request
+
+      delivered =
+        with_generation_lease(message.id, fn lease ->
+          Persistence.persist_queued_steering_before_provider!(
+            message.id,
+            step_id,
+            [spec],
+            request,
+            lease: lease,
+            request_context: context
+          )
+        end)
+
+      assert {:ok, %{status: :delivered, contents: []}} = QueuedMessages.get(queued.id, actor)
+
+      assert {:ok, wire} =
+               images.hydrate(delivered.raw_request, delivered.step_id,
+                 mapper: images.mapper(provider)
+               )
+
+      assert Enum.any?(hd(wire["input"])["content"], fn block ->
+               block["type"] == "input_image" and
+                 String.starts_with?(block["image_url"], "data:image/png;base64,")
+             end)
+
+      specs = Persistence.steering_specs_for_step!(delivered.step_id)
+      assert [media] = hd(specs).contents |> Enum.filter(&(&1.kind == :media))
+      assert media.file_id == file.id
+
+      # The retry must keep the original file UUID as well as the pinned request bytes.
+      replacement =
+        with_generation_lease(message.id, fn lease ->
+          Persistence.replace_steps_for_retry!(message.id, 2, delivered.raw_request, specs, nil,
+            lease: lease,
+            request_context: context,
+            return_request?: true
+          )
+        end)
+
+      restored = Persistence.steering_specs_for_step!(replacement.step.id)
+      assert [restored_media] = hd(restored).contents |> Enum.filter(&(&1.kind == :media))
+      assert restored_media.file_id == file.id
+      assert {:ok, {retained, payload}} = IntellectualClub.Files.load_payload(file.id)
+      assert retained.external_id == file.external_id
+      assert payload == png_1x1()
+
+      assert {:ok, ^wire} =
+               images.hydrate(replacement.request, replacement.step.id,
+                 mapper: images.mapper(provider)
+               )
+    end
+
+    test "changed steering attachments reject an obsolete delivery snapshot" do
+      %{user: actor} = user_fixture()
+      message = create_generating_assistant_message!(actor)
+      original = %{"model" => "demo-model", "messages" => []}
+      step_id = Persistence.ensure_step_started!(message.id, 1, original, [])
+      file = create_file!()
+      other = create_file!(filename: "replacement.txt")
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_steer(
+                 message.id,
+                 %{content: "Read", file_ids: [file.id]},
+                 actor
+               )
+
+      spec = QueuedMessages.steering_spec(queued)
+      media = Enum.find(queued.contents, &(&1.kind == :media))
+
+      assert {:ok, _updated} =
+               QueuedMessages.update(
+                 queued.id,
+                 %{remove_content_ids: [media.id], file_ids: [other.id]},
+                 actor
+               )
+
+      with_generation_lease(message.id, fn lease ->
+        assert {:error, :queued_steering_changed} =
+                 Persistence.persist_queued_steering_before_provider!(
+                   message.id,
+                   step_id,
+                   [spec],
+                   original,
+                   lease: lease
+                 )
+      end)
+
+      assert {:ok, %{status: :pending}} = QueuedMessages.get(queued.id, actor)
+      assert {:ok, {_file, _payload}} = IntellectualClub.Files.load_payload(other.id)
+    end
+
     test "provider trace sequences are shifted past every leading steering item" do
       %{user: actor} = user_fixture()
       assistant_message = create_generating_assistant_message!(actor)

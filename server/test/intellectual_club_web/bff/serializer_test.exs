@@ -518,6 +518,35 @@ defmodule IntellectualClubWeb.Bff.SerializerTest do
   end
 
   describe "runtime message content" do
+    test "steering media keeps its instruction identity in runtime content" do
+      step = %{
+        id: 1,
+        sequence: 2,
+        items: [
+          %{
+            id: 3,
+            sequence: 1,
+            type: "steering",
+            contents: [
+              %{
+                id: 4,
+                sequence: 1,
+                kind: "media",
+                media: %{filename: "direction.png"}
+              }
+            ]
+          }
+        ]
+      }
+
+      content = Serializer.runtime_message_content(step, :assistant)
+
+      assert [%{item_type: "steering", item_id: 3, media: %{filename: "direction.png"}}] =
+               content.media
+
+      assert [%{item_type: "steering", item_id: 3}] = content.items
+    end
+
     test "assistant checkpoints keep sanitized metadata, previews and media through runtime normalization" do
       long_text = String.duplicate("History line\n", 10) <> "HISTORY_TAIL"
       metadata = %{"entry_kind" => "message", "role" => "assistant", "internal" => "PRIVATE"}

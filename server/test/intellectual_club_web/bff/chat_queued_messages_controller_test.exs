@@ -59,6 +59,59 @@ defmodule IntellectualClubWeb.Bff.ChatQueuedMessagesControllerTest do
              conn |> get(path) |> json_response(200)
   end
 
+  test "steering accepts attachments without text and allows replacing them", %{conn: conn} do
+    %{user: actor} = fixture = user_fixture()
+    conn = sign_in_conn(conn, fixture)
+    bot = create_artifact_bot!(actor, "Steering files")
+    chat = create_chat!(actor, bot_id: bot.id)
+    message = create_generating_message!(actor, chat, user_text: "Question")
+    upload = plug_upload("first.txt", "text/plain", "First attachment")
+
+    created =
+      conn
+      |> post("/api/bff/chat-messages/#{message.id}/steer", %{content: "", files: [upload]})
+      |> json_response(201)
+      |> Map.fetch!("queued_message")
+
+    assert created["kind"] == "steer"
+    assert [first] = created["contents"]
+    assert first["kind"] == "media"
+    assert first["file"]["filename"] == "first.txt"
+
+    replacement = plug_upload("second.txt", "text/plain", "Second attachment")
+
+    updated =
+      conn
+      |> patch("/api/bff/chat-queued-messages/#{created["id"]}", %{
+        content: "",
+        remove_content_ids: [first["id"]],
+        files: [replacement]
+      })
+      |> json_response(200)
+      |> Map.fetch!("queued_message")
+
+    assert [second] = updated["contents"]
+    assert second["file"]["filename"] == "second.txt"
+
+    assert conn
+           |> patch("/api/bff/chat-queued-messages/#{created["id"]}", %{
+             content: "",
+             remove_content_ids: [second["id"]]
+           })
+           |> json_response(422)
+           |> Map.fetch!("code") == "empty_message"
+
+    %{user: outsider} = outsider_fixture = user_fixture()
+    assert outsider.id != actor.id
+
+    refused =
+      build_conn()
+      |> sign_in_conn(outsider_fixture)
+      |> post("/api/bff/chat-messages/#{message.id}/steer", %{files: [replacement]})
+
+    assert refused.status in [403, 404]
+  end
+
   test "queue CRUD is durable, ordered, and exposed through chat state", %{conn: conn} do
     %{user: actor, password: password} = user_fixture()
     conn = sign_in_conn(conn, actor.username, password)

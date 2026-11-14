@@ -197,7 +197,7 @@ export function useChatQueueRuntime(params: Params) {
   };
 
   const addEditPendingFiles = (files: File[]) => {
-    if (params.readOnly.value || editingQueuedMessage.value?.kind !== 'follow_up') return;
+    if (params.readOnly.value || !editingQueuedMessage.value || savingEdit.value) return;
     const setError = (error: string) => {
       editError.value = error;
     };
@@ -262,14 +262,6 @@ export function useChatQueueRuntime(params: Params) {
     const pendingIds = new Set(editPendingFiles.value.map((file) => file.id));
     if (
       content === '' &&
-      message.kind === 'steer'
-    ) {
-      editError.value = translate('Steering content must not be empty.');
-      return;
-    }
-    if (
-      content === '' &&
-      message.kind === 'follow_up' &&
       editExistingAttachments.value.length === 0 &&
       pendingIds.size === 0
     ) {

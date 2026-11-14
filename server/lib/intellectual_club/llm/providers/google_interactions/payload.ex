@@ -335,7 +335,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.Payload do
         end
 
       :steering ->
-        content = text_blocks(History.item_text(item))
+        content = trace_content_blocks(History.contents(item), opts)
 
         if content == [] do
           []

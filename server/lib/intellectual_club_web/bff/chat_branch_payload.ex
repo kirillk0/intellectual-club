@@ -588,7 +588,14 @@ defmodule IntellectualClubWeb.Bff.ChatBranchPayload do
       ]
 
   defp media_item_for_role?(item_type, "assistant") when is_binary(item_type),
-    do: item_type in ["handoff_summary", "artifact", "handoff_history", "handoff_message"]
+    do:
+      item_type in [
+        "handoff_summary",
+        "artifact",
+        "steering",
+        "handoff_history",
+        "handoff_message"
+      ]
 
   defp media_item_for_role?(_item_type, _role), do: false
 

@@ -59,6 +59,12 @@
               {{ timelineEntryMeta(entry) }}
             </span>
             <div v-html="entry.html"></div>
+            <ChatMediaList
+              v-if="entry.media?.length"
+              :message-id="messageId"
+              :contents="entry.media"
+              @preview="(payload) => emit('attachment-open', { ...payload, contents: previewAttachmentContents })"
+            />
           </div>
           <div
             v-else-if="entry.kind === 'checkpoint'"
@@ -567,6 +573,7 @@ type MessagePart = {
   timestamp: string;
   showTimestamp: boolean;
   steering: boolean;
+  media?: ChatMessageContent[];
   stepSequence: number;
   itemSequence: number;
   sequence: number;
@@ -663,6 +670,7 @@ const messageParts = computed<Array<MessagePart | HandoffPart | HandoffCheckpoin
     if (isHandoffSystemEventItemType(part.item_type) || isHandoffContextItemType(part.item_type)) continue;
     const text = String(part.text ?? '');
     const steering = msg.value.role === 'assistant' && isSteeringContentPart(part);
+    if (steering) continue;
     if (!text.trim() && !steering) continue;
 
     parts.push({
@@ -699,13 +707,25 @@ const messageParts = computed<Array<MessagePart | HandoffPart | HandoffCheckpoin
 
   for (const [index, item] of displayItems.entries()) {
     if (!isHandoffContextItemType(item.item_type)) checkpoint = null;
-    if (!isHandoffSystemEventItemType(item.item_type) && !isHandoffContextItemType(item.item_type)) continue;
+    const steering = msg.value.role === 'assistant' && item.item_type === 'steering';
+    if (!steering && !isHandoffSystemEventItemType(item.item_type) && !isHandoffContextItemType(item.item_type)) continue;
 
     const identity = displayItemIdentity(item);
     const itemParts = sortedParts.filter((part) => displayItemIdentity(part) === identity);
     const itemMedia = mediaContents.filter((content) => displayItemIdentity(content) === identity);
     const text = itemParts.map((part) => String(part.text ?? '')).join('\n\n');
     const firstPart = itemParts[0];
+
+    if (steering) {
+      parts.push({
+        kind: 'content', key: `steering-${identity}`, steering: true, media: itemMedia,
+        html: text ? renderMessage(text, { highlightCode: shouldHighlightCode.value, codeCopyButtons: true, attachmentLinks: true }) : '',
+        timestamp: formatTimeOfDay(firstPart?.created_at), showTimestamp: true,
+        stepSequence: item.step_sequence || 0, itemSequence: item.item_sequence || 0,
+        sequence: 0, stableId: item.item_id || index,
+      });
+      continue;
+    }
 
     if (isHandoffContextItemType(item.item_type)) {
       const section: HandoffContextSection = {
@@ -749,6 +769,7 @@ const messageParts = computed<Array<MessagePart | HandoffPart | HandoffCheckpoin
       continue;
     }
 
+    if (!isHandoffSystemEventItemType(item.item_type)) continue;
     parts.push({
       kind: 'handoff',
       key: `handoff-${identity || index}`,
@@ -849,6 +870,7 @@ const messageMediaContents = computed(() =>
 const regularMessageMediaContents = computed(() =>
   messageMediaContents.value.filter(
     (content) =>
+      !(msg.value.role === 'assistant' && content.item_type === 'steering') &&
       !isHandoffSystemEventItemType(content.item_type) &&
       !isHandoffContextItemType(content.item_type)
   )

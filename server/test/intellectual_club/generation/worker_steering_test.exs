@@ -83,6 +83,28 @@ defmodule IntellectualClub.Generation.WorkerSteeringTest do
       assert answer == "Restarted answer"
     end
 
+    test "attachment-only steering reaches the restarted provider and canonical trace" do
+      gen = generation_fixture!() |> start_generation!()
+      file = create_file!(filename: "direction.txt", payload: "New direction")
+
+      assert {:ok, queued} =
+               QueuedMessages.enqueue_steer(gen.message.id, %{file_ids: [file.id]}, gen.actor)
+
+      Worker.queue_changed(gen.worker)
+      {provider, request} = await_provider!(gen)
+      assert List.last(request["messages"])["content"] =~ to_string(file.external_id)
+      assert List.last(request["messages"])["content"] =~ "direction.txt"
+      assert {:ok, %{status: :delivered, contents: []}} = QueuedMessages.get(queued.id, gen.actor)
+      send(provider, {:complete, {:answer, "Read the attachment"}})
+      monitor = gen.monitor
+      worker = gen.worker
+      assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}, 5_000
+      message = message!(gen, steps: [items: [:contents]])
+      steering = message.steps |> Enum.flat_map(& &1.items) |> Enum.find(&(&1.type == :steering))
+      assert Enum.any?(steering.contents, &(&1.kind == :media and &1.file_id == file.id))
+      assert {:ok, {_file, "New direction"}} = IntellectualClub.Files.load_payload(file.id)
+    end
+
     test "steering during retry backoff invalidates stale stream and timer events" do
       put_app_env(:generation_auto_retry_backoff_ms, [60_000])
       put_app_env(:generation_auto_retry_jitter_ratio, 0.0)

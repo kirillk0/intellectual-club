@@ -853,7 +853,7 @@ export const ruMessages: Record<string, string> = {
     'Очередь приостановлена при копировании базы данных для превью.',
   'This queued message has already been dispatched.': 'Это сообщение из очереди уже отправлено.',
   'This queued message no longer contains sendable content.': 'В этом сообщении очереди больше нет содержимого для отправки.',
-  'Type a text instruction to steer the active generation.': 'Введите текстовую инструкцию для направления активной генерации.',
+  'Add text or an attachment to steer the active generation.': 'Добавьте текст или вложение для направления активной генерации.',
   'Wait for the active generation to stop before sending the next queued message.': 'Дождитесь остановки активной генерации перед отправкой следующего сообщения из очереди.',
   'Waiting': 'Ожидает',
   'A queued message must contain text or an attachment.': 'Сообщение в очереди должно содержать текст или вложение.',

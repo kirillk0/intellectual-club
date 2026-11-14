@@ -125,12 +125,29 @@ defmodule IntellectualClubWeb.Bff.ChatMessagesController do
       message_id = String.to_integer(id)
       content = params |> Map.get("content", "") |> to_string()
 
-      with {:ok, _message} <- fetch_owned_message(message_id, actor) do
-        case QueuedMessages.enqueue_steer(
-               message_id,
-               %{content: content, draft_revision: params["draft_revision"]},
-               actor
-             ) do
+      with {:ok, message} <- fetch_owned_message(message_id, actor) do
+        result =
+          with {:ok, uploads} <- ChatAttachments.parse_prepared_uploads(params) do
+            ChatAttachments.with_prepared_file_ids(
+              message.chat_id,
+              actor,
+              ChatUploadPolicy.load_for_chat(message.chat_id, actor),
+              uploads,
+              fn file_ids ->
+                QueuedMessages.enqueue_steer(
+                  message_id,
+                  %{
+                    content: content,
+                    file_ids: file_ids,
+                    draft_revision: params["draft_revision"]
+                  },
+                  actor
+                )
+              end
+            )
+          end
+
+        case result do
           {:ok, queued_message} ->
             notify_queued_message_changed(queued_message)
 

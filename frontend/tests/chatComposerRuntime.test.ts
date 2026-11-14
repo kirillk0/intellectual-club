@@ -283,11 +283,11 @@ describe('chat composer runtime', () => {
     expect(runtime.sendButtonLabel.value).toBe('Send');
   });
 
-  it('steers with text only, keeps pending files, and clears the acknowledged draft', async () => {
+  it('steers with text and attachments and clears the acknowledged draft', async () => {
     apiMocks.post.mockResolvedValueOnce({ queued_message: queuedSteer() });
     apiMocks.get.mockResolvedValueOnce(completedPoll(31));
     const { runtime } = createRuntime(31);
-    const file = pendingFile();
+    const file = uploadedPendingFile();
     runtime.pendingFiles.value = [file];
     runtime.draft.value = 'change direction';
 
@@ -296,13 +296,36 @@ describe('chat composer runtime', () => {
 
     expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-messages/31/steer', {
       content: 'change direction',
+      upload_ids: ['upload-pending-1'],
     });
     expect(runtime.draft.value).toBe('');
-    expect(runtime.pendingFiles.value).toEqual([file]);
+    expect(runtime.pendingFiles.value).toEqual([]);
     expect(apiMocks.get).toHaveBeenCalledWith(
       '/api/bff/chat-messages/31/poll?poll_protocol=cursor',
       expect.objectContaining({ showErrorBanner: false })
     );
+  });
+
+  it('steers with an attachment alone and preserves files added while awaiting acceptance', async () => {
+    let acknowledge!: (value: unknown) => void;
+    apiMocks.post.mockImplementationOnce(() => new Promise((resolve) => { acknowledge = resolve; }));
+    apiMocks.get.mockResolvedValueOnce(completedPoll(31));
+    const { runtime } = createRuntime(31);
+    runtime.pendingFiles.value = [uploadedPendingFile('submitted')];
+    expect(runtime.canSteerGeneration.value).toBe(true);
+
+    const request = runtime.steerGeneration();
+    await flushPromises();
+    runtime.pendingFiles.value.push(uploadedPendingFile('later'));
+    runtime.draft.value = 'New instruction';
+    acknowledge({ queued_message: queuedSteer() });
+    await request;
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-messages/31/steer', {
+      content: '', upload_ids: ['upload-submitted'],
+    });
+    expect(runtime.pendingFiles.value.map((file) => file.id)).toEqual(['later']);
+    expect(runtime.draft.value).toBe('New instruction');
   });
 
   it('routes the shared Ctrl/Cmd+Enter submit action to steering during generation', async () => {
@@ -336,7 +359,7 @@ describe('chat composer runtime', () => {
     apiMocks.isHttpError.mockImplementation((value) => value === error);
     apiMocks.post.mockRejectedValueOnce(error);
     const { runtime, queuedMessages, onQueuedMessageCreated } = createRuntime(31, false, [rejected]);
-    const file = pendingFile();
+    const file = uploadedPendingFile();
     runtime.pendingFiles.value = [file];
     runtime.draft.value = 'Keep this correction';
 

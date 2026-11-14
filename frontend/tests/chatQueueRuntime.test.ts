@@ -137,6 +137,21 @@ describe('chat queue runtime', () => {
     expect(runtime.editingQueuedMessage.value).toBeNull();
   });
 
+  it('edits steering into an attachment-only instruction', async () => {
+    const message = failedSteer();
+    apiMocks.patch.mockResolvedValueOnce({ queued_message: message });
+    const { runtime } = createRuntime([message]);
+    runtime.startEdit(message);
+    runtime.editContents.value = [''];
+    runtime.addEditPendingFiles([new File(['notes'], 'notes.txt', { type: 'text/plain' })]);
+    expect(runtime.editPendingFiles.value).toHaveLength(1);
+    await runtime.saveEdit();
+    expect(apiMocks.patch).toHaveBeenCalledWith('/api/bff/chat-queued-messages/20', {
+      content: '', upload_ids: ['upload-1'],
+    });
+    expect(runtime.editingQueuedMessage.value).toBeNull();
+  });
+
   it('removes an editable item using the authoritative canceled response', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     apiMocks.del.mockResolvedValueOnce({

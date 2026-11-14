@@ -988,7 +988,7 @@ defmodule IntellectualClub.Generation.Worker do
                      inject_steering_request(
                        state,
                        state.runtime_step.raw_request,
-                       Enum.map(specs, &%{text: &1.text, placement: :before_response})
+                       Enum.map(specs, &Map.put(&1, :placement, :before_response))
                      ) do
                 safe_request_persist_value(state, :queued_steering_before_response, fn ->
                   Persistence.persist_queued_steering_before_provider!(
@@ -1044,16 +1044,8 @@ defmodule IntellectualClub.Generation.Worker do
 
   defp queued_steering_specs(queued_messages) when is_list(queued_messages) do
     queued_messages
-    |> Enum.map(fn queued_message ->
-      text =
-        queued_message
-        |> QueuedMessages.content_specs()
-        |> Enum.filter(&(&1.kind == :text))
-        |> Enum.map_join("", &to_string(&1.content_text || ""))
-
-      %{id: queued_message.id, text: text, updated_at: queued_message.updated_at}
-    end)
-    |> Enum.reject(&(&1.text == ""))
+    |> Enum.map(&QueuedMessages.steering_spec/1)
+    |> Enum.reject(&(&1.contents == []))
     |> Enum.sort_by(& &1.id)
   end
 
@@ -2596,7 +2588,7 @@ defmodule IntellectualClub.Generation.Worker do
             case maybe_inject_steering(
                    state,
                    followup,
-                   Enum.map(specs, &%{text: &1.text, placement: :before_response})
+                   Enum.map(specs, &Map.put(&1, :placement, :before_response))
                  ) do
               {:ok, injected} -> {:ok, injected, specs}
               {:error, reason} -> {:error, {:steering_rejected, reason, specs}}

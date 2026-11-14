@@ -286,7 +286,8 @@ const showAttachments = computed(
     props.mode === 'edit' ||
     props.mode === 'branch' ||
     props.mode === 'branch_new_chat' ||
-    props.mode === 'queue_follow_up'
+    props.mode === 'queue_follow_up' ||
+    props.mode === 'queue_steer'
 );
 const attachmentsEnabled = computed(() => Boolean(props.attachmentsEnabled) && !saving.value);
 const hasAttachments = computed(

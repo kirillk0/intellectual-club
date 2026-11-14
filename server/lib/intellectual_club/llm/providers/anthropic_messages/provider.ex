@@ -144,7 +144,11 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages do
   def inject_steering(raw_request, steering_items, context)
       when is_map(raw_request) and is_list(steering_items) and is_map(context) do
     payload = RequestPayload.stringify_keys(raw_request)
-    steering_blocks = Enum.map(Steering.texts(steering_items), &%{"type" => "text", "text" => &1})
+
+    {_system, steering_messages} =
+      steering_items |> Steering.chat_messages(context, type()) |> Payload.from_chat_messages()
+
+    steering_blocks = Enum.flat_map(steering_messages, &Map.fetch!(&1, "content"))
 
     messages =
       payload

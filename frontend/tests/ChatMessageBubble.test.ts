@@ -43,6 +43,21 @@ const messageWithItem = (
 });
 
 describe('ChatMessageBubble fork timeline', () => {
+  it.each(['', 'Use this file'])('renders steering attachments with their instruction: %s', (text) => {
+    const item = { step_id: 1, step_sequence: 1, item_id: 2, item_sequence: 1, item_type: 'steering' };
+    const media = { ...item, id: 3, sequence: 2, kind: 'media',
+      media: { external_id: 'file-3', filename: 'direction.txt', mime_type: 'text/plain', size_bytes: 5, sha256: '', is_image: false } };
+    const message: ChatBranchMessage = { id: 1, role: 'assistant', status: 'done', content: {
+      items: [item], parts: text ? [{ ...item, content_id: 4, sequence: 1, text }] : [], media: [media],
+    } };
+    const wrapper = mount(ChatMessageBubble, { props: { message, index: 0 }, global: { stubs: { RouterLink: true } } });
+    expect(wrapper.get('.message-steering-part').text()).toContain('direction.txt');
+    expect(wrapper.get('.message-steering-part').text()).toContain(text);
+    if (!text) expect(wrapper.get('.message-steering-part').text()).not.toContain('…');
+    expect(wrapper.findAll('.chat-media-item')).toHaveLength(1);
+    expect(wrapper.find('.message-expanded-body > .chat-media-list').exists()).toBe(false);
+  });
+
   it('resolves attachment links as streamed Markdown becomes complete', async () => {
     const fileId = 'c6012361-90b8-4f6b-afb0-35729ae584c6';
     const message = (text: string): ChatBranchMessage => ({
