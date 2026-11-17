@@ -1,4 +1,22 @@
 export const ruMessages: Record<string, string> = {
+  'Lua': 'Lua',
+  'Lua source': 'Исходный код Lua',
+  'Manifest JSON': 'Манифест JSON',
+  'Run small Lua tools with per-chat-family state and explicitly allowed HTTP access.':
+    'Выполнение небольших Lua-инструментов с состоянием для каждого семейства чатов и явно разрешённым HTTP-доступом.',
+  'Lua code runs with per-chat-family state. Define the functions declared in the manifest.':
+    'Lua-код выполняется с состоянием для каждого семейства чатов. Определите функции, объявленные в манифесте.',
+  'Define functions with name, description and input_schema, and explicitly allow HTTP methods, URL patterns and secret names in permissions.http.':
+    'Опишите функции с полями name, description и input_schema. В permissions.http явно разрешите HTTP-методы, шаблоны URL и имена секретов.',
+  'Attach secrets on the Secrets tab and reference their environment variable names in permissions.http[].secrets. Never put secret values in source code or the manifest.':
+    'Прикрепите секреты на вкладке «Секреты» и укажите имена их переменных окружения в permissions.http[].secrets. Не помещайте значения секретов в исходный код или манифест.',
+  'Manifest must be a JSON object.': 'Манифест должен быть JSON-объектом.',
+  'Invalid manifest JSON. Enter a valid JSON object.': 'Невалидный JSON манифеста. Введите корректный JSON-объект.',
+  'Lua functions are defined in the manifest on the General tab; discovery is not used.':
+    'Функции Lua определяются в манифесте на вкладке «Общие»; обнаружение функций не используется.',
+  'No functions declared in the manifest.': 'В манифесте не объявлены функции.',
+  'Defined in the manifest': 'Определена в манифесте',
+  '{field} is required.': 'Обязательное поле: {field}.',
   "Inbox": "Входящие",
   "Archive": "Архив",
   "Archive chat": "Архивировать",

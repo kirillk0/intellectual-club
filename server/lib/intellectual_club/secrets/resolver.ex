@@ -30,6 +30,14 @@ defmodule IntellectualClub.Secrets.Resolver do
   def resolve_selected(_tool_instance, _requested, _execution_context),
     do: {:error, "Secret access requires a generation execution context."}
 
+  @doc "Resolves only named environment secrets attached to this tool, never knowledge blocks."
+  def resolve_tool_selected(tool_instance, names, %ExecutionContext{} = context) do
+    resolve_selected(tool_instance, names, %{context | available_secret_binding_external_ids: []})
+  end
+
+  def resolve_tool_selected(_tool_instance, _names, _context),
+    do: {:error, "Secret access requires a generation execution context."}
+
   @spec available_metadata(ToolInstance.t(), ExecutionContext.t() | nil) :: [map()]
   def available_metadata(%ToolInstance{} = tool_instance, %ExecutionContext{} = context) do
     with {:ok, actor} <- actor_for(context),

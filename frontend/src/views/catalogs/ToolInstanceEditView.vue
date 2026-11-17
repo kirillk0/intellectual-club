@@ -127,7 +127,7 @@
 
           <div v-if="currentToolType" class="tool-type-summary muted">
             <ToolTypeBadge :type="currentToolType.type" :typeTitle="currentToolType.title" />
-            <span v-if="currentToolType.description">{{ currentToolType.description }}</span>
+            <span v-if="currentToolType.description">{{ translate(currentToolType.description) }}</span>
           </div>
 
           <div v-if="isMcpHttp" class="stack mcp-headers-field">
@@ -177,7 +177,19 @@
           />
           <div v-if="isWebSearch && errors.hasField('config')" class="error-text">{{ errors.messageFor('config') }}</div>
 
-          <template v-if="configFields.length">
+          <LuaToolSettings
+            v-if="isLua"
+            :source="typeof form.config.source === 'string' ? form.config.source : ''"
+            :manifest-text="luaManifestText"
+            :source-error="configFieldErrorMessage('source')"
+            :manifest-error="luaManifestError || configFieldErrorMessage('manifest')"
+            :readonly="sharedReadonly || loading || saving || Boolean(loadError)"
+            @update:source="updateLuaSource"
+            @update:manifest-text="updateLuaManifest"
+          />
+          <div v-if="isLua && errors.hasField('config')" class="error-text" role="alert">{{ errors.messageFor('config') }}</div>
+
+          <template v-if="!isLua && configFields.length">
             <label
               v-for="field in configFields"
               :key="field.key"
@@ -316,9 +328,9 @@
             </label>
           </template>
 
-          <p v-else class="muted" style="margin-top: 4px">No additional settings for this tool type.</p>
+          <p v-else-if="!isLua" class="muted" style="margin-top: 4px">No additional settings for this tool type.</p>
 
-          <details class="card" style="padding: 10px">
+          <details v-if="!isLua" class="card" style="padding: 10px">
             <summary class="muted">Advanced JSON</summary>
             <div class="stack" style="gap: 10px; margin-top: 10px">
               <div class="flex" style="justify-content: space-between; align-items: center; gap: 10px">
@@ -605,7 +617,8 @@
           <p v-if="supportsDiscovery && isMcpHttp" class="muted">
             {{ translate('Functions are discovered automatically after saving.') }}
           </p>
-          <p v-if="functionsMode === 'fixed'" class="muted">This tool provides fixed functions and does not use discovery.</p>
+          <p v-if="isLua" class="muted">{{ translate('Lua functions are defined in the manifest on the General tab; discovery is not used.') }}</p>
+          <p v-else-if="functionsMode === 'fixed'" class="muted">This tool provides fixed functions and does not use discovery.</p>
           <p v-else-if="supportsDiscovery && isNew && !isMcpHttp" class="muted">Save the tool before discovering functions.</p>
           <p v-else-if="functionsLoading" class="muted">Loading…</p>
           <p v-else-if="functionsError" class="error-text">{{ functionsError }}</p>
@@ -615,11 +628,13 @@
               {{
                 discovering
                   ? 'Discovering…'
-                  : functionsMode === 'stored'
-                    ? supportsDiscovery
-                      ? 'No functions yet. Run discovery.'
-                      : 'No functions yet.'
-                    : 'Fixed functions are provided by the driver.'
+                  : isLua
+                    ? translate('No functions declared in the manifest.')
+                    : functionsMode === 'stored'
+                      ? supportsDiscovery
+                        ? 'No functions yet. Run discovery.'
+                        : 'No functions yet.'
+                      : 'Fixed functions are provided by the driver.'
               }}
             </p>
 
@@ -631,7 +646,7 @@
                       {{ fn.name }}
                     </div>
                     <div v-if="fn.description" class="muted" style="font-size: 0.85rem">
-                      {{ fn.fixed ? translate(fn.description) : fn.description }}
+                      {{ fn.fixed && !isLua ? translate(fn.description) : fn.description }}
                     </div>
                     <div v-if="fn.discovered_at" class="muted" style="font-size: 0.85rem; margin-top: 4px">
                       Discovered: {{ formatRelativeDateTime(fn.discovered_at) }}
@@ -647,7 +662,7 @@
                     />
                     enabled
                   </label>
-                  <span v-else class="badge muted" title="Built-in fixed function">fixed</span>
+                  <span v-else class="badge muted" :title="translate(isLua ? 'Defined in the manifest' : 'Built-in fixed function')">fixed</span>
                 </div>
 
                 <label
@@ -758,6 +773,7 @@ import { highlightCodeBlocks } from '@/utils/syntaxHighlight';
 import ToolTypeBadge from '@/components/ToolTypeBadge.vue';
 import ToolTypeSelect from '@/components/ToolTypeSelect.vue';
 import WebSearchProviderSettings from '@/features/tools/components/WebSearchProviderSettings.vue';
+import LuaToolSettings from '@/features/tools/components/LuaToolSettings.vue';
 import ManagedSecretsSection from '@/features/catalogs/components/secrets/ManagedSecretsSection.vue';
 import { useManagedSecretsState } from '@/features/catalogs/model/useManagedSecretsState';
 
@@ -1177,7 +1193,7 @@ const loadError = editor.loadError;
 const remoteUpdateAvailable = editor.remoteUpdateAvailable;
 const reloadRemoteDocument = editor.reloadRemoteDocument;
 const keepEditingRemoteDocument = editor.keepEditingRemoteDocument;
-const supportsManagedSecrets = computed(() => ['ssh', 'outlet'].includes(String(form.type || '').trim()));
+const supportsManagedSecrets = computed(() => ['ssh', 'outlet', 'lua'].includes(String(form.type || '').trim()));
 const managedSecretsParentId = editor.numericId;
 const managedSecrets = useManagedSecretsState({
   parent: 'tool-instances',
@@ -1190,8 +1206,9 @@ const managedSecretsError = managedSecrets.error;
 const managedSecretsDirty = managedSecrets.dirty;
 const replaceManagedSecrets = managedSecrets.replaceSecrets;
 const saving = computed(() => editor.saving.value || managedSecrets.syncing.value);
-const dirty = computed(() => editor.dirty.value || managedSecretsDirty.value);
+const dirty = computed(() => editor.dirty.value || managedSecretsDirty.value || luaManifestDraftDirty.value);
 editor.registerDirtySource(() => managedSecretsDirty.value);
+editor.registerDirtySource(() => luaManifestDraftDirty.value);
 useUnsavedChangesGuard(computed(() => dirty.value && !saving.value));
 const sharedReadonly = computed(() => !isNew.value && form.can_edit === false);
 const sharing = useResourceGroupSharing({
@@ -1222,11 +1239,46 @@ const aliasTouched = ref(false);
 
 const configText = ref('{}\n');
 const configError = ref<string | null>(null);
+const luaManifestText = ref('{}\n');
+const luaManifestBaseText = ref('{}\n');
+const luaManifestDraftDirty = computed(
+  () => isLua.value && luaManifestText.value !== luaManifestBaseText.value
+);
+const luaManifestValidation = computed(() => {
+  try {
+    const parsed: unknown = JSON.parse(luaManifestText.value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { value: null, error: translate('Manifest must be a JSON object.') };
+    }
+    return { value: parsed as Record<string, unknown>, error: null };
+  } catch {
+    return { value: null, error: translate('Invalid manifest JSON. Enter a valid JSON object.') };
+  }
+});
+const luaManifestError = computed(() => luaManifestValidation.value.error);
 
 const resetConfigText = () => {
   configText.value = `${JSON.stringify(form.config || {}, null, 2)}\n`;
   configError.value = null;
+  luaManifestText.value = `${JSON.stringify(form.config.manifest ?? {}, null, 2)}\n`;
+  luaManifestBaseText.value = luaManifestText.value;
 };
+
+function updateLuaSource(source: string) {
+  if (sharedReadonly.value || loading.value || saving.value) return;
+  form.config = { ...form.config, source };
+  clearConfigFieldErrors('source');
+}
+
+function updateLuaManifest(text: string) {
+  if (sharedReadonly.value || loading.value || saving.value) return;
+  luaManifestText.value = text;
+  clearConfigFieldErrors('manifest');
+  const parsed = luaManifestValidation.value;
+  if (!parsed.error && parsed.value) {
+    form.config = { ...form.config, manifest: parsed.value };
+  }
+}
 
 const handleConfigInput = () => {
   const text = configText.value || '';
@@ -1278,6 +1330,7 @@ const currentToolType = computed<ToolDriverMeta | null>(() => {
   return meta || null;
 });
 
+const isLua = computed(() => form.type === 'lua');
 const isWebSearch = computed(() => form.type === 'native-web-search');
 function updateWebSearchConfig(config: Record<string, unknown>) {
   form.config = config;
@@ -1823,7 +1876,11 @@ const visibleSecretsFields = computed(() => {
 function configErrorKeys(fieldKey: string): string[] {
   const key = String(fieldKey || '').trim();
   if (!key) return [];
-  return [`config/${key}`, `config.${key}`, key];
+  const paths = [`config/${key}`, `config.${key}`, key];
+  const nested = Object.keys(errors.fieldErrors.value).filter((errorKey) =>
+    paths.some((path) => errorKey.startsWith(`${path}/`) || errorKey.startsWith(`${path}.`))
+  );
+  return [...paths, ...nested];
 }
 
 function configFieldHasError(fieldKey: string): boolean {
@@ -1860,7 +1917,7 @@ function validateRequiredConfigFields(): boolean {
 
     if (requiredConfigValuePresent((form.config as any)[field.key])) continue;
 
-    errors.setField(`config/${field.key}`, `${fieldLabel(field.key, field.schema)} is required.`);
+    errors.setField(`config/${field.key}`, translate('{field} is required.', { field: fieldLabel(field.key, field.schema) }));
     valid = false;
   }
 
@@ -1966,6 +2023,9 @@ watch(
   () => errors.fieldErrors.value,
   (fieldErrors) => {
     if (fieldErrors.description?.length) toolTab.value = 'description';
+    else if (isLua.value && (fieldErrors.config?.length || configFieldHasError('source') || configFieldHasError('manifest'))) {
+      toolTab.value = 'settings';
+    }
   }
 );
 
@@ -2106,7 +2166,20 @@ watch(
 );
 
 function setFixedFunctions() {
-  const fixed = currentToolType.value?.fixed_functions || [];
+  const manifest = normalizeObject(form.config.manifest);
+  const fixed = isLua.value
+    ? (Array.isArray(manifest.functions) ? manifest.functions : []).map((entry) => {
+        const fn = normalizeObject(entry);
+        return {
+          name: typeof fn.name === 'string' ? fn.name : '',
+          description: typeof fn.description === 'string' ? fn.description : '',
+          parameters_schema: fn.input_schema,
+          enabled: true,
+          safe_to_interrupt: false,
+          is_background_function: false,
+        };
+      })
+    : currentToolType.value?.fixed_functions || [];
   const overrides = new Map(persistedFunctionRows.value.map((fn) => [fn.name, fn]));
 
   functions.value = (fixed || []).map((fn, index) => ({
@@ -2118,13 +2191,20 @@ function setFixedFunctions() {
     safe_to_interrupt: fn.safe_to_interrupt === true,
     parameters_schema: fn.parameters_schema,
     discovered_at: overrides.get(String(fn.name || '').trim())?.discovered_at ?? '',
-    readonly: false,
+    readonly: isLua.value,
     fixed: true,
     background: fn.is_background_function === true,
   }));
   functionsError.value = null;
   functionsLoading.value = false;
 }
+
+watch(
+  () => form.config.manifest,
+  () => {
+    if (isLua.value) setFixedFunctions();
+  }
+);
 
 function applyToolDocument(payload: JsonApiSingleResponse) {
   const includedIndex = createJsonApiIncludedIndex(payload.included);
@@ -2154,6 +2234,11 @@ watch(
 
     if (!recordChanged && !newToolTypeChanged) return;
 
+    if (newToolTypeChanged && toolType === 'lua') {
+      form.config = { ...normalizeObject(currentToolType.value?.default_config) };
+      form.open_header_rows = [];
+      form.secret_header_rows = [];
+    }
     syncDefaultsForFormAndBase();
     discoverStats.value = null;
     functions.value = [];
@@ -2312,7 +2397,12 @@ async function toggleFunctionInterruption(fn: ToolFunctionRow, event: Event) {
 }
 
 const saveWithValidation = async () => {
-  if (discovering.value) return;
+  if (discovering.value || sharedReadonly.value) return;
+
+  if (isLua.value && luaManifestError.value) {
+    toolTab.value = 'settings';
+    return;
+  }
 
   if (configError.value) {
     alert('Fix JSON errors before saving.');

@@ -76,6 +76,7 @@ defmodule IntellectualClub.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:jsonpatch, "2.3.1"},
+      {:lua, "1.0.2"},
       {:req, "~> 0.7.5"},
       {:web_push_elixir, "~> 0.8.0"},
       {:mint_web_socket, "~> 1.0"},

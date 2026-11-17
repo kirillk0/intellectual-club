@@ -7,6 +7,7 @@ defmodule IntellectualClub.Tools.RegistryTest do
 
   # {type, supports_artifacts?, supports_handoff?}
   @capabilities [
+    {"lua", false, false},
     {"mcp-http", false, false},
     {"native-agent-management", false, true},
     {"native-artifact-reader", true, false},
@@ -74,6 +75,17 @@ defmodule IntellectualClub.Tools.RegistryTest do
       assert metadata["fixed_functions"]
              |> Enum.map(& &1["name"])
              |> Enum.sort() == ["read_file", "read_image", "search_file", "upload_file"]
+    end
+
+    test "Lua exposes editable defaults and static manifest metadata" do
+      metadata = DriverMetadata.for_type("lua")
+      assert metadata["functions_mode"] == "fixed"
+      assert metadata["supports_discovery"] == false
+      assert metadata["secrets_schema"] == nil
+      assert is_binary(metadata["default_config"]["source"])
+
+      assert [%{"name" => "increment", "parameters_schema" => %{"type" => "object"}}] =
+               metadata["fixed_functions"]
     end
 
     test "game tools expose the random_select schema" do

@@ -132,6 +132,14 @@ defmodule IntellectualClub.SecretsTest do
     assert {:ok, %{"TOOL_TOKEN" => "tool-value", "BLOCK_TOKEN" => "block-value"}} =
              Resolver.resolve_selected(tool, ["TOOL_TOKEN", "BLOCK_TOKEN"], context)
 
+    assert {:ok, %{"TOOL_TOKEN" => "tool-value"}} =
+             Resolver.resolve_tool_selected(tool, ["TOOL_TOKEN"], context)
+
+    assert {:error, "Secret `BLOCK_TOKEN` is not available to this tool call."} =
+             Resolver.resolve_tool_selected(tool, ["BLOCK_TOKEN"], context)
+
+    assert {:error, _} = Resolver.resolve_tool_selected(tool, ["TOOL_TOKEN"], nil)
+
     context_without_block = %{context | available_secret_binding_external_ids: []}
 
     assert {:error, "Secret `BLOCK_TOKEN` is not available to this tool call."} =

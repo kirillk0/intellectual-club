@@ -27,6 +27,8 @@ defmodule IntellectualClub.Application do
       {Task.Supervisor, name: IntellectualClub.Outlets.BackgroundTaskSupervisor},
       {IntellectualClub.Outlets.Runtime, []},
       {IntellectualClub.Tools.RateLimiter, []},
+      {IntellectualClub.Tools.Lua.Admission, []},
+      {IntellectualClub.Tools.Lua.Sandbox, []},
       {Task.Supervisor, name: IntellectualClub.Tools.WebSearchTaskSupervisor},
       IntellectualClub.Tools.DocumentWorker,
       {IntellectualClub.Notifications.ActiveWebPushClients, []},

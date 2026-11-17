@@ -5,6 +5,7 @@ defmodule IntellectualClub.Tools.Registry do
   For MVP we keep it simple and register a small fixed set of tool types.
   """
 
+  alias IntellectualClub.Tools.Drivers.Lua
   alias IntellectualClub.Tools.Drivers.McpHttp
   alias IntellectualClub.Tools.Drivers.NativeAgentManagement
   alias IntellectualClub.Tools.Drivers.NativeArtifactReader
@@ -20,6 +21,7 @@ defmodule IntellectualClub.Tools.Registry do
   @spec driver_for_type!(String.t()) :: module()
   def driver_for_type!(tool_type) when is_binary(tool_type) do
     case String.trim(tool_type) do
+      "lua" -> Lua
       "mcp-http" -> McpHttp
       "mcp_http" -> McpHttp
       "native-agent-management" -> NativeAgentManagement
@@ -76,6 +78,7 @@ defmodule IntellectualClub.Tools.Registry do
   @spec list_types() :: list(String.t())
   def list_types do
     [
+      "lua",
       "mcp-http",
       "native-agent-management",
       "native-artifact-reader",

@@ -11,6 +11,7 @@ const TOOL_TYPE_LABELS: Record<string, string> = {
   'native-web-search': 'Web Search & Fetch',
   'native-knowledge-library': 'Knowledge Library',
   'native-web-reader': 'Web Reader',
+  lua: 'Lua',
   outlet: 'Outlet',
   ssh: 'SSH',
 };
@@ -24,6 +25,7 @@ const TOOL_TYPE_ICONS: Record<string, string> = {
   'native-game-tools': 'tool-dice',
   'native-knowledge-library': 'tool-book',
   'native-web-reader': 'tool-globe',
+  lua: 'tool-terminal',
   outlet: 'tool-outlet',
   ssh: 'tool-terminal',
 };
