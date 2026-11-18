@@ -838,7 +838,7 @@ export const ruMessages: Record<string, string> = {
   'Search blocks': 'Поиск блоков',
   'Search bookmarks': 'Поиск закладок',
   'Search bots': 'Поиск ботов',
-  'Search chats': 'Поиск чатов',
+  'Search inbox and archive': 'Поиск по активным и архивным чатам',
   'Search configurations': 'Поиск конфигураций',
   'Type to search all configurations': 'Начните печатать для поиска по всем конфигурациям',
   'Search groups': 'Поиск групп',

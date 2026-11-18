@@ -458,22 +458,19 @@ describe('chat list refresh after returning from the background', () => {
     expect(showErrorBanner(new HttpError({ status: 500, statusText: 'Error', bodyText: '', bodyJson: null }))).toBe(true);
   });
 
-  it('refreshes search results with one silent request from the idle probe', async () => {
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
-      return isSearchPath(path) ? searchPayload('Old search') : listPayload();
-    });
+  it('refreshes search results independently of the selected list revision', async () => {
+    apiMocks.get.mockImplementation(async (path: string) =>
+      isSearchPath(path) ? searchPayload('Old search') : listPayload());
     await mountList('/chats?q=needle');
     expect(searchRequests()).toHaveLength(1);
-    apiMocks.get.mockImplementation(async (path: string) => {
-      if (path.startsWith('/api/bff/chat-list/idle-state?')) return { revision: 'changed' };
-      return isSearchPath(path) ? searchPayload('Fresh search') : listPayload();
-    });
+    apiMocks.get.mockImplementation(async (path: string) =>
+      isSearchPath(path) ? searchPayload('Fresh search') : undefined);
 
     await vi.advanceTimersByTimeAsync(30_000);
     await flushPromises();
 
     expect(searchRequests()).toHaveLength(2);
+    expect(idleRequests()).toHaveLength(0);
     expect(searchRequests()[1][1]).toMatchObject({ showErrorBanner: false });
     expect(searchParams(searchRequests()[1]).has('after')).toBe(false);
     expect(searchParams(searchRequests()[1]).get('limit')).toBe('30');
@@ -500,10 +497,46 @@ describe('chat list refresh after returning from the background', () => {
     expect(params.get('exact')).toBe('1');
     expect(params.get('bot')).toBe('5');
     expect(params.get('limit')).toBe('30');
-    for (const key of ['after', 'sections', 'section', 'page', 'per_page', ...SECTIONS.flatMap((section) => [`page_${section}`, `after_${section}`])]) {
+    for (const key of ['after', 'view', 'sections', 'section', 'page', 'per_page', ...SECTIONS.flatMap((section) => [`page_${section}`, `after_${section}`])]) {
       expect(params.has(key)).toBe(false);
     }
     expect(wrapper.get('.chat-search__exact').attributes('aria-pressed')).toBe('true');
+  });
+
+  it('keeps mixed search results and their cursor when switching views, then clears to the selected list', async () => {
+    const active = searchChat(1, 'Active note');
+    const archived = searchChat(2, 'Archived note');
+    archived.read_state.is_archived = true;
+    apiMocks.get.mockImplementation(async (path: string) => {
+      const params = searchParams([path]);
+      if (!isSearchPath(path)) return groupedListRows([params.get('view') === 'archive' ? archived : active]);
+      if (params.has('after')) return searchResults({ chats: [active], hits: [hit(9, 1)] });
+      return searchResults({ chats: [active, archived], notes: [1, 2], hits: [hit(10, 2)], next_cursor: 'next' });
+    });
+    await mountList();
+    await wrapper.get('input[type="search"]').setValue('needle');
+    await vi.advanceTimersByTimeAsync(600);
+    await flushPromises();
+    expect(hitLinks()).toEqual(['/chats/2?focusMessage=10']);
+
+    await wrapper.get('.chat-inbox-views button:last-child').trigger('click');
+    await flushPromises();
+    expect(searchRequests()).toHaveLength(1);
+    expect(wrapper.get('[data-section="notes"]').findAll('.chat-row').map((row) => row.text()))
+      .toEqual(['Active note - No bot', 'Archived note - No bot']);
+    expect(hitLinks()).toEqual(['/chats/2?focusMessage=10']);
+
+    await wrapper.get('.chat-search-more button').trigger('click');
+    await flushPromises();
+    expect(searchParams(searchRequests()[1]).get('after')).toBe('next');
+    expect(hitLinks()).toEqual(['/chats/2?focusMessage=10', '/chats/1?focusMessage=9']);
+
+    await wrapper.get('input[type="search"]').setValue('');
+    await flushPromises();
+    expect(searchParams(listRequests().at(-1)!).get('view')).toBe('archive');
+    expect(new URLSearchParams(window.location.search).get('q')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('view')).toBe('archive');
+    expect(wrapper.findAll('.chat-row').map((row) => row.text())).toEqual(['Archived note - No bot']);
   });
 
   it('groups adjacent hits under one chat header, highlights terms and links to the focused message', async () => {

@@ -51,8 +51,8 @@
                   v-model="chatSearchTerm"
                   type="search"
                   class="full"
-                  placeholder="Search chats"
-                  aria-label="Search chats"
+                  :placeholder="translate('Search inbox and archive')"
+                  :aria-label="translate('Search inbox and archive')"
                 />
                 <button
                   type="button"
@@ -69,7 +69,7 @@
               </div>
             </section>
 
-            <section v-if="error && !chats.length" class="card stack chat-list-error" role="alert">
+            <section v-if="error && !chats.length && !hasChatSearch" class="card stack chat-list-error" role="alert">
               <p class="error-text">{{ error }}</p>
             </section>
 
@@ -112,6 +112,7 @@
                         @open-actions="openChatActions(entry.chat, $event)"
                       >
                         <template #badges>
+                          <span v-if="hasChatSearch && entry.chat.read_state?.is_archived" class="badge">{{ translate('Archive') }}</span>
                           <span
                             v-if="entry.chat.shared_outgoing"
                             class="share-indicator"
@@ -490,10 +491,6 @@ function readBotFilterQuery(value: unknown) {
   return Number.isInteger(id) && id > 0 ? String(id) : '';
 }
 
-function sameQueryValue(current: unknown, next: string | undefined) {
-  return getQueryString(current) === (next ?? '');
-}
-
 let unmounted = false;
 const loading = ref(true);
 const creating = ref(false);
@@ -542,7 +539,6 @@ function setArchiveView(view: ArchiveView) {
   sectionActionsAnchor.value = null;
   closeChatActions();
   resetSectionPageNumbers();
-  resetChatSearch();
   chats.value = [];
   chatListIdleRevision.value = null;
   void loadChats();
@@ -640,19 +636,6 @@ function syncChatListRouteQuery() {
   if (page) next.page = page;
   else delete (next as Record<string, unknown>).page;
 
-  if (
-    sameQueryValue(new URLSearchParams(window.location.search).get('view') ?? undefined, next.view as string | undefined) &&
-    sameQueryValue(route.query.q, q || undefined) &&
-    sameQueryValue(route.query.exact, exact) &&
-    sameQueryValue(route.query.bot, bot || undefined) &&
-    sameQueryValue(route.query.page, page) &&
-    sameQueryValue(route.query.draftsPage, next.draftsPage as string | undefined) &&
-    sameQueryValue(route.query.unreadPage, next.unreadPage as string | undefined) &&
-    sameQueryValue(route.query.workingPage, next.workingPage as string | undefined)
-  ) {
-    return;
-  }
-
   const params = new URLSearchParams();
   Object.entries(next).forEach(([key, value]) => {
     if (Array.isArray(value)) {
@@ -665,6 +648,7 @@ function syncChatListRouteQuery() {
   });
 
   const queryString = params.toString();
+  if (queryString === new URLSearchParams(window.location.search).toString()) return;
   const path = window.location.pathname || route.path || '/';
   window.history.replaceState(
     window.history.state,
@@ -679,7 +663,7 @@ watch(
     const nextView = view === 'archive' ? 'archive' : 'inbox';
     const viewChanged = archiveView.value !== nextView;
     archiveView.value = nextView;
-    if (viewChanged) { chats.value = []; resetChatSearch(); }
+    if (viewChanged) chats.value = [];
     const nextQ = getQueryString(q);
     const nextExact = readExactQuery(exact);
     const nextBot = readBotFilterQuery(bot);
@@ -1053,7 +1037,7 @@ function matchesArchiveView(chat: ChatSummary) {
   return chat.subagent || Boolean(chat.read_state?.is_archived) === (archiveView.value === 'archive');
 }
 const filteredChats = computed(() => chats.value.filter((chat) => matchesBotFilter(chat) && matchesArchiveView(chat)));
-const filteredChatSearchResults = computed(() => chatSearchResults.value.filter((chat) => matchesBotFilter(chat) && matchesArchiveView(chat)));
+const filteredChatSearchResults = computed(() => chatSearchResults.value.filter(matchesBotFilter));
 const visibleChats = computed(() => (hasChatSearch.value ? filteredChatSearchResults.value : filteredChats.value));
 const visibleGenerationChats = computed(() => flattenChatRows(visibleChats.value));
 const hasVisibleGeneratingChat = computed(() =>
@@ -1665,7 +1649,6 @@ async function runChatSearch(
   try {
     const params = new URLSearchParams();
     params.set('q', term);
-    params.set('view', archiveView.value);
     if (chatSearchExact.value) params.set('exact', '1');
     // A silent refresh re-reads every hit already shown in one request.
     const limit = append || !silent
@@ -1928,6 +1911,12 @@ async function runChatListIdleProbe(signal: AbortSignal, forceRefresh = false) {
   if (!forceRefresh && !canRunChatListIdleProbe()) return;
   if (forceRefresh && (!layer.active.value || document.visibilityState !== 'visible' || loading.value || chatSearchLoading.value || chatSearchLoadingMore.value)) return;
 
+  // A single view's idle revision cannot validate results from both views.
+  if (hasChatSearch.value) {
+    await runChatSearch(chatSearchTerm.value.trim(), { silent: true, showErrorBanner: false, signal });
+    return;
+  }
+
   const seq = chatListLoadSeq;
   const payload = await api.get<ChatListIdleStatePayload | undefined>(
     `/api/bff/chat-list/idle-state?${chatListIdleProbeParams().toString()}`,
@@ -1938,13 +1927,7 @@ async function runChatListIdleProbe(signal: AbortSignal, forceRefresh = false) {
   if (payload && 'next_read_state_expiry' in payload) nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
   // Only an applied list response acknowledges its revision, so failed loads retry.
 
-  if (hasChatSearch.value) {
-    const term = chatSearchTerm.value.trim();
-    if (term) await runChatSearch(term, { silent: true, showErrorBanner: false, signal });
-    return;
-  }
-
-  await loadChats({ silent: true, showErrorBanner: false, signal });
+  if (!hasChatSearch.value) await loadChats({ silent: true, showErrorBanner: false, signal });
 }
 
 function startChatListIdlePolling(opts: { immediate?: boolean } = {}) {
@@ -2161,7 +2144,7 @@ watch(
 );
 
 watch(
-  () => [botFilter.value, chatSearchExact.value, archiveView.value],
+  () => [botFilter.value, chatSearchExact.value],
   () => {
     chatListIdleRevision.value = null;
     resetChatSearch();

@@ -177,10 +177,11 @@ for already-open clients and other existing callers.
 
 `GET /api/bff/chat-list/search?q=...&exact=1&bot=...&after=...&limit=30`
 
-Chat-list search returns message hits, newest first, plus chats whose note
-matches. Bot names are not searched; the bot filter panel covers that. There
-are no list sections in search mode and no per-chat grouping or ranking on the
-server: clients group neighbouring hits of one chat themselves.
+Chat-list search covers both inbox and archived chats. It returns message
+hits, newest first, plus chats whose note matches. Bot names are not searched;
+the bot filter panel covers that. There are no list sections in search mode and
+no per-chat grouping or ranking on the server: clients group neighbouring hits
+of one chat themselves.
 
 Parameters:
 
@@ -275,13 +276,12 @@ in conversation order, each with the full `content` and a `snippet`.
 
 ## Personal archive in the chat-list BFF
 
-`GET /api/bff/chat-list`, `/api/bff/chat-list/idle-state`, and
-`/api/bff/chat-list/search` accept `view=inbox|archive` (default `inbox`). Invalid
-values return 422. Mode filtering happens before section/message pagination;
-sidebar counts are scoped to the mode, but not the selected bot. Both grouped
-and individual section reads support it. Idle revisions and search cursors
-include the mode; discard cursors when switching modes. Direct chat access and
-the general Ash message-search API are unaffected by this inbox presentation.
+`GET /api/bff/chat-list` and `/api/bff/chat-list/idle-state` accept
+`view=inbox|archive` (default `inbox`). The selected view scopes grouped and
+individual section reads before pagination, sidebar counts and idle revisions.
+Sidebar counts include all bots in that view. For compatibility,
+`/api/bff/chat-list/search` still accepts either view value. Both yield the
+same results, and a search cursor works across views. Invalid view values return 422.
 
 `read_state.is_archived` is an additive boolean in chat summaries and detail
 payloads. Archive state is independent of `can_edit`. The existing

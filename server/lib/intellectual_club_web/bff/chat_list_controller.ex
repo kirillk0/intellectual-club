@@ -223,7 +223,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   """
   def search(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
-         {:ok, view} <- ChatParams.archive_view(params),
+         {:ok, _view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
       term = params |> Map.get("q", "") |> to_string()
 
@@ -232,7 +232,6 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
                ChatSearch.search_chat_list(term, actor,
                  exact?: ChatParams.flag?(params, "exact"),
                  bot_filter: bot_filter,
-                 view: view,
                  after: params["after"],
                  limit: ChatParams.search_limit(params)
                ) do
