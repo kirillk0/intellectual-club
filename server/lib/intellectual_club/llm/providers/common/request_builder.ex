@@ -23,20 +23,12 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   """
   def build_responses_payload(model_name, parameters, messages, opts \\ [])
       when is_list(opts) do
-    include = Keyword.get(opts, :include, [])
-    instructions = Keyword.get(opts, :instructions)
-    tools = Keyword.get(opts, :tools, [])
-
-    parameters
-    |> normalize_parameters()
-    |> normalize_responses_parameters()
-    |> Map.put("model", model_name)
-    |> Map.put("input", normalize_responses_input(messages))
-    |> Map.put("stream", true)
-    |> Map.put("store", false)
-    |> maybe_put_instructions(instructions)
-    |> maybe_put_responses_tools(tools)
-    |> maybe_put_include(include)
+    build_responses_payload_from_input_items(
+      model_name,
+      parameters,
+      normalize_responses_input(messages),
+      opts
+    )
   end
 
   @doc """
@@ -45,17 +37,16 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
   def build_responses_payload_from_input_items(model_name, parameters, input_items, opts \\ [])
       when is_list(input_items) and is_list(opts) do
     include = Keyword.get(opts, :include, [])
-    instructions = Keyword.get(opts, :instructions)
     tools = Keyword.get(opts, :tools, [])
+    input = normalize_responses_items(input_items)
 
     parameters
     |> normalize_parameters()
     |> normalize_responses_parameters()
     |> Map.put("model", model_name)
-    |> Map.put("input", normalize_responses_items(input_items))
+    |> Map.put("input", prepend_system_prompt(input, Keyword.get(opts, :system_prompt)))
     |> Map.put("stream", true)
     |> Map.put("store", false)
-    |> maybe_put_instructions(instructions)
     |> maybe_put_responses_tools(tools)
     |> maybe_put_include(include)
   end
@@ -275,20 +266,24 @@ defmodule IntellectualClub.Llm.Providers.Common.RequestBuilder do
 
   defp chat_completions_function_name(_tool), do: ""
 
-  defp maybe_put_instructions(payload, instructions) when is_map(payload) do
-    instructions =
-      (instructions || "")
-      |> to_string()
-      |> String.trim()
+  defp prepend_system_prompt(input, prompt) when is_binary(prompt) do
+    case String.trim(prompt) do
+      "" ->
+        input
 
-    has_instructions? = Map.has_key?(payload, "instructions")
-
-    if instructions != "" and not has_instructions? do
-      Map.put(payload, "instructions", instructions)
-    else
-      payload
+      text ->
+        [
+          %{
+            "type" => "message",
+            "role" => "developer",
+            "content" => [%{"type" => "input_text", "text" => text}]
+          }
+          | input
+        ]
     end
   end
+
+  defp prepend_system_prompt(input, _prompt), do: input
 
   defp maybe_put_responses_tools(payload, tools) when is_map(payload) do
     {payload, configured_tools} = pop_responses_tools(payload)

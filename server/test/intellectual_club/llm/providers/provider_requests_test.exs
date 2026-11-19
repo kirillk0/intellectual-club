@@ -441,8 +441,17 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
                "prompt_cache_key"
              ] == "intellectual-club:user:456"
 
-      assert result.raw_request["instructions"] == "Use tools when needed."
-      assert is_list(result.raw_request["input"])
+      refute Map.has_key?(result.raw_request, "instructions")
+
+      assert [
+               %{
+                 "type" => "message",
+                 "role" => "developer",
+                 "content" => [%{"type" => "input_text", "text" => "Use tools when needed."}]
+               },
+               %{"role" => "user"}
+             ] = result.raw_request["input"]
+
       assert is_list(result.raw_request["tools"])
 
       assert result.request_snapshot.model_input == result.raw_request["input"]
@@ -452,6 +461,21 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
                %{"prompt_cache_key" => "intellectual-club:chat:123"},
                %{owner_id: 456}
              ) == %{"prompt_cache_key" => "intellectual-club:user:456"}
+    end
+
+    test "blank system prompts leave history first and request-only instructions out of the snapshot" do
+      for prompt <- [nil, " \n "] do
+        result =
+          Responses.build_initial_request(%{
+            history: [%{role: :user, content: "Hello"}],
+            system_prompt: prompt,
+            parameters: %{"instructions" => "Only for this request"}
+          })
+
+        assert [%{"role" => "user"}] = result.raw_request["input"]
+        assert result.raw_request["instructions"] == "Only for this request"
+        assert result.request_snapshot.system_prompt == ""
+      end
     end
 
     test "responses_wss provider metadata and request building delegate to responses provider" do
@@ -574,10 +598,10 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
       raw_request =
         RequestBuilder.build_responses_payload_from_input_items(
           "gpt-5",
-          %{},
+          %{"instructions" => "Only for this request"},
           input_items,
           include: ["reasoning.encrypted_content"],
-          instructions: "System",
+          system_prompt: "System",
           tools: []
         )
 
@@ -621,7 +645,7 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
           context: %{
             provider_base_url: "https://openrouter.ai/api/v1",
             model_name: "gpt-5",
-            parameters: %{},
+            parameters: %{"instructions" => "Only for this request"},
             system_prompt: "System",
             supports_image_input: false,
             chat_id: 123,
@@ -634,7 +658,10 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
 
       input = followup.raw_request["input"]
 
-      assert Enum.at(input, 0) == hd(input_items)
+      assert raw_request["instructions"] == "Only for this request"
+      refute Map.has_key?(followup.raw_request, "instructions")
+      assert Enum.take(input, 2) == raw_request["input"]
+      assert Enum.count(input, &(&1["role"] == "developer")) == 1
 
       assert Enum.any?(input, fn item ->
                item["type"] == "reasoning" and not Map.has_key?(item, "id")

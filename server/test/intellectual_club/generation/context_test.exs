@@ -584,8 +584,8 @@ defmodule IntellectualClub.Generation.ContextTest do
               {content, payload["session_id"], "intellectual-club:chat:#{chat.id}"}
 
             :responses ->
-              {payload["instructions"], payload["prompt_cache_key"],
-               "intellectual-club:user:#{actor.id}"}
+              [%{"role" => "developer", "content" => [%{"text" => text}]} | _] = payload["input"]
+              {text, payload["prompt_cache_key"], "intellectual-club:user:#{actor.id}"}
           end
 
         assert system_text =~ "# Available tool instances"

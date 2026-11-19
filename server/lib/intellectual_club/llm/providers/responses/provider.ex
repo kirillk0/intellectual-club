@@ -109,7 +109,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
         Map.get(opts, :parameters, %{}) || %{},
         input_items,
         include: @responses_include,
-        instructions: Map.get(opts, :system_prompt),
+        system_prompt: Map.get(opts, :system_prompt),
         tools: Map.get(opts, :tools, [])
       )
 
@@ -155,11 +155,10 @@ defmodule IntellectualClub.Llm.Providers.Responses do
     raw_request =
       RequestBuilder.build_responses_payload_from_input_items(
         RequestPayload.model_name(previous_raw_request, Map.get(context, :model_name)),
-        RequestPayload.parameters(previous_raw_request, Map.get(context, :parameters, %{})),
+        RequestPayload.parameters(previous_raw_request, Map.get(context, :parameters, %{}))
+        |> Map.delete("instructions"),
         next_input_items,
         include: include_from_request(previous_raw_request),
-        instructions:
-          RequestPayload.instructions(previous_raw_request) |> fallback_instructions(context),
         tools: followup_tools_from_request(previous_raw_request, Map.get(opts, :tools, []))
       )
 
@@ -191,10 +190,8 @@ defmodule IntellectualClub.Llm.Providers.Responses do
   def request_snapshot(raw_request) when is_map(raw_request) do
     payload = RequestPayload.stringify_keys(raw_request)
 
-    %{
-      model_input: RequestPayload.input(payload),
-      system_prompt: RequestPayload.instructions(payload)
-    }
+    input = RequestPayload.input(payload)
+    %{model_input: input, system_prompt: system_prompt_from_input(input)}
   end
 
   def request_snapshot(_raw_request), do: %{model_input: [], system_prompt: ""}
@@ -459,8 +456,15 @@ defmodule IntellectualClub.Llm.Providers.Responses do
 
   defp user_prompt_cache_key(_owner_id), do: nil
 
-  defp fallback_instructions("", context), do: Map.get(context, :system_prompt, "")
-  defp fallback_instructions(instructions, _context), do: instructions
+  defp system_prompt_from_input([%{"role" => "developer", "content" => content} | _])
+       when is_list(content) do
+    for %{"type" => "input_text", "text" => text} <- content, is_binary(text), into: "", do: text
+  end
+
+  defp system_prompt_from_input([%{"role" => "developer", "content" => text} | _])
+       when is_binary(text), do: text
+
+  defp system_prompt_from_input(_input), do: ""
 
   defp include_from_request(payload) when is_map(payload) do
     case RequestPayload.include(payload) do
