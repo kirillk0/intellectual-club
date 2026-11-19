@@ -5,6 +5,8 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
   use GenServer
 
+  require Mint.HTTP
+
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
@@ -129,8 +131,13 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     logical_request = Map.get(opts, :request_payload, %{}) || %{}
     timeout_ms = Map.get(opts, :timeout_ms, 300_000)
 
-    with {:ok, url} <-
-           websocket_url(Map.get(opts, :base_url) || Map.get(state.context, :provider_base_url)),
+    endpoint =
+      websocket_url(Map.get(opts, :base_url) || Map.get(state.context, :provider_base_url))
+
+    session_headers = CodexHeaders.session_headers(logical_request)
+    state = prepare_connection(state, endpoint, session_headers)
+
+    with {:ok, url} <- endpoint,
          {:ok, logical_transport_request} <- wire_payload(logical_request, state),
          {:ok, wire_payload} <-
            RequestHydration.hydrate(
@@ -143,13 +150,16 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
              llm_configuration_id: Map.get(opts, :image_llm_configuration_id),
              provider: provider
            ),
-         {:ok, connection, state} <- ensure_connection(state, opts, url),
+         {:ok, connection, state} <- ensure_connection(state, opts, url, session_headers),
          {:ok, connection} <- send_payload(connection, wire_payload) do
       state = %{state | connection: connection}
 
       case receive_response(connection, logical_request, provider, timeout_ms, emit) do
         {:ok, connection, response} ->
           {:reply, :ok, remember_completed_response(state, connection, logical_request, response)}
+
+        {:closed_after_completion, connection} ->
+          {:reply, :ok, reset_transport_state(%{state | connection: connection})}
 
         {:error, connection, error_meta} ->
           error_reply(
@@ -179,6 +189,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
         )
     end
   end
+
+  @impl true
+  def handle_info(message, %{connection: %{conn: conn}} = state)
+      when Mint.HTTP.is_connection_message(conn, message) do
+    {:noreply, handle_idle_message(state, message)}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
@@ -280,14 +298,42 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   defp path_with_query(%URI{path: path, query: ""}), do: path
   defp path_with_query(%URI{path: path, query: query}), do: path <> "?" <> query
 
-  defp ensure_connection(%{connection: %{url: url} = connection} = state, _opts, url) do
-    {:ok, connection, state}
+  # A peer close may already be queued behind the call. Consume it before choosing
+  # the continuation or hydrating its input: response IDs belong to one socket.
+  defp prepare_connection(
+         %{connection: %{url: url, session_headers: headers, conn: conn}} = state,
+         {:ok, url} = endpoint,
+         headers
+       ) do
+    receive do
+      message when Mint.HTTP.is_connection_message(conn, message) ->
+        state |> handle_idle_message(message) |> prepare_connection(endpoint, headers)
+    after
+      0 -> state
+    end
   end
 
-  defp ensure_connection(state, opts, url) do
-    state = reset_transport_state(state)
+  defp prepare_connection(state, _endpoint, _headers), do: reset_transport_state(state)
 
-    case connect(url, Map.fetch!(opts, :api_key), Map.get(opts, :connect_timeout_ms, 10_000)) do
+  defp handle_idle_message(%{connection: connection} = state, message) do
+    result = Mint.WebSocket.stream(connection.conn, message)
+
+    case process_socket_result(result, connection, %{done?: true}, nil, nil) do
+      {:ok, connection, _idle} -> %{state | connection: connection}
+      {:error, connection, _error} -> reset_transport_state(%{state | connection: connection})
+    end
+  end
+
+  defp ensure_connection(%{connection: %{} = connection} = state, _opts, _url, _headers),
+    do: {:ok, connection, state}
+
+  defp ensure_connection(state, opts, url, session_headers) do
+    case connect(
+           url,
+           Map.fetch!(opts, :api_key),
+           session_headers,
+           Map.get(opts, :connect_timeout_ms, 10_000)
+         ) do
       {:ok, connection} ->
         {:ok, connection, %{state | connection: connection}}
 
@@ -303,18 +349,35 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
-  defp connect(url, api_key, connect_timeout_ms) do
+  defp connect(url, api_key, session_headers, connect_timeout_ms) do
     opts = [
-      mode: :passive,
+      mode: :active,
       protocols: [:http1],
       transport_opts: [timeout: connect_timeout_ms]
     ]
 
     with {:ok, conn} <- Mint.HTTP.connect(url.connect_scheme, url.host, url.port, opts),
-         {:ok, conn, ref} <- upgrade_connection(conn, url, api_key),
-         {:ok, conn, status, headers} <- receive_upgrade(conn, ref, connect_timeout_ms),
-         {:ok, conn, websocket} <- Mint.WebSocket.new(conn, ref, status, headers, mode: :passive) do
-      {:ok, %{conn: conn, websocket: websocket, ref: ref, url: url}}
+         {:ok, conn, ref} <- upgrade_connection(conn, url, api_key, session_headers),
+         {:ok, conn, status, headers, responses} <- receive_upgrade(conn, ref, connect_timeout_ms),
+         {:ok, conn, websocket} <- Mint.WebSocket.new(conn, ref, status, headers) do
+      connection = %{
+        conn: conn,
+        websocket: websocket,
+        ref: ref,
+        url: url,
+        session_headers: session_headers
+      }
+
+      # Mint includes any bytes following the 101 headers in the upgrade responses.
+      # A control frame or the start of a fragmented frame can arrive there.
+      case decode_responses(connection, responses, %{done?: true}, nil, nil) do
+        {:ok, connection, _idle} ->
+          {:ok, connection}
+
+        {:error, connection, error_meta} ->
+          close_connection(connection)
+          {:error, error_meta}
+      end
     else
       {:error, conn, error} ->
         close_mint_connection(conn)
@@ -329,11 +392,11 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
-  defp upgrade_connection(conn, url, api_key) do
+  defp upgrade_connection(conn, url, api_key, session_headers) do
     headers =
       [
         {"authorization", "Bearer " <> api_key},
-        {"openai-beta", @openai_beta_header}
+        {"openai-beta", @openai_beta_header} | session_headers
       ]
       |> CodexHeaders.put_account_id(URI.to_string(url.uri), api_key)
 
@@ -347,12 +410,12 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   end
 
   defp receive_upgrade(conn, ref, timeout_ms, status, headers) do
-    case Mint.HTTP.recv(conn, 0, timeout_ms) do
+    case receive_socket(conn, timeout_ms) do
       {:ok, conn, responses} ->
         {status, headers, done?} = reduce_upgrade_responses(responses, ref, status, headers)
 
         if done? do
-          {:ok, conn, status || 0, headers}
+          {:ok, conn, status || 0, headers, responses}
         else
           receive_upgrade(conn, ref, timeout_ms, status, headers)
         end
@@ -361,7 +424,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
         {status, headers, done?} = reduce_upgrade_responses(responses, ref, status, headers)
 
         if done? do
-          {:ok, conn, status || 0, headers}
+          {:ok, conn, status || 0, headers, responses}
         else
           {:error, conn, error, responses}
         end
@@ -424,42 +487,24 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
 
     result = receive_frames(connection, stream_state, logical_request, timeout_ms, wrapped_emit)
 
-    terminal = Process.get(key)
-    Process.delete(key)
+    case {Process.delete(key), result} do
+      {{:response_complete, meta}, {:ok, connection, _stream_state}} ->
+        {:ok, connection, Map.get(meta, :raw_response) || %{}}
 
-    case result do
-      {:ok, connection, _state} ->
-        case terminal do
-          {:response_complete, meta} ->
-            {:ok, connection, Map.get(meta, :raw_response) || %{}}
+      {{:response_complete, _meta}, {:error, connection, _error}} ->
+        # A close can share the packet containing the successful terminal event.
+        {:closed_after_completion, connection}
 
-          {:response_error, meta} ->
-            meta =
-              meta
-              |> Map.put_new(:retryable, retryable_terminal_error?(meta))
-              |> Map.put(:already_emitted, true)
-              |> failure_context("response", true, true)
+      {{:response_error, meta}, {_status, connection, _detail}} ->
+        meta =
+          meta
+          |> Map.put_new(:retryable, retryable_terminal_error?(meta))
+          |> Map.put(:already_emitted, true)
+          |> failure_context("response", true, true)
 
-            {:error, connection, meta}
+        {:error, connection, meta}
 
-          _other ->
-            {:error, connection,
-             %{
-               status_code: nil,
-               url: url_string(Map.get(connection, :url)),
-               retryable: true,
-               error_kind: "network",
-               error_text: "WebSocket stream ended without a terminal event",
-               raw_response: nil,
-               fallback_safe: false,
-               failure_phase: "response",
-               request_sent: true,
-               response_started: false,
-               websocket_close_code: nil
-             }}
-        end
-
-      {:error, connection, error_meta} ->
+      {nil, {:error, connection, error_meta}} ->
         {:error, connection, error_meta}
     end
   end
@@ -485,42 +530,46 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     Map.put(meta, :provider, provider)
   end
 
-  defp receive_frames(
-         %{conn: conn, websocket: websocket} = connection,
+  defp receive_socket(conn, timeout_ms) do
+    receive do
+      message when Mint.HTTP.is_connection_message(conn, message) ->
+        Mint.WebSocket.stream(conn, message)
+    after
+      timeout_ms -> {:error, conn, :timeout, []}
+    end
+  end
+
+  defp receive_frames(connection, stream_state, logical_request, timeout_ms, emit) do
+    result = receive_socket(connection.conn, timeout_ms)
+
+    case process_socket_result(result, connection, stream_state, logical_request, emit) do
+      {:ok, connection, %{done?: false} = stream_state} ->
+        receive_frames(connection, stream_state, logical_request, timeout_ms, emit)
+
+      terminal ->
+        terminal
+    end
+  end
+
+  defp process_socket_result({:ok, conn, responses}, connection, stream_state, request, emit) do
+    decode_responses(%{connection | conn: conn}, responses, stream_state, request, emit)
+  end
+
+  defp process_socket_result(
+         {:error, conn, reason, responses},
+         connection,
          stream_state,
-         logical_request,
-         timeout_ms,
+         request,
          emit
        ) do
-    case Mint.WebSocket.recv(conn, 0, timeout_ms) do
-      {:ok, conn, responses} ->
-        connection = %{connection | conn: conn}
+    with {:ok, connection, stream_state} <-
+           decode_responses(%{connection | conn: conn}, responses, stream_state, request, emit) do
+      error_meta =
+        reason
+        |> receive_error_meta(connection.url)
+        |> failure_context("response", true, Map.get(stream_state, :response_started?, false))
 
-        case decode_responses(connection, responses, stream_state, logical_request, emit) do
-          {:ok, connection, stream_state} ->
-            if stream_state.done? do
-              {:ok, connection, stream_state}
-            else
-              receive_frames(connection, stream_state, logical_request, timeout_ms, emit)
-            end
-
-          {:error, connection, error_meta} ->
-            {:error, connection, error_meta}
-        end
-
-      {:error, conn, reason, _responses} ->
-        connection = %{connection | conn: conn, websocket: websocket}
-
-        error_meta =
-          reason
-          |> receive_error_meta(Map.get(connection, :url))
-          |> failure_context(
-            "response",
-            true,
-            Map.get(stream_state, :response_started?, false)
-          )
-
-        {:error, connection, error_meta}
+      {:error, connection, error_meta}
     end
   end
 
@@ -565,6 +614,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
       end
     end)
   end
+
+  defp handle_frame(connection, {:text, _text}, %{done?: true} = idle, _logical_request, _emit),
+    do: {:ok, connection, idle}
 
   defp handle_frame(connection, {:text, text}, stream_state, logical_request, emit) do
     case Jason.decode(text) do
@@ -835,7 +887,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     }
   end
 
-  defp receive_error_meta(:closed, url) do
+  defp receive_error_meta(%Mint.TransportError{reason: :closed}, url) do
     %{
       status_code: nil,
       url: url_string(url),

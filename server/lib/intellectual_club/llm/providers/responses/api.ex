@@ -69,10 +69,9 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           [
             {"authorization", "Bearer " <> api_key},
             {"content-type", "application/json"},
-            {"accept", "text/event-stream"}
+            {"accept", "text/event-stream"} | CodexHeaders.session_headers(wire_request)
           ]
           |> CodexHeaders.put_account_id(url, api_key)
-          |> maybe_put_session_id(wire_request)
 
         request_opts =
           [
@@ -158,18 +157,6 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
         :ok
     end
   end
-
-  defp maybe_put_session_id(headers, %{"prompt_cache_key" => key}) when is_binary(key) do
-    # The Codex backend uses the session header for cache affinity. Keep the
-    # existing body key and scope, and omit values that are unsafe as headers.
-    if Regex.match?(~r/\A[\x09\x20-\x7E]+\z/, key) and String.trim(key) != "" do
-      headers ++ [{"session-id", key}]
-    else
-      headers
-    end
-  end
-
-  defp maybe_put_session_id(headers, _request), do: headers
 
   defp default_base_url(nil), do: "https://api.openai.com/v1"
   defp default_base_url(""), do: "https://api.openai.com/v1"

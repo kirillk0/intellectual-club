@@ -252,6 +252,92 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert second_request["input"] == [tool_result]
   end
 
+  test "idle pings keep the continuation alive and an idle close reconnects with cache affinity" do
+    scripts = for id <- ["first", "second", "third"], do: [completed_event(id)]
+    {base_url, agent} = start_wss_server!(scripts)
+    session = start_supervised!({Session, %{}})
+    parent = self()
+    emit = fn event -> send(parent, {:provider_event, event}) end
+    opts = %{base_url: base_url, api_key: "test-key", timeout_ms: provider_deadline_ms()}
+
+    first = %{
+      "prompt_cache_key" => "stable-key",
+      "input" => [%{"role" => "user", "content" => "Hi"}]
+    }
+
+    delta = %{"role" => "user", "content" => "Continue"}
+    followup = Map.update!(first, "input", &(&1 ++ [delta]))
+
+    assert :ok = Session.stream_generate(session, Map.put(opts, :request_payload, first), emit)
+    assert_receive {:ws_open, socket, ["stable-key"]}
+    send(socket, {:ping, "idle-1"})
+    assert_receive {:pong, ^socket, "idle-1"}, 2000
+    send(socket, {:ping, "idle-2"})
+    assert_receive {:pong, ^socket, "idle-2"}, 2000
+
+    assert :ok = Session.stream_generate(session, Map.put(opts, :request_payload, followup), emit)
+    monitor = Process.monitor(socket)
+    send(socket, :close)
+    assert_receive {:DOWN, ^monitor, :process, ^socket, _}, 2000
+
+    next = Map.update!(followup, "input", &(&1 ++ [delta]))
+    assert :ok = Session.stream_generate(session, Map.put(opts, :request_payload, next), emit)
+    assert_receive {:ws_open, _new_socket, ["stable-key"]}
+
+    assert [_, %{"previous_response_id" => "first", "input" => [^delta]}, replay] =
+             requests_for(agent)
+
+    assert replay["input"] == next["input"]
+    refute Map.has_key?(replay, "previous_response_id")
+    refute_received {:provider_event, {:response_error, _}}
+  end
+
+  test "a close following response.completed preserves the result and clears the continuation" do
+    scripts = [
+      {:frames_then_close, [completed_event("first")], 1000, "done"},
+      [completed_event("second")]
+    ]
+
+    {base_url, agent} = start_wss_server!(scripts)
+    payload = %{"input" => [%{"role" => "user", "content" => "Hi"}]}
+    session = start_supervised!({Session, %{}})
+    opts = %{base_url: base_url, api_key: "test-key", request_payload: payload}
+    parent = self()
+    emit = fn event -> send(parent, {:provider_event, event}) end
+
+    assert :ok = Session.stream_generate(session, opts, emit)
+    assert_receive {:ws_open, socket, []}
+    monitor = Process.monitor(socket)
+    assert_receive {:DOWN, ^monitor, :process, ^socket, _}, 2000
+    assert :ok = Session.stream_generate(session, opts, emit)
+
+    assert_receive {:provider_event, {:response_complete, %{raw_response: %{"id" => "first"}}}}
+    assert_receive {:provider_event, {:response_complete, %{raw_response: %{"id" => "second"}}}}
+    refute_received {:provider_event, {:response_error, _}}
+
+    assert [_, replay] = requests_for(agent)
+    refute Map.has_key?(replay, "previous_response_id")
+    assert replay["input"] == payload["input"]
+  end
+
+  test "a change of cache key opens a connection with the new session header" do
+    {base_url, agent} =
+      start_wss_server!([[completed_event("first")], [completed_event("second")]])
+
+    payload = %{"input" => [%{"role" => "user", "content" => "Hi"}]}
+
+    run_session_and_capture_events!(base_url, [
+      Map.put(payload, "prompt_cache_key", "first-key"),
+      Map.put(payload, "prompt_cache_key", "second-key")
+    ])
+
+    assert_receive {:ws_open, _, ["first-key"]}
+    assert_receive {:ws_open, _, ["second-key"]}
+    assert [_, replay] = requests_for(agent)
+    assert replay["input"] == payload["input"]
+    refute Map.has_key?(replay, "previous_response_id")
+  end
+
   test "previous_response_not_found is retryable and resets session state" do
     input = [%{"type" => "message", "role" => "user", "content" => []}]
 
@@ -520,21 +606,23 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     previous = %{"model" => "test", "input" => prefix}
     current = Map.put(previous, "input", prefix ++ delta)
 
-    scripts = [
-      [
-        %{
-          "type" => "response.completed",
-          "response" => %{"id" => "resp_next", "status" => "completed", "output" => []}
-        }
-      ]
-    ]
+    {base_url, agent} =
+      start_wss_server!([[completed_event("resp_previous")], [completed_event("resp_next")]])
 
-    {base_url, agent} = start_wss_server!(scripts)
     session = start_supervised!({Session, %{provider_type: "responses_wss"}})
 
-    :sys.replace_state(session, fn state ->
-      %{state | last_request: previous, last_response: %{"id" => "resp_previous", "output" => []}}
-    end)
+    # The scripted peer accepts the compact marker verbatim on the first request.
+    assert :ok =
+             Session.stream_generate(
+               session,
+               %{
+                 base_url: base_url,
+                 api_key: "test-key",
+                 request_payload: previous,
+                 image_mapper: fn req, acc, _map_image -> {req, acc} end
+               },
+               fn _ -> :ok end
+             )
 
     mapper = fn request, acc, map_image ->
       send(parent, {:hydration_input, request["input"]})
@@ -559,7 +647,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     refute_receive {:hydration_input, ^prefix}, 0
     assert_receive {:provider_event, {:response_complete, %{raw_request: ^current}}}
     refute_receive {:provider_event, {:response_error, _}}, 0
-    [wire] = requests_for(agent)
+    [_, wire] = requests_for(agent)
     assert wire["previous_response_id"] == "resp_previous"
     assert wire["input"] == delta
   end
@@ -625,6 +713,13 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     refute_receive {:provider_event, {:trace, {:set_step_raw_request, _}}}, 0
   end
 
+  defp completed_event(id) do
+    %{
+      "type" => "response.completed",
+      "response" => %{"id" => id, "status" => "completed", "output" => []}
+    }
+  end
+
   defp base_session_state do
     %{
       context: %{},
@@ -677,7 +772,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
          end}
       )
 
-    {base_url, _port} = start_http_server!({__MODULE__.ScriptedWssPlug, agent: agent})
+    {base_url, _port} =
+      start_http_server!({__MODULE__.ScriptedWssPlug, agent: agent, observer: self()})
+
     {base_url, agent}
   end
 
@@ -706,8 +803,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
         %{state | beta_headers: state.beta_headers ++ [beta]}
       end)
 
+      state = %{
+        agent: agent,
+        observer: Keyword.fetch!(opts, :observer),
+        session_ids: get_req_header(conn, "session-id")
+      }
+
       conn
-      |> WebSockAdapter.upgrade(__MODULE__.ScriptedWssSocket, %{agent: agent}, timeout: 60_000)
+      |> WebSockAdapter.upgrade(__MODULE__.ScriptedWssSocket, state, timeout: 60_000)
       |> halt()
     end
 
@@ -721,7 +824,10 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       @behaviour WebSock
 
       @impl true
-      def init(state), do: {:ok, state}
+      def init(state) do
+        send(state.observer, {:ws_open, self(), state.session_ids})
+        {:ok, state}
+      end
 
       @impl true
       def handle_in({payload, [opcode: :text]}, %{agent: agent} = state) do
@@ -758,7 +864,15 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       end
 
       @impl true
+      def handle_info({:ping, payload}, state), do: {:push, {:ping, payload}, state}
+      def handle_info(:close, state), do: {:stop, :normal, state}
       def handle_info(_message, state), do: {:ok, state}
+
+      @impl true
+      def handle_control({payload, [opcode: :pong]}, state) do
+        send(state.observer, {:pong, self(), payload})
+        {:ok, state}
+      end
     end
   end
 end

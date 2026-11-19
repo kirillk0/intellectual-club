@@ -1,7 +1,18 @@
 defmodule IntellectualClub.Llm.Providers.Responses.CodexHeaders do
   @moduledoc """
-  Selects the OAuth account explicitly when calling the Codex backend.
+  Responses headers for OAuth account selection and prompt cache affinity.
   """
+
+  @spec session_headers(map()) :: [{String.t(), String.t()}]
+  def session_headers(request) do
+    key = Map.get(request, "prompt_cache_key", Map.get(request, :prompt_cache_key))
+
+    if is_binary(key) and Regex.match?(~r/\A[\x09\x20-\x7E]+\z/, key) and String.trim(key) != "" do
+      [{"session-id", key}]
+    else
+      []
+    end
+  end
 
   @spec put_account_id([{String.t(), String.t()}], String.t(), String.t()) ::
           [{String.t(), String.t()}]
