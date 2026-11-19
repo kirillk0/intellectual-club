@@ -623,6 +623,60 @@ describe('useChatViewModel loading', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/chats/1'));
   });
 
+  describe('archiving a chat', () => {
+    const readState: ChatReadState = {
+      activity_revision: 1, read_revision: 1, manual_unread: false,
+      snoozed_until: null, state_version: 0, has_unread: false,
+      is_unread: false, is_snoozed: false, is_archived: false,
+    };
+
+    beforeEach(() => {
+      const state = chatState(1);
+      state.chat!.read_state = readState;
+      apiMocks.get.mockImplementation(async (path: string) => {
+        if (path.endsWith('/settings')) return chatSettings();
+        if (path === '/api/bff/chat-state/1') return state;
+      });
+    });
+
+    it.each(['stacked', 'direct'] as const)('returns to the chat list after the archive succeeds (%s)', async (entry) => {
+      const list = '/chats?view=inbox';
+      const path = entry === 'stacked' ? '/chats/1' : `/chats/1?returnTo=${encodeURIComponent(list)}`;
+      const { viewModel, router, previousRoute } = await mountViewModel(path, entry === 'stacked' ? list : undefined);
+      if (previousRoute) {
+        const stack = useNavigationStack();
+        stack.markPendingPush(0);
+        stack.commitPendingPush(previousRoute);
+      }
+      await flushPromises();
+
+      let resolveArchive!: (payload: { read_state: ChatReadState }) => void;
+      apiMocks.post.mockReturnValueOnce(new Promise((resolve) => { resolveArchive = resolve; }));
+      const archive = viewModel.archiveChat();
+      await flushPromises();
+      expect(apiMocks.post).toHaveBeenCalledWith('/api/bff/chat-state/1/read-state',
+        expect.objectContaining({ action: 'archive' }), expect.anything());
+      expect(router.currentRoute.value.fullPath).toBe(path);
+
+      resolveArchive({ read_state: { ...readState, is_archived: true, state_version: 1 } });
+      await archive;
+      await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe(list));
+    });
+
+    it('keeps the chat open when archiving fails', async () => {
+      const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+      apiMocks.post.mockRejectedValueOnce(new Error('Archive failed'));
+      const { viewModel, router } = await mountViewModel();
+      await flushPromises();
+
+      await viewModel.archiveChat();
+
+      expect(router.currentRoute.value.fullPath).toBe('/chats/1');
+      expect(alert).toHaveBeenCalledWith('Archive failed');
+      alert.mockRestore();
+    });
+  });
+
   it.each([
     { entry: 'direct', cached: false, settingsOrder: 'before' },
     { entry: 'direct', cached: false, settingsOrder: 'after' },

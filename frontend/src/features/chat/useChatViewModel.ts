@@ -177,6 +177,13 @@ export function useChatViewModel() {
       return false;
     }
   };
+  const archiveChat = async () => {
+    const id = chatId.value;
+    if (await changeReadState(readRuntime.archive) &&
+        !disposed && layer.active.value && chatId.value === id && readRuntime.state.value?.is_archived) {
+      await goToChats();
+    }
+  };
   const snoozeChat = async (until: string) => {
     if (await changeReadState(() => readRuntime.snooze(until))) snoozeOpen.value = false;
   };
@@ -1170,7 +1177,7 @@ export function useChatViewModel() {
     chatReadState: readRuntime.state,
     readStateBusy: readRuntime.busy,
     chatIsUnread: readRuntime.isUnread,
-    archiveChat: () => changeReadState(readRuntime.archive),
+    archiveChat,
     unarchiveChat: () => changeReadState(readRuntime.unarchive),
     chatIsSnoozed: readRuntime.isSnoozed,
     snoozeOpen,
