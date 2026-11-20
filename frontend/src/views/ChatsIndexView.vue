@@ -46,27 +46,10 @@
 
           <main class="catalog-split__main stack">
             <section class="card stack">
-              <div class="chat-search">
-                <input
-                  v-model="chatSearchTerm"
-                  type="search"
-                  class="full"
-                  :placeholder="translate('Search inbox and archive')"
-                  :aria-label="translate('Search inbox and archive')"
-                />
-                <button
-                  type="button"
-                  class="search-icon-button chat-search__exact"
-                  :class="{ active: chatSearchExact }"
-                  :aria-pressed="chatSearchExact"
-                  :aria-label="translate('Exact')"
-                  :title="translate('Match the whole phrase exactly, including spaces')"
-                  @click="toggleChatSearchExact"
-                >
-                  <SvgIcon name="quote" size="16" />
-                </button>
-                <SearchClearButton v-if="chatSearchTerm" @click="chatSearchTerm = ''" />
-              </div>
+              <ChatSearchField
+                v-model="chatSearchTerm" v-model:ordered="chatSearchOrdered"
+                :label="translate('Search inbox and archive')" @submit="submitChatSearch"
+              />
             </section>
 
             <section v-if="error && !chats.length && !hasChatSearch" class="card stack chat-list-error" role="alert">
@@ -79,8 +62,8 @@
               <p v-if="readStateError && !snoozeChat" class="error-text" role="alert">{{ readStateError }}</p>
               <p v-if="hasChatSearch && chatSearchLoading" class="muted">Searching...</p>
               <p v-if="hasChatSearch && chatSearchError" class="error-text">{{ chatSearchError }}</p>
-              <p v-if="chatSearchMetaOnlyHint" class="muted chat-search-hint">
-                {{ translate('Message text was not searched: some word must have at least 3 letters or digits in a row. Only chat notes were searched.') }}
+              <p v-if="chatSearchInput.hint" class="muted chat-search-hint">
+                {{ translate(chatSearchInput.hint) }}
               </p>
 
               <InitialRoutePlaceholder
@@ -134,10 +117,7 @@
                                 <span v-if="!hit.active" class="badge badge-muted">{{ translate('Inactive branch') }}</span>
                               </div>
                               <div class="chat-search-hit__snippet">
-                                <template v-for="(part, index) in highlightSnippet(hit.snippet)" :key="index">
-                                  <mark v-if="part.match">{{ part.text }}</mark>
-                                  <template v-else>{{ part.text }}</template>
-                                </template>
+                                <ChatSearchSnippet :text="hit.snippet" :terms="chatSearchTerms" :ordered="chatSearchOrdered" />
                               </div>
                             </a>
                           </RouterLink>
@@ -334,7 +314,9 @@ import type { Bot, ChatSummary, ImageAsset } from '@/types/api';
 import { formatChatBaseTitle } from '@/utils/chatTitle';
 import { formatRelativeDateTime } from '@/utils/dates';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
-import SearchClearButton from '@/components/SearchClearButton.vue';
+import ChatSearchField from '@/features/chat/components/ChatSearchField.vue';
+import ChatSearchSnippet from '@/features/chat/components/ChatSearchSnippet.vue';
+import { CHAT_SEARCH_DEBOUNCE_MS, parseChatSearch } from '@/features/chat/chatSearch';
 
 type ChatSearchHit = {
   message_id: number;
@@ -360,8 +342,6 @@ type ChatListSection = {
   hasNext?: boolean;
   hasPrevious?: boolean;
 };
-
-type SnippetPart = { text: string; match: boolean };
 
 type BotFilterOption = {
   id: number | '';
@@ -419,16 +399,14 @@ type ChatListPayload = {
 };
 
 type ChatSearchPayload = {
-  // Unique summaries for note matches and hit chats.
-  chats?: ChatSummary[];
+  // Search only fetches identity, label and read metadata for each referenced chat.
+  chats?: Pick<ChatSummary, 'id' | 'note' | 'bot_id' | 'bot_name' | 'created_at' | 'updated_at' | 'message_count' | 'read_state'>[];
   // Chats whose note matched, newest activity first; only on the first page.
   notes?: number[];
   // Message hits, newest first.
   hits?: ChatSearchHit[];
   next_cursor?: string | null;
   next_read_state_expiry?: string | null;
-  // False when no term can use the text index and only chat notes were matched.
-  text_search?: boolean;
   terms?: string[];
 };
 
@@ -456,8 +434,6 @@ const CHAT_LIST_POLL_RETRY_DELAY_MS = 3_000;
 const CHAT_LIST_IDLE_POLL_DELAY_MS = 30_000;
 const CHAT_LIST_IDLE_POLL_RETRY_DELAY_MS = 30_000;
 const CHAT_LIST_IDLE_IMMEDIATE_THROTTLE_MS = 1_500;
-const CHAT_SEARCH_DEBOUNCE_MS = 600;
-const CHAT_SEARCH_MIN_LENGTH = 3;
 const CHAT_SEARCH_PAGE_SIZE = 30;
 const CHAT_SEARCH_MAX_LIMIT = 100;
 
@@ -480,7 +456,7 @@ function readChatListPageQuery(value: unknown) {
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
 
-function readExactQuery(value: unknown) {
+function readOrderedQuery(value: unknown) {
   return ['1', 'true'].includes(getQueryString(value).trim().toLowerCase());
 }
 
@@ -546,7 +522,7 @@ function setArchiveView(view: ArchiveView) {
 }
 
 const chatSearchTerm = ref(getQueryString(route.query.q));
-const chatSearchExact = ref(readExactQuery(route.query.exact));
+const chatSearchOrdered = ref(readOrderedQuery(route.query.exact));
 // Chat summaries referenced by note matches and hits.
 const chatSearchResults = ref<ChatSummary[]>([]);
 const chatSearchNoteIds = ref<number[]>([]);
@@ -556,7 +532,6 @@ const chatSearchTerms = ref<string[]>([]);
 const chatSearchLoading = ref(false);
 const chatSearchLoadingMore = ref(false);
 const chatSearchError = ref('');
-const chatSearchTextSearch = ref(true);
 const chatListIdleRevision = ref<string | null>(null);
 const nextReadStateExpiry = ref<string | null>(null);
 const chatListGenerationPollReconnecting = ref(false);
@@ -606,12 +581,13 @@ const isCompact = ref(false);
 const filterOpen = ref(false);
 const previewLength = computed(() => (isCompact.value ? 100 : 200));
 
-const hasChatSearch = computed(() => chatSearchTerm.value.trim().length >= CHAT_SEARCH_MIN_LENGTH);
+const hasChatSearch = computed(() => Boolean(chatSearchTerm.value.trim()));
+const chatSearchInput = computed(() => parseChatSearch(chatSearchTerm.value, chatSearchOrdered.value));
 const hasActiveBotFilter = computed(() => String(botFilter.value || '').trim().length > 0);
 
 function syncChatListRouteQuery() {
   const q = chatSearchTerm.value.trim();
-  const exact = q && chatSearchExact.value ? '1' : undefined;
+  const exact = q && chatSearchOrdered.value ? '1' : undefined;
   const bot = String(botFilter.value || '').trim();
   const page = pageNumber.value > 1 ? String(pageNumber.value) : undefined;
   const next = { ...route.query };
@@ -665,7 +641,7 @@ watch(
     archiveView.value = nextView;
     if (viewChanged) chats.value = [];
     const nextQ = getQueryString(q);
-    const nextExact = readExactQuery(exact);
+    const nextOrdered = readOrderedQuery(exact);
     const nextBot = readBotFilterQuery(bot);
     const nextPage = readChatListPageQuery(page);
     const shouldLoadChats = viewChanged || botFilter.value !== nextBot || pageNumber.value !== nextPage ||
@@ -677,7 +653,7 @@ watch(
     sectionPages.value.working.number = readChatListPageQuery(workingPage);
 
     if (chatSearchTerm.value !== nextQ) chatSearchTerm.value = nextQ;
-    if (chatSearchExact.value !== nextExact) chatSearchExact.value = nextExact;
+    if (chatSearchOrdered.value !== nextOrdered) chatSearchOrdered.value = nextOrdered;
     if (botFilter.value !== nextBot) botFilter.value = nextBot;
     if (pageNumber.value !== nextPage) pageNumber.value = nextPage;
 
@@ -688,15 +664,11 @@ watch(
 );
 
 watch(
-  () => [archiveView.value, chatSearchTerm.value, chatSearchExact.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
+  () => [archiveView.value, chatSearchTerm.value, chatSearchOrdered.value, botFilter.value, ...SECTION_KEYS.map((key) => sectionPages.value[key].number)],
   () => {
     syncChatListRouteQuery();
   }
 );
-
-function toggleChatSearchExact() {
-  chatSearchExact.value = !chatSearchExact.value;
-}
 
 function openFilter() {
   filterOpen.value = true;
@@ -1161,12 +1133,8 @@ function applySectionPages(payloads: SectionPagePayload[], pages: Record<ChatSec
   return clamped;
 }
 
-const chatSearchMetaOnlyHint = computed(() =>
-  hasChatSearch.value && !chatSearchError.value && !chatSearchTextSearch.value
-);
-
 const chatSearchEmptyState = computed(() => {
-  if (!hasChatSearch.value) return '';
+  if (!hasChatSearch.value || chatSearchInput.value.hint) return '';
   if (chatSearchLoading.value) return '';
   if (chatSearchError.value) return '';
   return searchSections.value.length ? '' : 'No matches found.';
@@ -1218,9 +1186,10 @@ function chatResourceMeta(chat: ChatSummary) {
 
 function chatMetaText(chat: ChatSummary) {
   return [
-    `${niceDate(chat.last_activity_at || chat.created_at)} · ${chat.message_count ?? 0} msgs`,
+    niceDate(chat.last_activity_at || chat.created_at),
+    chat.message_count != null ? `${chat.message_count} msgs` : null,
     ...chatResourceMeta(chat),
-  ].join(' · ');
+  ].filter(Boolean).join(' · ');
 }
 
 function subchatCountLabel(count: number) {
@@ -1267,30 +1236,6 @@ function hitToneClass(hit: ChatSearchHit) {
   };
 }
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}
-
-// Splits a snippet into plain and matched parts so terms can be marked without raw HTML.
-function highlightSnippet(snippet: string | null): SnippetPart[] {
-  const text = String(snippet || '');
-  if (!text) return [];
-  const terms = [...new Set(chatSearchTerms.value.map((term) => term.trim()).filter(Boolean))]
-    .sort((left, right) => right.length - left.length);
-  if (!terms.length) return [{ text, match: false }];
-  const pattern = new RegExp(terms.map(escapeRegExp).join('|'), 'giu');
-  const parts: SnippetPart[] = [];
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    if (match.index == null || !match[0]) continue;
-    if (match.index > last) parts.push({ text: text.slice(last, match.index), match: false });
-    parts.push({ text: match[0], match: true });
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) parts.push({ text: text.slice(last), match: false });
-  return parts;
-}
-
 function openChat(to: RouteLocationRaw) {
   stackNav.open(to);
 }
@@ -1299,12 +1244,25 @@ function canEditChat(chat: ChatSummary) {
   return chat.can_edit === true;
 }
 
-function openChatActions(chat: ChatSummary, request: ChatListRowActionsRequest) {
+async function openChatActions(chat: ChatSummary, request: ChatListRowActionsRequest) {
   if (request.source === 'button' && chatActionsMenu.value?.chat.id === chat.id) {
     closeChatActions();
     return;
   }
   chatActionsMenu.value = { chat, anchor: request.anchor };
+  if (!hasChatSearch.value || chat.can_edit != null) return;
+
+  // Read actions are already available; fetch edit permissions/details only for the opened menu.
+  const selected = chatActionsMenu.value;
+  readStateError.value = '';
+  try {
+    const summary = await fetchChatSummary(chat.id, previewLength.value);
+    if (unmounted || chatActionsMenu.value !== selected) return;
+    chatSearchResults.value = patchExistingChatRows(chatSearchResults.value, summary);
+    chatActionsMenu.value = { chat: summary, anchor: { ...request.anchor } };
+  } catch {
+    if (!unmounted && chatActionsMenu.value === selected) readStateError.value = translate('Failed to load chat.');
+  }
 }
 
 function closeChatActions() {
@@ -1572,6 +1530,17 @@ async function loadChats(
 }
 
 let chatSearchTimer: number | null = null;
+function clearChatSearchTimer() {
+  if (chatSearchTimer !== null) window.clearTimeout(chatSearchTimer);
+  chatSearchTimer = null;
+}
+
+function submitChatSearch() {
+  if (chatSearchTimer === null) return;
+  clearChatSearchTimer();
+  void runChatSearch(chatSearchTerm.value.trim());
+}
+
 let chatSearchSeq = 0;
 let chatSearchAbortController: AbortController | null = null;
 
@@ -1601,7 +1570,6 @@ function resetChatSearch() {
   chatSearchLoading.value = false;
   chatSearchLoadingMore.value = false;
   chatSearchError.value = '';
-  chatSearchTextSearch.value = true;
 }
 
 function isChatSearchTimeout(error: unknown) {
@@ -1618,6 +1586,7 @@ async function runChatSearch(
   term: string,
   opts: { silent?: boolean; showErrorBanner?: boolean; signal?: AbortSignal; rethrowSilent?: boolean; cursorRetried?: boolean; append?: boolean } = {}
 ) {
+  if (!chatSearchInput.value.terms.length) return;
   const seq = ++chatSearchSeq;
   abortActiveChatSearch();
   // "Show more" continues from the last page; everything else restarts from the newest hits.
@@ -1649,7 +1618,8 @@ async function runChatSearch(
   try {
     const params = new URLSearchParams();
     params.set('q', term);
-    if (chatSearchExact.value) params.set('exact', '1');
+    params.set('compact', '1');
+    if (chatSearchOrdered.value) params.set('exact', '1');
     // A silent refresh re-reads every hit already shown in one request.
     const limit = append || !silent
       ? CHAT_SEARCH_PAGE_SIZE
@@ -1674,7 +1644,6 @@ async function runChatSearch(
       chatSearchNoteIds.value = payload?.notes || [];
       chatSearchHits.value = hits;
       chatSearchTerms.value = payload?.terms || [];
-      chatSearchTextSearch.value = payload?.text_search !== false;
     }
     chatSearchNextCursor.value = payload?.next_cursor ?? null;
     chatSearchError.value = '';
@@ -1715,8 +1684,7 @@ async function runChatSearch(
 
 async function refreshChatIndex() {
   stopChatListIdlePolling();
-  if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
-  chatSearchTimer = null;
+  clearChatSearchTimer();
 
   // Reference data can keep retrying after wake without blocking the list gesture.
   void refreshBots({ showError: true });
@@ -2127,15 +2095,13 @@ watch(
     resetSectionPageNumbers();
     resetChatSearch();
     const term = value.trim();
-    if (term.length < CHAT_SEARCH_MIN_LENGTH) {
-      const hadChatSearch = previousValue.trim().length >= CHAT_SEARCH_MIN_LENGTH;
-      if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
-      chatSearchTimer = null;
-      if (hadChatSearch) void loadChats();
+    closeChatActions();
+    clearChatSearchTimer();
+    if (!chatSearchInput.value.terms.length) {
+      if (!term && previousValue.trim()) void loadChats();
       return;
     }
-
-    if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+    chatSearchLoading.value = true;
     chatSearchTimer = window.setTimeout(() => {
       chatSearchTimer = null;
       void runChatSearch(term);
@@ -2144,15 +2110,14 @@ watch(
 );
 
 watch(
-  () => [botFilter.value, chatSearchExact.value],
+  () => [botFilter.value, chatSearchOrdered.value],
   () => {
     chatListIdleRevision.value = null;
     resetChatSearch();
     if (!hasChatSearch.value) return;
     const term = chatSearchTerm.value.trim();
     if (!term) return;
-    if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
-    chatSearchTimer = null;
+    clearChatSearchTimer();
     void runChatSearch(term);
   }
 );
@@ -2232,9 +2197,14 @@ async function createChat(selectedBotId: number | string | '' = '') {
 
 onMounted(() => {
   updateIsMobile();
-  void loadChats();
   if (hasChatSearch.value) {
-    void runChatSearch(chatSearchTerm.value.trim());
+    // Show linked search results first. The ordinary list is still needed for sidebar bot counts.
+    const initialLoad = chatListLoadSeq;
+    void runChatSearch(chatSearchTerm.value.trim()).finally(() => {
+      if (!unmounted && chatListLoadSeq === initialLoad) void loadChats();
+    });
+  } else {
+    void loadChats();
   }
   window.addEventListener('resize', updateIsMobile);
   document.addEventListener('visibilitychange', handleChatListVisibilityChange);
@@ -2252,7 +2222,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleChatListVisibilityChange);
   window.removeEventListener('pageshow', handleChatListPageShow);
   window.removeEventListener('focus', handleChatListFocus);
-  if (chatSearchTimer) window.clearTimeout(chatSearchTimer);
+  clearChatSearchTimer();
   for (const timer of chatSummaryRefreshTimers.values()) window.clearTimeout(timer);
   chatSummaryRefreshTimers.clear();
   abortActiveChatSearch();
@@ -2332,12 +2302,6 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.chat-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .chat-search-hits {
   display: grid;
   gap: 4px;
@@ -2397,13 +2361,6 @@ onBeforeUnmount(() => {
   font-size: 0.9rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
-}
-
-.chat-search-hit__snippet mark {
-  padding: 0 1px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--color-warning-border) 55%, transparent);
-  color: inherit;
 }
 
 .chat-search-more {

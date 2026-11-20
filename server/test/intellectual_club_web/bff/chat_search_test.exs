@@ -49,110 +49,108 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       assert is_binary(List.first(payload["inactive"])["finished_at"])
     end
 
-    test "returns empty results for empty term", %{conn: conn} do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
+    test "skips blank, punctuation-only and short-only queries in either mode", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_empty_chat!(actor)
+      {:ok, _} = Threads.add_message_to_end(chat, :user, "до 12", actor: actor)
 
-      chat =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create,
-          %{note: ""},
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
+      for q <- ["", "до 12", "%_|:*"], exact <- ["0", "1"] do
+        payload =
+          conn
+          |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{q: q, exact: exact})
+          |> json_response(200)
 
-      conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => ""})
-      payload = json_response(conn, 200)
-
-      assert payload["active"] == []
-      assert payload["inactive"] == []
+        assert payload == %{"active" => [], "inactive" => []}
+      end
     end
 
-    test "uses case-insensitive unicode matching", %{
-      conn: conn
-    } do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
+    test "matches Unicode prefixes case-insensitively but not inside a word", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_empty_chat!(actor)
+      {:ok, message} = Threads.add_message_to_end(chat, :user, "Привет миру", actor: actor)
+      {:ok, _} = Threads.add_message_to_end(chat, :assistant, "Суперпривет миру", actor: actor)
 
-      chat =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create,
-          %{note: ""},
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      {:ok, message} = Threads.add_message_to_end(chat, :user, "Привет мир", actor: actor)
-
-      conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "ПРИВ"})
-      payload = json_response(conn, 200)
-
-      assert Enum.map(payload["active"] || [], & &1["id"]) == [message.id]
-      assert payload["inactive"] == []
-    end
-
-    test "uses adapter-specific substring semantics", %{
-      conn: conn
-    } do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
-
-      chat =
-        Chat
-        |> Ash.Changeset.for_create(
-          :create,
-          %{note: ""},
-          actor: actor
-        )
-        |> Ash.create!(actor: actor)
-
-      {:ok, _message} = Threads.add_message_to_end(chat, :user, "Привет мир", actor: actor)
-
-      conn = get(conn, ~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "рив"})
-      payload = json_response(conn, 200)
-
-      assert Enum.map(payload["active"] || [], & &1["content"]) == ["Привет мир"]
-      assert payload["inactive"] == []
-    end
-
-    test "matches every word in any order unless exact is set", %{conn: conn} do
-      %{user: actor, password: password} = user_fixture()
-      conn = sign_in_conn(conn, actor.username, password)
-      chat = create_chat!(actor)
-      {:ok, ordered} = Threads.add_message_to_end(chat, :user, "alpha beta", actor: actor)
-
-      {:ok, reversed} =
-        Threads.add_message_to_end(chat, :assistant, "beta then alpha", actor: actor)
-
-      {:ok, _other} = Threads.add_message_to_end(chat, :assistant, "alpha only", actor: actor)
-
-      words =
+      payload =
         conn
-        |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{"q" => "beta  alpha"})
+        |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{q: "МИР ПРИВ"})
         |> json_response(200)
 
-      assert Enum.map(words["active"], & &1["id"]) == [ordered.id, reversed.id]
-      assert Enum.all?(words["active"], &is_binary(&1["snippet"]))
-
-      exact =
-        conn
-        |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{
-          "q" => "alpha beta",
-          "exact" => "1"
-        })
-        |> json_response(200)
-
-      assert Enum.map(exact["active"], & &1["id"]) == [ordered.id]
+      assert Enum.map(payload["active"], & &1["id"]) == [message.id]
+      assert payload["inactive"] == []
 
       assert conn
-             |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{
-               "q" => "beta alpha",
-               "exact" => "true"
-             })
-             |> json_response(200)
-             |> Map.get("active") == []
+             |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{q: "рив"})
+             |> json_response(200) == %{"active" => [], "inactive" => []}
+    end
+
+    test "words in order match adjacent prefixes and keep short words whole", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_empty_chat!(actor)
+      {:ok, adjacent} = Threads.add_message_to_end(chat, :user, "Базами, на данных", actor: actor)
+      {:ok, reversed} = Threads.add_message_to_end(chat, :assistant, "Данные базы", actor: actor)
+
+      {:ok, short_prefix} =
+        Threads.add_message_to_end(chat, :user, "Базы навыков данных", actor: actor)
+
+      {:ok, gapped} =
+        Threads.add_message_to_end(chat, :assistant, "База на старых данных", actor: actor)
+
+      path = ~p"/api/bff/chat-search/#{chat.id}/messages"
+      any_order = conn |> get(path, %{q: "баз на дан"}) |> json_response(200)
+
+      assert Enum.map(any_order["active"], & &1["id"]) == [
+               adjacent.id,
+               reversed.id,
+               short_prefix.id,
+               gapped.id
+             ]
+
+      assert Enum.all?(any_order["active"], &is_binary(&1["snippet"]))
+
+      ordered = conn |> get(path, %{q: "баз на дан", exact: "1"}) |> json_response(200)
+      assert Enum.map(ordered["active"], & &1["id"]) == [adjacent.id]
+      assert ordered["inactive"] == []
+    end
+
+    test "a shared chat is searchable in place but not in the reader's owner-only list", %{
+      conn: conn
+    } do
+      %{user: owner} = user_fixture()
+      %{user: reader} = fixture = user_fixture()
+      %{group: group} = user_group_fixture(%{users: [owner, reader]})
+      bot = create_bot!(owner)
+      config = create_configuration!(owner, provider: create_provider!(owner))
+
+      chat =
+        create_empty_chat!(owner,
+          bot_id: bot.id,
+          llm_configuration_id: config.id,
+          note: "shared prefix"
+        )
+
+      {:ok, message} =
+        Threads.add_message_to_end(chat, :user, "Sharing printable text", actor: owner)
+
+      share_chat!(owner, chat, group)
+      conn = sign_in_conn(conn, fixture)
+
+      inside =
+        conn
+        |> get(~p"/api/bff/chat-search/#{chat.id}/messages", %{q: "shar prin", exact: "1"})
+        |> json_response(200)
+
+      assert Enum.map(inside["active"], & &1["id"]) == [message.id]
+      assert hd(inside["active"])["content"] == "Sharing printable text"
+
+      listed =
+        conn |> get("/api/bff/chat-list/search", %{q: "shar", compact: "1"}) |> json_response(200)
+
+      assert listed["hits"] == []
+      assert listed["notes"] == []
+      assert listed["chats"] == []
     end
   end
 
@@ -204,6 +202,75 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       end
     end
 
+    test "compact search preserves archive state, branch links and labels without expanding cards",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      bot = create_bot!(actor, name: "Reporter")
+      chat = create_empty_chat!(actor, note: "Publishing report", bot_id: bot.id)
+      child = create_subchat!(actor, chat, :fork, note: "unrelated nested note")
+      {:ok, root} = Threads.add_message_to_end(chat, :user, "Publish report", actor: actor)
+
+      {:ok, inactive} =
+        Threads.add_message(chat, :assistant, "Published report on another branch",
+          actor: actor,
+          parent_id: root.id
+        )
+
+      {:ok, active} =
+        Threads.add_message(chat, :assistant, "Public reporting",
+          actor: actor,
+          parent_id: root.id
+        )
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          chat.id,
+          %{"action" => "archive", "expected_state_version" => 0, "observed_revision" => 0},
+          actor
+        )
+
+      params = %{q: "publ rep", exact: "1", limit: 2, bot: bot.id}
+      full = conn |> get("/api/bff/chat-list/search", params) |> json_response(200)
+
+      compact =
+        conn
+        |> get("/api/bff/chat-list/search", Map.put(params, :compact, "1"))
+        |> json_response(200)
+
+      assert compact["notes"] == [chat.id]
+      assert compact["hits"] == full["hits"]
+
+      assert Enum.map(compact["hits"], &{&1["message_id"], &1["chat_id"], &1["active"]}) == [
+               {active.id, chat.id, true},
+               {inactive.id, chat.id, false}
+             ]
+
+      assert [full_card] = full["chats"]
+      assert Enum.map(full_card["subchats"], & &1["id"]) == [child.id]
+      assert [card] = compact["chats"]
+      fields = ~w(id note bot_id bot_name created_at updated_at read_state message_count)
+      for field <- fields, do: assert(Map.fetch!(card, field) == Map.fetch!(full_card, field))
+      assert card["read_state"]["is_archived"]
+      assert card["bot_name"] == bot.name
+      assert card["message_count"] == 2
+
+      for field <- ~w(subchats draft_preview blocks_count tools_count),
+          do: refute(Map.has_key?(card, field))
+
+      cursor = compact["next_cursor"]
+      assert is_binary(cursor)
+
+      next =
+        conn
+        |> get("/api/bff/chat-list/search", Map.merge(params, %{compact: "1", after: cursor}))
+        |> json_response(200)
+
+      assert next["notes"] == []
+      assert Enum.map(next["hits"], & &1["message_id"]) == [root.id]
+      assert is_nil(next["next_cursor"])
+    end
+
     setup do
       put_app_env(:chat_search_probe_timeout_ms, 0)
       :ok
@@ -226,22 +293,19 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
       expected_ids = messages |> Enum.reverse() |> Enum.map(fn {_chat, message} -> message.id end)
 
-      # Probe disabled, probe covering everything, a probe window smaller than
-      # the page, and a probe in several chunks must all page identically.
-      for {probe_timeout_ms, window, chunk} <- [
-            {0, 300, 50},
-            {5_000, 300, 50},
-            {5_000, 1, 50},
-            {5_000, 300, 2}
-          ] do
+      # A GIN-only page, a page filled from recent messages, and a partial
+      # recent window completed by the older index tail must page identically.
+      {latest_chat, _} = List.last(messages)
+      create_subchat!(actor, latest_chat, :fork, note: "unloaded-child-card")
+
+      for {probe_timeout_ms, window} <- [{0, 96}, {5_000, 96}, {5_000, 1}] do
         put_app_env(:chat_search_probe_timeout_ms, probe_timeout_ms)
         put_app_env(:chat_search_probe_window, window)
-        put_app_env(:chat_search_probe_chunk, chunk)
 
         {first, capture} =
           SqlCapture.measure(fn ->
             conn
-            |> get("/api/bff/chat-list/search", %{q: "page needle", limit: 2})
+            |> get("/api/bff/chat-list/search", %{q: "page needle", limit: 2, compact: "1"})
             |> json_response(200)
           end)
 
@@ -264,39 +328,52 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
           refute SqlCapture.returned?(capture, "payload-#{index}")
         end
 
-        match_queries =
+        refute SqlCapture.returned?(capture, "unloaded-child-card")
+
+        page_queries =
           Enum.filter(capture.queries, fn query ->
-            query.select? and String.contains?(query.sql, "content_text") and
-              Regex.match?(~r/\bILIKE\b/i, query.sql)
+            query.select? and query.source == "chat_messages" and query.sql =~ "search_vector" and
+              Regex.match?(~r/@@|ts_match_vq|to_tsquery|::tsquery/i, query.sql)
           end)
 
-        refute Enum.any?(match_queries, &Regex.match?(~r/\bcount\s*\(/i, &1.sql))
-        page_queries = Enum.filter(match_queries, &(&1.source == "chat_messages"))
         assert page_queries != []
+        assert Enum.sum(Enum.map(page_queries, & &1.row_count)) == 3
+        refute Enum.any?(capture.queries, &("search_vector" in &1.columns))
 
-        # Each plan reads at most one row beyond the page, the rest never
-        # re-reads what the probe already found.
         for query <- page_queries do
           assert query_limit(query) in 1..3
           assert query.row_count <= query_limit(query)
           refute query.error?
+          refute query.sql =~ "content_text"
+          refute Regex.match?(~r/\bcount\s*\(/i, query.sql)
         end
+
+        # The recent window reads ordered keys only; disabling it must not
+        # fetch the window before performing a direct index search.
+        window_queries =
+          Enum.filter(capture.queries, fn query ->
+            query.select? and query.source == "chat_messages" and "id" in query.columns and
+              "created_at" in query.columns and query.sql =~ "ORDER BY" and
+              query.sql =~ "LIMIT" and not (query.sql =~ "search_vector")
+          end)
 
         if probe_timeout_ms > 0 do
-          assert Enum.any?(page_queries, &String.contains?(&1.sql, "OFFSET 0"))
+          assert [candidates] = window_queries
+          assert query_limit(candidates) == window
+          assert candidates.row_count <= window
+        else
+          assert window_queries == []
         end
 
-        assert [snippet_query] =
-                 Enum.filter(match_queries, &(&1.source == "chat_message_contents"))
+        # Only returned hits are projected to canonical text. Visibility, role,
+        # ordering and the original fragments are checked in one SQL snapshot.
+        assert [text_read] =
+                 Enum.filter(
+                   capture.queries,
+                   &(&1.select? and &1.sql =~ "ic_message_search_documents")
+                 )
 
-        assert "content_text" in snippet_query.columns
-        assert snippet_query.row_count <= 2
-
-        # Snippet contents are bounded by item id; the term predicate must not
-        # be one the planner could serve from the trigram index, or it rechecks
-        # every text match in the table instead of the page's few items.
-        assert snippet_query.sql =~ ~r/ILIKE ALL\(/
-        refute snippet_query.sql =~ ~r/ILIKE \$/
+        assert text_read.row_count == length(first["hits"])
 
         ids =
           Stream.unfold(first, fn
@@ -314,6 +391,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
                     |> get("/api/bff/chat-list/search", %{
                       q: "page needle",
                       limit: 2,
+                      compact: "1",
                       after: cursor
                     })
                     |> json_response(200)
@@ -374,79 +452,143 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
                Enum.uniq(Enum.map(second["hits"], & &1["chat_id"]))
     end
 
-    test "every word must occur in one message unless exact is set", %{conn: conn} do
+    test "matches all prefixes in one canonical message, including prefixes and positions across fragments",
+         %{conn: conn} do
       %{user: actor} = fixture = user_fixture()
       conn = sign_in_conn(conn, fixture)
-      chat = create_chat!(actor)
-      {:ok, phrase} = Threads.add_message_to_end(chat, :user, "alpha beta gamma", actor: actor)
+      chat = create_empty_chat!(actor)
+      message = create_message!(actor, chat)
+      last_step = create_step!(actor, message, sequence: 2)
+      create_text_item!(actor, last_step, "запроса")
+      first_step = create_step!(actor, message, sequence: 1)
+      create_text_item!(actor, first_step, "выполнения", sequence: 2)
+      item = create_item!(actor, first_step, sequence: 1)
+      create_content!(actor, item, sequence: 2, content_text: "нирование")
+      create_content!(actor, item, sequence: 1, content_text: "пла")
 
-      {:ok, reordered} =
-        Threads.add_message_to_end(chat, :assistant, "beta, then alpha", actor: actor)
+      {:ok, reversed} =
+        Threads.add_message_to_end(chat, :user, "Запрос: выполнение планируется", actor: actor)
 
-      {:ok, _partial} = Threads.add_message_to_end(chat, :assistant, "alpha only", actor: actor)
-      {:ok, _split} = Threads.add_message_to_end(chat, :user, "alpha", actor: actor)
-      {:ok, _} = Threads.add_message_to_end(chat, :assistant, "beta", actor: actor)
+      {:ok, gapped} =
+        Threads.add_message_to_end(chat, :assistant, "Планируем быстро выполнить запрос",
+          actor: actor
+        )
 
-      words =
-        conn |> get("/api/bff/chat-list/search", %{q: " beta  alpha "}) |> json_response(200)
+      {:ok, _} = Threads.add_message_to_end(chat, :user, "Планировать выполнение", actor: actor)
+      {:ok, _} = Threads.add_message_to_end(chat, :assistant, "Запросы", actor: actor)
 
-      assert words["terms"] == ["beta", "alpha"]
-      assert Enum.map(words["hits"], & &1["message_id"]) == [reordered.id, phrase.id]
+      unordered =
+        conn |> get("/api/bff/chat-list/search", %{q: "план выполн запрос"}) |> json_response(200)
 
-      exact =
+      assert unordered["terms"] == ["план", "выполн", "запрос"]
+
+      assert Enum.map(unordered["hits"], & &1["message_id"]) == [
+               gapped.id,
+               reversed.id,
+               message.id
+             ]
+
+      ordered =
         conn
-        |> get("/api/bff/chat-list/search", %{q: " alpha beta ", exact: "1"})
+        |> get("/api/bff/chat-list/search", %{q: "план выполн запрос", exact: "1"})
         |> json_response(200)
 
-      assert exact["terms"] == ["alpha beta"]
-      assert Enum.map(exact["hits"], & &1["message_id"]) == [phrase.id]
-
-      reversed =
-        conn
-        |> get("/api/bff/chat-list/search", %{q: "beta alpha", exact: "true"})
-        |> json_response(200)
-
-      assert reversed["hits"] == []
+      assert ordered["terms"] == unordered["terms"]
+      assert [%{"message_id" => id, "snippet" => snippet}] = ordered["hits"]
+      assert id == message.id
+      assert snippet =~ "планирование"
+      assert snippet =~ "запроса"
     end
 
-    test "searches text only with an indexable term; shorter terms only filter", %{conn: conn} do
+    test "technical punctuation separates consecutive prefixes in both notes and message text", %{
+      conn: conn
+    } do
       %{user: actor} = fixture = user_fixture()
       conn = sign_in_conn(conn, fixture)
-      by_note = create_chat!(actor, note: "x y release notes")
-      by_text = create_chat!(actor)
-      {:ok, _} = Threads.add_message_to_end(by_text, :user, "x y in message text", actor: actor)
-      {:ok, tagged} = Threads.add_message_to_end(by_text, :user, "zq message text", actor: actor)
+      chat = create_chat!(actor, note: "See api.example.com")
 
-      short = conn |> get("/api/bff/chat-list/search", %{q: "x y"}) |> json_response(200)
-      assert short["text_search"] == false
-      assert short["notes"] == [by_note.id]
-      assert short["hits"] == []
-      assert Enum.map(short["chats"], & &1["id"]) == [by_note.id]
+      {:ok, match} =
+        Threads.add_message_to_end(chat, :user, "Contact ops@api.example.com", actor: actor)
 
-      long = conn |> get("/api/bff/chat-list/search", %{q: "x y in"}) |> json_response(200)
-      assert long["text_search"] == false
+      {:ok, _decoy} =
+        Threads.add_message_to_end(chat, :assistant, "api extra example.com", actor: actor)
 
-      indexable = conn |> get("/api/bff/chat-list/search", %{q: "message"}) |> json_response(200)
-      assert indexable["text_search"] == true
-      assert length(indexable["hits"]) == 2
+      page =
+        conn
+        |> get("/api/bff/chat-list/search", %{q: "API.Exam.Com", exact: "1", compact: "1"})
+        |> json_response(200)
 
-      filtered =
-        conn |> get("/api/bff/chat-list/search", %{q: "zq message"}) |> json_response(200)
+      assert page["terms"] == ["api", "exam", "com"]
+      assert page["notes"] == [chat.id]
+      assert Enum.map(page["hits"], & &1["message_id"]) == [match.id]
+    end
 
-      assert filtered["text_search"] == true
-      assert Enum.map(filtered["hits"], & &1["message_id"]) == [tagged.id]
+    test "a combining mark does not turn a word suffix into a prefix", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_chat!(actor, note: "за́мок")
+      {:ok, stored} = Threads.add_message_to_end(chat, :user, "за́мок открыт", actor: actor)
 
-      blank = conn |> get("/api/bff/chat-list/search", %{q: "  "}) |> json_response(200)
+      search = fn q ->
+        conn |> get("/api/bff/chat-list/search", %{q: q, compact: "1"}) |> json_response(200)
+      end
 
-      assert blank ==
-               Map.merge(blank, %{
-                 "chats" => [],
-                 "notes" => [],
+      assert %{"hits" => [], "notes" => []} = search.("мок")
+      visible = search.("за́м")
+      assert Enum.map(visible["hits"], & &1["message_id"]) == [stored.id]
+      assert visible["notes"] == [chat.id]
+    end
+
+    test "ordered terms retain repeated prefixes and apply to notes as well as messages", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      repeated = create_empty_chat!(actor, note: "Тестируем тестовые данные")
+      once = create_empty_chat!(actor, note: "Тестовые данные")
+      {:ok, yes} = Threads.add_message_to_end(repeated, :user, repeated.note, actor: actor)
+      {:ok, _} = Threads.add_message_to_end(once, :user, once.note, actor: actor)
+
+      result =
+        conn
+        |> get("/api/bff/chat-list/search", %{q: "ТЕСТ тест дан", exact: "1"})
+        |> json_response(200)
+
+      assert result["terms"] == ["тест", "тест", "дан"]
+      assert result["notes"] == [repeated.id]
+      assert Enum.map(result["hits"], & &1["message_id"]) == [yes.id]
+      assert Enum.map(result["chats"], & &1["id"]) == [repeated.id]
+    end
+
+    test "ignores short tokens rather than searching for them in messages or in notes", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_empty_chat!(actor, note: "до 12 сообщений")
+
+      {:ok, message} =
+        Threads.add_message_to_end(chat, :user, "сообщение без чисел", actor: actor)
+
+      for q <- [" ", "до 12", "!%!|:*"], exact <- ["0", "1"] do
+        payload =
+          conn |> get("/api/bff/chat-list/search", %{q: q, exact: exact}) |> json_response(200)
+
+        assert %{
+                 "text_search" => false,
                  "hits" => [],
+                 "notes" => [],
+                 "chats" => [],
                  "terms" => [],
-                 "next_cursor" => nil,
-                 "text_search" => false
-               })
+                 "next_cursor" => nil
+               } = payload
+      end
+
+      result = conn |> get("/api/bff/chat-list/search", %{q: "от 41 сообщ"}) |> json_response(200)
+      assert result["text_search"] == true
+      assert result["terms"] == ["сообщ"]
+      assert result["notes"] == [chat.id]
+      assert Enum.map(result["hits"], & &1["message_id"]) == [message.id]
     end
 
     test "requires a valid cursor scoped to the actor and filters", %{conn: conn} do
@@ -460,7 +602,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       {:ok, _newest} =
         Threads.add_message_to_end(chat, :user, "cursor needle newest", actor: actor)
 
-      params = %{q: "cursor needle", limit: 1}
+      params = %{q: "curs", limit: 1}
       first = conn |> get("/api/bff/chat-list/search", params) |> json_response(200)
       cursor = first["next_cursor"]
       assert is_binary(cursor)
@@ -489,7 +631,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
         conn
         |> get(
           "/api/bff/chat-list/search",
-          Map.merge(continuation, %{q: "  cursor needle  ", limit: 5})
+          Map.merge(continuation, %{q: "  curs  ", limit: 5})
         )
         |> json_response(200)
 
@@ -528,11 +670,13 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       assert is_nil(final_cursor)
     end
 
-    test "matches literal raw text only for its owner and eligible content kinds", %{conn: conn} do
+    test "query punctuation is not a boolean operator and only visible text can match", %{
+      conn: conn
+    } do
       %{user: actor} = fixture = user_fixture()
       %{user: other_actor} = user_fixture()
       conn = sign_in_conn(conn, fixture)
-      term = ~S(needle%_\tail)
+      term = "Needles, tailoring"
       visible = create_chat!(actor)
 
       {:ok, message} =
@@ -541,7 +685,9 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       foreign = create_chat!(other_actor, note: term)
       {:ok, _} = Threads.add_message_to_end(foreign, :user, term, actor: other_actor)
       decoy = create_chat!(actor)
-      {:ok, _} = Threads.add_message_to_end(decoy, :user, "needle-any-tail", actor: actor)
+      {:ok, _} = Threads.add_message_to_end(decoy, :user, "needle only", actor: actor)
+      {:ok, _} = Threads.add_message_to_end(decoy, :user, "tail only", actor: actor)
+      {:ok, _} = Threads.add_message_to_end(decoy, :user, "unneeded entails", actor: actor)
 
       for {type, kind} <- [{:reasoning, :text}, {:answer, :opaque}] do
         chat = create_chat!(actor)
@@ -556,7 +702,7 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
 
         payload =
           conn
-          |> get("/api/bff/chat-list/search", %{q: String.upcase(term), exact: "1"})
+          |> get("/api/bff/chat-list/search", %{q: "NEED:* | !TAIL%"})
           |> json_response(200)
 
         assert payload["text_search"] == true
@@ -691,6 +837,27 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
       assert String.length(snippet) > 250
     end
 
+    test "the ordered snippet shows the matching sequence rather than an earlier isolated prefix",
+         %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      chat = create_empty_chat!(actor)
+      decoy = "Планирование вне города"
+      match = "Планируем в городе"
+
+      text = decoy <> String.duplicate(" другой текст ", 100) <> match
+      {:ok, _} = Threads.add_message_to_end(chat, :user, text, actor: actor)
+
+      payload =
+        conn
+        |> get("/api/bff/chat-list/search", %{q: "план в гор", exact: "1", compact: "1"})
+        |> json_response(200)
+
+      assert [%{"snippet" => snippet}] = payload["hits"]
+      assert snippet =~ match
+      refute snippet =~ decoy
+    end
+
     test "finds hits beyond the first trace read chunk", %{conn: conn} do
       %{user: actor} = fixture = user_fixture()
       conn = sign_in_conn(conn, fixture)
@@ -710,8 +877,8 @@ defmodule IntellectualClubWeb.Bff.ChatSearchTest do
           return_records?: true
         )
 
-      # Trace items are read in chunks of 200 ids: every hit lives in the second chunk,
-      # and the snippet comes from the first matching content of the first matching item.
+      # All matching text belongs to items beyond the first 200 IDs. Fragments
+      # were inserted out of order; their sequence still defines the shown text.
       item_by_sequence = Map.new(items, &{&1.sequence, &1})
 
       for {sequence, content_sequence, text} <- [

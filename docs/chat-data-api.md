@@ -13,13 +13,20 @@ Ash action: `IntellectualClub.Chat.ChatMessage :search` (read).
 
 Arguments:
 
-- `q`: required non-empty query. Whitespace separates terms (at most 16); a
-  message matches when one of its stored text contents contains **every** term
-  as a case-insensitive literal substring, in any order. Surrounding whitespace
-  is trimmed. `%` and `_` are literal text, not SQL wildcards. This is not
-  semantic/vector or token-based full-text search.
-- `exact`: optional boolean. When true, the whole trimmed query is a single
-  literal substring, spaces included.
+- `q`: plain text, not raw `tsquery`/regex syntax. Words are case-insensitive
+  and separated by punctuation or whitespace. In the default mode **all word
+  prefixes** must occur anywhere in the same visible message, in any order.
+  Tokens shorter than three letters/digits are ignored. An input with no
+  eligible token yields no hits. Requests over 4,096 bytes, 16 search terms, or
+  256 bytes per token return an empty search rather than a broader match
+  from a truncated query. A word beginning with `postgres` can match
+  `postgresql`; the infix `gres` cannot match it.
+- `exact`: the existing wire flag now selects **Words in order**. Long tokens
+  are still prefixes, but must occupy consecutive positions: `план выполн запрос`
+  matches `план выполнения запроса`, not `план нового выполнения запроса`.
+  Short words in such a sequence are whole words in their original positions,
+  including repeats; at least one token must still be long enough. It is not
+  a literal substring, a requirement on spaces, or a third whole-word mode.
 - `chat_id`, `bot_id`: optional integer filters.
 - `role`: optional `user` or `assistant`.
 - Standard JSON:API `sort`, `filter`, `fields`, and `page` parameters work.
@@ -37,8 +44,8 @@ The response is a JSON:API collection of `chat-messages`. Each hit includes
 - `text` assembles user input or assistant answer/handoff text in step/item/content
   order. Reasoning, tool arguments/results, artifacts and opaque payloads are not
   included. Files are not downloaded or OCR-searched.
-- Matching is performed against individual stored text contents, not against the
-  final concatenation: a query cannot span two content records.
+- One search document represents one stored message. Words can span text fragments
+  of one item; different terms and consecutive words may span visible items.
 - `active_branch` means membership in the message's own chat's **local** active
   branch. It is computed after pagination and is not a searchable/sortable field.
 - `chat_id` restricts stored messages belonging to that chat. Inherited linked-fork
@@ -113,23 +120,28 @@ than the returned page.
 
 ## Shared implementation
 
-`MessageText` owns query tokenization, text projection, substring matching and
-snippets. The Ash `:search` action applies the matching predicate before
-database pagination. BFF search reuses the same tokenization and predicate and
-keeps only its presentation-specific behavior (note matches, active-branch
-flags, snippets).
-
-Matching uses case-insensitive `ILIKE` against raw
-`chat_message_contents.content_text`. The existing partial trigram GIN index is
-on `content_text gin_trgm_ops`, with `kind = 'text'` and eligible `item_type`
-predicates: `input`, `handoff_request`, `handoff_history`,
-`handoff_message`, `answer`, and `handoff_summary`. Queries include those same
-predicates and check the parent item's type as well. Reasoning and opaque
-contents are not searchable even if they contain a matching `content_text`.
-Search does not depend on a generated/lowercased search column, a composite
-owner/text GIN index, or a new `btree_gin` migration. Ash authorization remains
-in force; chat-list matching additionally restricts results to the actor's own
-chats and messages.
+`MessageText` owns tokenization, tsquery construction, text assembly and
+snippets. PostgreSQL searches a private **positional `tsvector` per message**
+(`simple` configuration) with GIN and the owner/time indexes. No second copy
+of the original text or manually materialized table of prefixes is stored.
+Text fragments of each eligible item concatenate in `(sequence,id)` order;
+visible items are separated by paragraphs in step/item order. Only user
+input/handoff and assistant answer/handoff-summary text is eligible: opaque,
+reasoning, tool and file payloads are not searchable. The vector is maintained
+on the message's private trace-revision row in the same transaction as a source
+change, independently of the generation fence. It is not exposed in the API.
+If an exceptionally large vocabulary exceeds PostgreSQL’s 1 MiB `tsvector`
+limit, a fitting leading portion is indexed; the stored message is not rewritten.
+As with PostgreSQL positional FTS generally, a lexeme records at most 256
+positions and positions saturate at 16,383; ordered searches cannot distinguish
+all later occurrences in exceptionally long/repetitive messages. The migration
+backfills the current history and builds the GIN before reopening the service;
+allow a maintenance window for upgrading large installations. Administrative reparenting of
+trace foreign keys is serialized; a maintenance transaction spanning other trace
+writes must take the same transaction advisory lock `(1229145684,1297045061)`
+first or run offline. Normal message writes do not take this lock.
+An ordinary read still applies the actor's Ash policies; only the global list
+is additionally restricted to the actor's own non-subagent chats.
 
 ## Grouped chat list
 
@@ -187,7 +199,12 @@ Parameters:
 
 - `q`: the query, tokenized exactly like the Ash `:search` action above. A
   blank query returns empty results.
-- `exact`: `1`/`true` matches the whole query as one literal substring.
+- `exact`: `1`/`true` requires consecutive prefix positions (Words in order).
+- `compact`: `1`/`true` requests only the search card: `id`, `note`, `bot_id`,
+  `bot_name`, `created_at`, `updated_at`, `read_state`, and `message_count`.
+  Hits, notes, ordering, archive scope and cursor semantics are unchanged.
+  The compact expiry marker refers to the displayed chats. Without this flag
+  the endpoint retains full summaries for existing clients.
 - `bot`: optional bot id or `none` for chats without a bot; applies to notes
   and hits.
 - `limit`: hits per page, default 30, maximum 100.
@@ -215,7 +232,7 @@ Response:
 ```
 
 - `notes` lists chats (ids, `updated_at` descending, at most 20) whose note
-  contains every term; it is only populated on the first page.
+  satisfies the same word-prefix/positional query; it is only populated on the first page.
 - `hits` are stored messages of the actor's own non-subagent chats whose text
   contains every term, ordered by `(created_at DESC, id DESC)`. `active` is
   membership in the chat's local active branch; inactive-branch hits are
@@ -224,42 +241,25 @@ Response:
 - `chats` carries one summary per chat referenced by `notes` or `hits`, note
   chats first, then hit chats in order of their first hit. `message_count` is
   the active-branch length.
-- `text_search` is `false` when no term has three letters or digits in a row.
-  Such queries cannot be narrowed by the trigram index and match notes only.
-  Shorter terms combined with an indexable term only filter its matches.
+- `text_search` is `false` when there is no usable search. With only short
+  tokens (or only punctuation) both `notes` and `hits` are empty. `terms`
+  contains normalized individual tokens, also in Words in order mode.
 
 ### Bounded reads and deadlines
 
-The page is read through the Ash `ChatMessage :list_search` action in two
-explicit plans, both ordered by time and limited to `limit + 1` rows:
-
-1. A **probe** first selects the newest `:chat_search_probe_window` candidate
-   messages after the cursor (default 300; a plain ordered read with the chat
-   filters, no text predicate), then checks their contents with the
-   `:correlated` plan in chunks of `:chat_search_probe_chunk` ids (default 50),
-   newest first, inside one statement budget of `:chat_search_probe_timeout_ms`
-   (default 250 ms; 0 disables the probe). It stops as soon as the page fills.
-   After each chunk the hit rate so far projects whether the whole window could
-   fill the page; when it cannot, probing stops early. Common terms finish here
-   after one or two chunks.
-2. The `:indexed` plan is the ordinary nested `EXISTS` predicate, which
-   PostgreSQL serves through the trigram index (all terms narrow the index
-   scan). It covers only the range the probe did not check: everything older
-   than the last inspected candidate, or the whole range after the cursor when
-   the probe timed out. Rare terms finish here cheaply; the cost of
-   medium-frequency terms is proportional to their total number of matches.
-
-The probe is chunked in the application because PostgreSQL otherwise hashes
-every global text match for the `EXISTS` form, and the authorization joins
-prevent an index-ordered early exit. Search transactions force custom plans
-(`plan_cache_mode`) so cached prepared statements still see the bound
-patterns. Snippets are loaded for the page's hits only, and the application
-never loads a global list of matching messages or counts all matches. The
-snippet read is bounded by the hits' item ids and binds the terms as one
-`ILIKE ALL(array)` predicate, which no index serves: PostgreSQL estimates a
-`%term%` pattern as near-unique, so a plain `ILIKE` would send it through the
-trigram index and recheck every matching text in the table (hundreds of
-milliseconds for a common term) instead of reading the page's few items.
+1. Within a small statement budget (`:chat_search_probe_timeout_ms`, default
+   250 ms; 0 disables the probe), read up to `:chat_search_probe_window` newest
+   eligible message IDs after the cursor (default 96). Check only these vectors
+   in time order, without a global GIN scan. If the page plus its lookahead
+   row is full or the window exhausted the corpus, no indexed tail is read.
+2. Otherwise the indexed read is restricted to positions strictly older than
+   the last inspected `(created_at,id)`, with a limit of only the missing rows.
+   On a probe timeout the whole probe is discarded and the indexed plan starts
+   at the original cursor. Only the final page's source texts are assembled
+   for snippets. A broad prefix never triggers an unbounded count in the list.
+3. The compact UI does not load full drafts, tools, configurations or nested
+   chat summaries to present its first hits. Active/inactive flags and active
+   counts are obtained from branch metadata only for the chats on the page.
 
 `SearchDeadline.run` bounds the whole search and response enrichment with
 `:chat_search_timeout_ms` (default 5,000 ms), including snippets, drafts and

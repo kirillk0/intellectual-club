@@ -74,17 +74,266 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
     assert active_hit_ids(Search.search_messages_in_chat(chat.id, "delete", actor)) == []
   end
 
+  test "searches canonical fragments across item and step boundaries in their display order" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    later = create_step!(actor, message, sequence: 2)
+    earlier = create_step!(actor, message, sequence: 1)
+    create_text_item!(actor, later, "финал")
+    item = create_item!(actor, earlier, type: :answer, sequence: 2)
+    create_content!(actor, item, sequence: 2, content_text: "данных")
+    create_content!(actor, item, sequence: 1, content_text: "мета")
+    moved = create_text_item!(actor, earlier, "поиск", sequence: 1)
+
+    assert search_ids(actor, "поис метадан фин", exact: true) == [message.id]
+    assert search_ids(actor, "данных", exact: true) == []
+
+    moved
+    |> Ash.Changeset.for_update(:update, %{sequence: 3}, actor: actor)
+    |> Ash.update!(actor: actor)
+
+    assert search_ids(actor, "поис метадан", exact: true) == []
+    assert search_ids(actor, "метадан поис фин", exact: true) == [message.id]
+
+    Ash.destroy!(earlier, actor: actor)
+    assert search_ids(actor, "метадан", exact: true) == []
+    assert search_ids(actor, "фин", exact: true) == [message.id]
+  end
+
+  test "search edits and their results roll back together" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    step = create_step!(actor, message)
+    item = create_text_item!(actor, step, "прежний")
+    [content] = item.contents
+
+    assert {:error, _} =
+             Ash.transaction(ChatMessageContent, fn ->
+               edit_text!(actor, content, "новый")
+
+               assert search_ids(actor, "нов") == [message.id]
+               assert search_ids(actor, "преж") == []
+               Ash.DataLayer.rollback(ChatMessageContent, :deliberate)
+             end)
+
+    assert search_ids(actor, "преж") == [message.id]
+    assert search_ids(actor, "нов") == []
+  end
+
+  test "moving a trace step removes its terms from the old message and indexes the new one" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    before = create_message!(actor, chat)
+    after_move = create_message!(actor, chat)
+    step = create_step!(actor, before)
+    create_text_item!(actor, step, "searchable payload")
+    assert search_ids(actor, "paylo") == [before.id]
+
+    # The API makes this FK immutable; maintenance/import SQL can still move a step.
+    Repo.query!("UPDATE chat_message_steps SET chat_message_id=$1 WHERE id=$2", [
+      after_move.id,
+      step.id
+    ])
+
+    assert search_ids(actor, "paylo") == [after_move.id]
+  end
+
+  test "deleting a complete trace subtree in one statement removes its searchable text" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    step = create_step!(actor, message)
+    item = create_text_item!(actor, step, "discarded payload")
+    assert search_ids(actor, "discard") == [message.id]
+
+    Repo.query!(
+      """
+      WITH removed AS (
+        DELETE FROM chat_message_contents WHERE chat_message_item_id=$1 RETURNING chat_message_item_id
+      ), removed_items AS (
+        DELETE FROM chat_message_items WHERE id IN (SELECT chat_message_item_id FROM removed)
+        RETURNING chat_message_step_id
+      )
+      DELETE FROM chat_message_steps WHERE id IN (SELECT chat_message_step_id FROM removed_items)
+      """,
+      [item.id]
+    )
+
+    assert search_ids(actor, "discard") == []
+  end
+
+  test "a text larger than PostgreSQL's lexeme storage limit can still be saved in full" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    step = create_step!(actor, message)
+    text = "searchable beginning " <> Enum.map_join(1..120_000, " ", &"token#{&1}")
+    item = create_text_item!(actor, step, text)
+
+    assert [content] = item.contents
+    assert content.content_text == text
+    assert search_ids(actor, "begin") == [message.id]
+  end
+
+  @tag :whitebox
+  @tag sandbox: false
+  test "concurrent committed fragment edits publish the vector of both final values" do
+    alias IntellectualClub.Chat.DbRaceHelpers, as: Race
+
+    %{user: actor} = user_fixture()
+    on_exit(fn -> Race.cleanup_committed_owner!(actor) end)
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    item = create_item!(actor, create_step!(actor, message))
+    first = create_content!(actor, item, content_text: "initial ")
+    second = create_content!(actor, item, sequence: 2, content_text: "text")
+    parent = self()
+
+    holder =
+      Race.db_task!(fn ->
+        Repo.transaction(fn ->
+          edit_text!(actor, first, "updated ")
+          backend = backend_pid!()
+          send(parent, {:first_edited, self()})
+
+          receive do
+            {:verify_wait, waiter} -> Race.await_blocked!(waiter, backend)
+          after
+            10_000 -> flunk("Concurrent editor did not start")
+          end
+
+          :ok
+        end)
+      end)
+
+    assert_receive {:first_edited, pid}, 10_000
+
+    contender =
+      Race.db_task!(fn ->
+        send(parent, {:second_editor, backend_pid!()})
+        edit_text!(actor, second, "words")
+        :ok
+      end)
+
+    assert_receive {:second_editor, backend}, 10_000
+    send(pid, {:verify_wait, backend})
+    assert {:ok, :ok} = Race.finish!(holder)
+    assert :ok = Race.finish!(contender)
+    assert search_ids(actor, "updat word", exact: true) == [message.id]
+    assert search_ids(actor, "initial") == []
+  end
+
+  @tag :whitebox
+  @tag sandbox: false
+  test "a generation fence does not block indexing a visible trace fragment" do
+    alias IntellectualClub.Chat.DbRaceHelpers, as: Race
+
+    %{user: actor} = user_fixture()
+    on_exit(fn -> Race.cleanup_committed_owner!(actor) end)
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    item = create_item!(actor, create_step!(actor, message))
+    parent = self()
+
+    holder =
+      Race.db_task!(fn ->
+        Repo.transaction(fn ->
+          Repo.query!("SELECT id FROM chat_messages WHERE id=$1 FOR NO KEY UPDATE", [message.id])
+          send(parent, {:message_fenced, self()})
+
+          receive do
+            :release_message -> :ok
+          after
+            10_000 -> flunk("Fence was not released")
+          end
+        end)
+      end)
+
+    assert_receive {:message_fenced, pid}, 10_000
+
+    writer =
+      Race.db_task!(fn ->
+        Repo.transaction(fn ->
+          Repo.query!("SET LOCAL lock_timeout='2s'")
+          create_content!(actor, item, content_text: "visible.new.text")
+          :written
+        end)
+      end)
+
+    try do
+      assert {:ok, :written} = Race.finish!(writer)
+      assert search_ids(actor, "vis new tex", exact: true) == [message.id]
+    after
+      send(pid, :release_message)
+      assert {:ok, :ok} = Race.finish!(holder)
+    end
+  end
+
+  @tag :whitebox
+  @tag sandbox: false
+  test "the first committed fragment and a concurrent item reorder leave canonical positions" do
+    alias IntellectualClub.Chat.DbRaceHelpers, as: Race
+
+    %{user: actor} = user_fixture()
+    on_exit(fn -> Race.cleanup_committed_owner!(actor) end)
+    chat = create_empty_chat!(actor)
+    message = create_message!(actor, chat)
+    step = create_step!(actor, message)
+    empty = create_item!(actor, step, type: :answer, sequence: 1)
+    create_text_item!(actor, step, "existing", sequence: 2)
+    parent = self()
+
+    insert =
+      Race.db_task!(fn ->
+        Repo.transaction(fn ->
+          create_content!(actor, empty, content_text: "inserted")
+          backend = backend_pid!()
+          send(parent, {:fragment_inserted, self()})
+
+          receive do
+            {:verify_reorder_wait, waiter} -> Race.await_blocked!(waiter, backend)
+          after
+            10_000 -> flunk("Reorder did not start")
+          end
+
+          :inserted
+        end)
+      end)
+
+    assert_receive {:fragment_inserted, pid}, 10_000
+
+    reorder =
+      Race.db_task!(fn ->
+        send(parent, {:reorder_backend, backend_pid!()})
+
+        empty
+        |> Ash.Changeset.for_update(:update, %{sequence: 3}, actor: actor)
+        |> Ash.update!(actor: actor)
+
+        :reordered
+      end)
+
+    assert_receive {:reorder_backend, backend}, 10_000
+    send(pid, {:verify_reorder_wait, backend})
+    assert {:ok, :inserted} = Race.finish!(insert)
+    assert :reordered = Race.finish!(reorder)
+    assert search_ids(actor, "exist insert", exact: true) == [message.id]
+    assert search_ids(actor, "insert exist", exact: true) == []
+  end
+
   describe "Ash message actions" do
-    test "search uses literal substrings and returns each message once before pagination" do
+    test "search returns each matching message once before pagination" do
       %{user: actor} = user_fixture()
       chat = create_empty_chat!(actor)
-      {:ok, first} = Threads.add_message_to_end(chat, :user, "100%_matched", actor: actor)
+      {:ok, first} = Threads.add_message_to_end(chat, :user, "Matchable text ", actor: actor)
       message = create_message!(actor, chat)
       step = create_step!(actor, message)
-      item = create_text_item!(actor, step, "100%_matched", type: :answer)
-      create_content!(actor, item, sequence: 2, content_text: "100%_matched", kind: :text)
-      Threads.add_message_to_end(chat, :assistant, "100XXmatched", actor: actor)
-      query = ChatMessage |> Ash.Query.for_read(:search, %{q: "%_"}, actor: actor)
+      item = create_text_item!(actor, step, "Matchable text ", type: :answer)
+      create_content!(actor, item, sequence: 2, content_text: "Matchable text ", kind: :text)
+      Threads.add_message_to_end(chat, :assistant, "Overmatched", actor: actor)
+      query = ChatMessage |> Ash.Query.for_read(:search, %{q: "matchab"}, actor: actor)
       page = Ash.read!(query, page: [limit: 1, count: true])
       assert page.count == 2
       assert [hit] = page.results
@@ -104,10 +353,11 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
       create_text_item!(actor, step, "Tool arguments", type: :tool_call, sequence: 2)
       create_text_item!(actor, step, "Visible answer", type: :answer, sequence: 3)
       create_text_item!(actor, step, "Handoff summary", type: :handoff_summary, sequence: 4)
+      create_text_item!(actor, step, "Wrong role input", type: :input, sequence: 5)
       loaded = Ash.load!(message, :text, actor: actor)
       assert loaded.text == "Visible answer\n\nHandoff summary"
 
-      for term <- ["Private reasoning", "Tool arguments"] do
+      for term <- ["Private reasoning", "Tool arguments", "Wrong role input"] do
         assert [] ==
                  ChatMessage
                  |> Ash.Query.for_read(:search, %{q: term}, actor: actor)
@@ -213,6 +463,19 @@ defmodule IntellectualClub.Chat.MessageSearchSyncTest do
                |> Ash.ActionInput.for_action(:read_messages, %{id: chat.id})
                |> Ash.run_action()
     end
+  end
+
+  defp search_ids(actor, query, opts \\ []) do
+    ChatMessage
+    |> Ash.Query.for_read(:search, Map.new([q: query] ++ opts), actor: actor)
+    |> Ash.read!(actor: actor, page: false)
+    |> Enum.map(& &1.id)
+  end
+
+  defp edit_text!(actor, content, text) do
+    content
+    |> Ash.Changeset.for_update(:update, %{content_text: text}, actor: actor)
+    |> Ash.update!(actor: actor)
   end
 
   defp load_content_by_message!(message_id, actor) do

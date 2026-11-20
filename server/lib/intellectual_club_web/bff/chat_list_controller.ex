@@ -217,35 +217,50 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
   Searches the chat list.
 
   Returns chats whose note matches (`notes`, first page only) and message hits
-  newest first (`hits`) with an opaque `next_cursor`; `chats` carries summaries
-  for both. `exact=1` matches the whole query as one substring instead of every
-  word. `limit` bounds hits per page.
+  newest first (`hits`) with an opaque `next_cursor`. `exact=1` selects
+  consecutive word prefixes. `compact=1` skips draft, subchat and resource
+  summaries on the search screen without changing hit/branch semantics.
   """
   def search(conn, params) do
     with {:ok, actor} <- Helpers.require_actor(conn),
          {:ok, _view} <- ChatParams.archive_view(params),
          {:ok, bot_filter} <- ChatParams.bot_filter(params) do
       term = params |> Map.get("q", "") |> to_string()
+      compact? = ChatParams.flag?(params, "compact")
 
       render_search(conn, fn ->
         with {:ok, result} <-
                ChatSearch.search_chat_list(term, actor,
                  exact?: ChatParams.flag?(params, "exact"),
+                 compact?: compact?,
                  bot_filter: bot_filter,
                  after: params["after"],
                  limit: ChatParams.search_limit(params)
                ) do
-          SearchDeadline.query(fn ->
-            %{
-              chats: search_chats_payload(result, actor, params),
-              notes: result.notes,
-              hits: Enum.map(result.hits, &hit_payload/1),
-              next_cursor: result.next_cursor,
-              text_search: result.text_search?,
-              terms: result.terms,
-              next_read_state_expiry: ReadState.list_marker(actor).next_expiry
-            }
-          end)
+          {chats, next_expiry} =
+            if compact? do
+              cards =
+                Enum.map(result.chats, fn chat ->
+                  Serializer.search_chat_summary(chat, Map.fetch!(result.message_counts, chat.id))
+                end)
+
+              {cards, ReadState.next_expiry(Enum.map(cards, & &1.read_state))}
+            else
+              SearchDeadline.query(fn ->
+                {search_chats_payload(result, actor, params),
+                 ReadState.list_marker(actor).next_expiry}
+              end)
+            end
+
+          %{
+            chats: chats,
+            notes: result.notes,
+            hits: Enum.map(result.hits, &hit_payload/1),
+            next_cursor: result.next_cursor,
+            text_search: result.text_search?,
+            terms: result.terms,
+            next_read_state_expiry: next_expiry
+          }
         end
       end)
     else

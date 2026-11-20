@@ -88,8 +88,8 @@ defmodule IntellectualClub.Repo do
             []
           )
 
-        # Search plans depend on the bound ILIKE patterns; a generic plan for a
-        # cached prepared statement cannot see them and may stop using indexes.
+        # Prefix selectivity depends on the bound tsquery. A generic cached
+        # plan cannot distinguish a broad prefix from a rare one.
         put_local_settings(Integer.to_string(timeout_ms), "off", "force_custom_plan")
         result = fun.()
         if recorded_statement_timeout?(), do: rollback(:statement_timeout)

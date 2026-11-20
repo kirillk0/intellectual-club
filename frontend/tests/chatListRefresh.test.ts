@@ -101,7 +101,7 @@ describe('chat list refresh after returning from the background', () => {
     });
     const router = createRouter({
       history: createMemoryHistory(),
-      routes: [{ path: '/chats', component: { template: '<div />' } }],
+      routes: ['/chats', '/chats/:id'].map((path) => ({ path, component: { template: '<div />' } })),
     });
     await router.push(path);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -204,6 +204,7 @@ describe('chat list refresh after returning from the background', () => {
       isSearchPath(path) ? stale.promise : listPayload()
     );
     await mountList('/chats?q=test');
+    expect(listRequests()).toHaveLength(0);
     const pendingSignal = searchRequests()[0][1].signal as AbortSignal;
     apiMocks.get.mockImplementation(async (path: string) =>
       isSearchPath(path) ? searchPayload('Fresh search') : listPayload()
@@ -398,7 +399,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.text()).toContain('Failed to search chats.');
   });
 
-  it('starts searching from three characters after the debounce', async () => {
+  it('starts searching from three characters after a short debounce', async () => {
     await mountList();
     const input = wrapper.get('input[type="search"]');
 
@@ -409,7 +410,7 @@ describe('chat list refresh after returning from the background', () => {
     apiMocks.get.mockImplementation(async (path: string) =>
       isSearchPath(path) ? searchPayload('Found chat') : listPayload());
     await input.setValue('abc');
-    await vi.advanceTimersByTimeAsync(599);
+    await vi.advanceTimersByTimeAsync(149);
     expect(searchRequests()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1);
     await flushPromises();
@@ -419,20 +420,33 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.get('.chat-row').text()).toContain('Found chat');
   });
 
-  it('explains when the term only matched chat metadata', async () => {
-    let textSearch = false;
-    apiMocks.get.mockImplementation(async (path: string) =>
-      isSearchPath(path) ? searchPayload('Meta match', { text_search: textSearch }) : listPayload());
-    await mountList('/chats?q=ab%20cd');
+  it('shows a local hint instead of searching notes, messages or displaying ordinary rows for short words', async () => {
+    await mountList('/chats?q=до%2012&exact=1');
+    expect(wrapper.get('.chat-search-hint').text()).toContain('at least 3 letters or digits');
+    expect(wrapper.find('.chat-row').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('No matches found.');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(searchRequests()).toHaveLength(0);
+    const input = wrapper.get('input[type="search"]');
+    await input.setValue('слово '.repeat(17));
+    await vi.advanceTimersByTimeAsync(150);
+    expect(wrapper.get('.chat-search-hint').text()).toContain('Search query is too long.');
+    expect(searchRequests()).toHaveLength(0);
 
-    expect(wrapper.get('.chat-search-hint').text()).toContain('at least 3 letters or digits in a row');
-    expect(wrapper.get('.chat-row').text()).toContain('Meta match');
-
-    textSearch = true;
-    await wrapper.get('input[type="search"]').setValue('abc');
-    await vi.advanceTimersByTimeAsync(600);
+    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path) ? searchPayload('Found chat') : listPayload());
+    await input.setValue('по баз');
+    await input.trigger('keydown.enter');
     await flushPromises();
+    expect(searchRequests()).toHaveLength(1);
+    expect(searchParams(searchRequests()[0]).get('exact')).toBe('1');
     expect(wrapper.find('.chat-search-hint').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(searchRequests()).toHaveLength(1);
+    await input.setValue('по');
+    expect(wrapper.find('.chat-row').exists()).toBe(false);
+    await input.setValue('');
+    await flushPromises();
+    expect(wrapper.get('.chat-row').text()).toContain('Old list');
   });
 
   it('shows a search timeout inline without the global error banner', async () => {
@@ -484,7 +498,7 @@ describe('chat list refresh after returning from the background', () => {
 
   const hitLinks = () => wrapper.findAll('.chat-search-hit__link').map((link) => link.attributes('href'));
 
-  it('sends the query, exact flag, bot and page size in one request without section parameters', async () => {
+  it('requests compact cards, preserving the ordered mode URL flag, bot and page size', async () => {
     apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
       ? searchResults({ chats: [searchChat(1, 'Alpha')], hits: [hit(10, 1)] })
       : listPayload());
@@ -494,13 +508,14 @@ describe('chat list refresh after returning from the background', () => {
     expect(searchRequests()).toHaveLength(1);
     const params = searchParams(searchRequests()[0]);
     expect(params.get('q')).toBe('needle');
+    expect(params.get('compact')).toBe('1');
     expect(params.get('exact')).toBe('1');
     expect(params.get('bot')).toBe('5');
     expect(params.get('limit')).toBe('30');
     for (const key of ['after', 'view', 'sections', 'section', 'page', 'per_page', ...SECTIONS.flatMap((section) => [`page_${section}`, `after_${section}`])]) {
       expect(params.has(key)).toBe(false);
     }
-    expect(wrapper.get('.chat-search__exact').attributes('aria-pressed')).toBe('true');
+    expect(wrapper.get('.chat-search-order').attributes('aria-pressed')).toBe('true');
   });
 
   it('keeps mixed search results and their cursor when switching views, then clears to the selected list', async () => {
@@ -515,7 +530,7 @@ describe('chat list refresh after returning from the background', () => {
     });
     await mountList();
     await wrapper.get('input[type="search"]').setValue('needle');
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(150);
     await flushPromises();
     expect(hitLinks()).toEqual(['/chats/2?focusMessage=10']);
 
@@ -549,7 +564,7 @@ describe('chat list refresh after returning from the background', () => {
         notes: [3],
         terms: ['needle', 'fine'],
         hits: [
-          hit(10, 1, { snippet: 'A fine NEEDLE in Alpha' }),
+          hit(10, 1, { snippet: 'define, fine-grained NEEDLEwork' }),
           hit(9, 1, { role: 'assistant', active: false, snippet: 'needle again' }),
           hit(8, 2, { snippet: 'needle in Beta' }),
           hit(7, 1, { snippet: 'older needle in Alpha' }),
@@ -581,6 +596,17 @@ describe('chat list refresh after returning from the background', () => {
     ]);
     expect(wrapper.find('.chat-search-more').exists()).toBe(false);
     expect(wrapper.text()).not.toContain('No matches found.');
+  });
+
+  it('highlights only consecutive prefixes and whole short words in ordered mode', async () => {
+    apiMocks.get.mockImplementation(async (path: string) => isSearchPath(path)
+      ? searchResults({ chats: [searchChat(1, 'Result')], terms: ['баз', 'на', 'дан'], hits: [
+        hit(10, 1, { snippet: 'Небазовый на данных; база над данными; Базы, НА ДАННЫХ! <strong>ДАН</strong>' }),
+      ] }) : listPayload());
+    await mountList('/chats?q=баз+на+дан&exact=1');
+    const snippet = wrapper.get('.chat-search-hit__snippet');
+    expect(snippet.findAll('mark').map((el) => el.text())).toEqual(['Баз', 'НА', 'ДАН']);
+    expect(snippet.find('strong').exists()).toBe(false);
   });
 
   it('loads more hits with the cursor and continues the last group', async () => {
@@ -672,7 +698,7 @@ describe('chat list refresh after returning from the background', () => {
       wrapper.findComponent({ name: 'ChatBotFiltersPanel' }).vm.$emit('select-filter', 'none');
       await nextTick();
     } else {
-      await wrapper.get('.chat-search__exact').trigger('click');
+      await wrapper.get('.chat-search-order').trigger('click');
     }
     expect((staleCall[1].signal as AbortSignal).aborted).toBe(true);
     stale.resolve(searchResults({ chats: [searchChat(9, 'Obsolete search')], hits: [hit(1, 9)] }));
@@ -680,7 +706,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(wrapper.text()).not.toContain('Obsolete search');
     if (filter === 'term') {
       expect(searchRequests()).toHaveLength(2);
-      await vi.advanceTimersByTimeAsync(600);
+      await vi.advanceTimersByTimeAsync(150);
       await flushPromises();
     }
 
@@ -692,7 +718,7 @@ describe('chat list refresh after returning from the background', () => {
     expect(params.get('exact')).toBe(filter === 'exact' ? '1' : null);
     if (filter === 'exact') {
       expect(window.location.search).toContain('exact=1');
-      expect(wrapper.get('.chat-search__exact').attributes('aria-pressed')).toBe('true');
+      expect(wrapper.get('.chat-search-order').attributes('aria-pressed')).toBe('true');
     }
   });
 

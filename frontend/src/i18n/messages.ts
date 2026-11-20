@@ -1045,10 +1045,13 @@ export const ruMessages: Record<string, string> = {
   "Read the contents of 1–10 HTTP(S) URLs as clean text or Markdown. Failed URLs are retried with the configured fallback providers. Brave uses the built-in Web Reader. Does not follow links to crawl a site.": "Чтение содержимого 1–10 HTTP(S)-адресов в виде очищенного текста или Markdown. Неудавшиеся адреса передаются резервным провайдерам. Brave использует встроенный Web Reader. Обход сайта по ссылкам не выполняется.",
   'Timeout (seconds)': 'Таймаут (секунды)',
   'To': 'По',
-  'Message text was not searched: some word must have at least 3 letters or digits in a row. Only chat notes were searched.':
-    'Текст сообщений не искался: хотя бы в одном слове должно быть 3 буквы или цифры подряд. Поиск выполнен только по заметкам чатов.',
-  'Exact': 'Точно',
-  'Match the whole phrase exactly, including spaces': 'Искать фразу целиком, включая пробелы',
+  'Words in order': 'Слова подряд',
+  'Enter a word with at least 3 letters or digits.': 'Введите слово хотя бы из трёх букв или цифр.',
+  'Search query is too long. Shorten the text or use fewer words.': 'Запрос слишком длинный. Сократите текст или количество слов.',
+  'Match word prefixes in any order. Use at least 3 letters or digits per word.':
+    'Ищем по началу каждого слова в любом порядке. Слова короче трёх букв или цифр пропускаются.',
+  'Match consecutive word prefixes. Words shorter than 3 characters must match in full.':
+    'Ищем по началам слов, идущих подряд. Короткие слова в последовательности должны совпадать целиком.',
   'Show more': 'Показать ещё',
   'Today, {time}': 'Сегодня, {time}',
   'Token estimate': 'Оценка токенов',

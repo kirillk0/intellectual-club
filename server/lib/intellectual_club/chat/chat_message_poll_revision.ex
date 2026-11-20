@@ -1,6 +1,7 @@
 defmodule IntellectualClub.Chat.ChatMessagePollRevision do
   @moduledoc """
-  Transactional trace invalidation, separate from the generation fence row.
+  Transactional trace invalidation and private positional search index,
+  separate from the generation fence row.
 
   Database-derived revisions cover bulk writes and cascades. This resource is
   read-only to callers; all access is authorized through its owning message.
@@ -12,6 +13,15 @@ defmodule IntellectualClub.Chat.ChatMessagePollRevision do
   postgres do
     table("chat_message_poll_revisions")
     repo(IntellectualClub.Repo)
+
+    migration_defaults(search_vector: ~s[fragment("''::tsvector")])
+
+    custom_indexes do
+      index(["(ARRAY[search_owner_id])", :search_vector],
+        name: "chat_message_poll_revisions_owner_search_vector_gin",
+        using: "gin"
+      )
+    end
 
     references do
       reference(:chat_message, on_delete: :delete)
@@ -69,6 +79,20 @@ defmodule IntellectualClub.Chat.ChatMessagePollRevision do
 
         down("DROP TRIGGER IF EXISTS advance_content_trace_revision ON chat_message_contents")
       end
+
+      for {name, create, drop} <- IntellectualClub.Chat.SearchVectorSQL.statements() do
+        statement name do
+          after_tables([
+            "chat_messages",
+            "chat_message_steps",
+            "chat_message_items",
+            "chat_message_contents"
+          ])
+
+          up(create)
+          down(drop)
+        end
+      end
     end
   end
 
@@ -76,6 +100,21 @@ defmodule IntellectualClub.Chat.ChatMessagePollRevision do
     attribute :chat_message_id, :integer do
       primary_key?(true)
       allow_nil?(false)
+    end
+
+    attribute :search_owner_id, :integer do
+      writable?(false)
+      public?(false)
+      select_by_default?(false)
+    end
+
+    attribute :search_vector, AshPostgres.Tsvector do
+      allow_nil?(false)
+      generated?(true)
+      writable?(false)
+      public?(false)
+      sensitive?(true)
+      select_by_default?(false)
     end
 
     attribute :revision, :integer do

@@ -204,13 +204,18 @@ defmodule IntellectualClub.Chat.ChatMessage do
   actions do
     defaults([:read])
 
+    read :list_search_window do
+      description("Select the newest eligible messages before testing their search vectors.")
+      filter(expr(owner_id == ^actor(:id) and role in [:user, :assistant]))
+    end
+
     read :list_search do
       description("Owner-only chat-list text search; callers add order, cursor and limit.")
       argument :q, :string, allow_nil?: false
       argument :exact, :boolean, default: false
 
       argument :strategy, :atom do
-        constraints(one_of: [:correlated, :indexed])
+        constraints(one_of: [:recent, :indexed])
         default(:indexed)
       end
 
@@ -219,7 +224,7 @@ defmodule IntellectualClub.Chat.ChatMessage do
 
     read :search do
       description(
-        "Search user-facing message text. Whitespace separates case-insensitive literal substrings that must all occur in one stored text; `exact` matches the whole query as one substring. Returns every matching stored message, including inactive branches, without UI ranking or grouping."
+        "Search visible message text for all word prefixes (at least three letters or digits); `exact` requires consecutive word positions. Includes inactive branches without UI ranking or grouping."
       )
 
       argument :q, :string do
@@ -229,7 +234,10 @@ defmodule IntellectualClub.Chat.ChatMessage do
 
       argument :exact, :boolean do
         default(false)
-        description("Match the whole query as one literal substring instead of every word.")
+
+        description(
+          "Match consecutive word prefixes in input order. Short words in the sequence match whole words."
+        )
       end
 
       argument :chat_id, :integer
@@ -442,7 +450,12 @@ defmodule IntellectualClub.Chat.ChatMessage do
   end
 
   policies do
-    policy action_type(:read) do
+    policy action([:list_search, :list_search_window]) do
+      forbid_unless actor_present()
+      authorize_if expr(owner_id == ^actor(:id))
+    end
+
+    policy action([:read, :search]) do
       authorize_if relates_to_actor_via(:owner)
 
       authorize_if expr(chat.shared_incoming == true)

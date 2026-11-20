@@ -130,6 +130,19 @@ defmodule IntellectualClubWeb.Bff.Serializer do
     }
   end
 
+  def search_chat_summary(%Chat{} = chat, message_count) do
+    %{
+      id: chat.id,
+      note: chat.note,
+      bot_id: chat.bot_id,
+      bot_name: chat_bot_name(chat),
+      created_at: datetime_iso(chat.created_at),
+      updated_at: datetime_iso(chat.updated_at),
+      read_state: loaded_value(chat.read_state),
+      message_count: message_count
+    }
+  end
+
   def chat_list_stats(%{
         total_chat_count: total,
         no_bot_chat_count: no_bot_count,

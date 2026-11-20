@@ -40,7 +40,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
       path =
         "/api/ash/chat-messages/search?" <>
           Plug.Conn.Query.encode(%{
-            "q" => "AlPhA",
+            "q" => "AlPh",
             "sort" => "id",
             "page" => %{"limit" => "2", "count" => "true"}
           })
@@ -55,6 +55,11 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
 
       assert Enum.all?(payload["data"], & &1["attributes"]["active_branch"])
       assert Enum.all?(payload["data"], &(&1["attributes"]["chat_id"] == chat.id))
+
+      assert Enum.all?(payload["data"], fn hit ->
+               not Map.has_key?(hit["attributes"], "search_vector")
+             end)
+
       assert payload["links"]["next"]
 
       next =
@@ -78,6 +83,34 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
       assert ids_from_data(unicode) == [first.id]
     end
 
+    test "search applies ordered prefixes to the displayed message across visible fragments", %{
+      conn: conn
+    } do
+      %{user: actor} = fixture = user_fixture()
+      chat = create_empty_chat!(actor)
+      message = create_message!(actor, chat)
+      step = create_step!(actor, message)
+      item = create_item!(actor, step)
+      create_content!(actor, item, sequence: 2, content_text: "ска")
+      create_content!(actor, item, sequence: 1, content_text: "Пои")
+      create_text_item!(actor, step, "сообщений", sequence: 2)
+      {:ok, reversed} = Threads.add_message_to_end(chat, :user, "Сообщения поиска", actor: actor)
+      conn = sign_in_conn(conn, fixture)
+      query = %{q: "поис сообщ", chat_id: chat.id}
+      path = "/api/ash/chat-messages/search?"
+      unordered = conn |> json_api_get(path <> URI.encode_query(query)) |> json_response(200)
+      assert ids_from_data(unordered) == [message.id, reversed.id]
+
+      ordered =
+        conn
+        |> json_api_get(path <> URI.encode_query(Map.put(query, :exact, true)))
+        |> json_response(200)
+
+      assert [hit] = ordered["data"]
+      assert hit["id"] == to_string(message.id)
+      assert hit["attributes"]["text"] == "Поиска\n\nсообщений"
+    end
+
     test "search filters by chat, bot and role without exposing private messages", %{conn: conn} do
       %{user: actor, password: password} = user_fixture()
       %{user: stranger} = user_fixture()
@@ -89,7 +122,24 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
       Threads.add_message_to_end(chat, :user, "needle", actor: actor)
       Threads.add_message_to_end(other_chat, :assistant, "needle", actor: actor)
       Threads.add_message_to_end(private_chat, :assistant, "needle secret", actor: stranger)
+
+      %{group: group} = user_group_fixture(%{users: [actor, stranger]})
+      shared_bot = create_bot!(stranger)
+      config = create_configuration!(stranger, provider: create_provider!(stranger))
+
+      shared =
+        create_empty_chat!(stranger, bot_id: shared_bot.id, llm_configuration_id: config.id)
+
+      {:ok, readable} =
+        Threads.add_message_to_end(shared, :assistant, "Secretarial work", actor: stranger)
+
+      share_chat!(stranger, shared, group)
       conn = sign_in_conn(conn, actor.username, password)
+
+      all_readable =
+        conn |> json_api_get("/api/ash/chat-messages/search?q=secr") |> json_response(200)
+
+      assert ids_from_data(all_readable) == [readable.id]
 
       params =
         URI.encode_query(%{q: "needle", chat_id: chat.id, bot_id: bot.id, role: "assistant"})
@@ -174,7 +224,7 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
       search = get_in(spec, ["paths", "/api/ash/chat-messages/search", "get"])
       assert search
 
-      assert Enum.all?(["q", "chat_id", "bot_id", "role", "page", "sort"], fn name ->
+      assert Enum.all?(["q", "exact", "chat_id", "bot_id", "role", "page", "sort"], fn name ->
                Enum.any?(search["parameters"], &(&1["name"] == name))
              end)
 
@@ -193,6 +243,13 @@ defmodule IntellectualClubWeb.AshJsonApi.ChatsActionsTest do
         ]
 
       assert Enum.any?(text_schema["anyOf"], &(&1["type"] == "string"))
+
+      refute Map.has_key?(
+               spec["components"]["schemas"]["chat-messages"]["properties"]["attributes"][
+                 "properties"
+               ],
+               "search_vector"
+             )
 
       assert spec["components"]["schemas"]["chat-messages"]["properties"]["attributes"][
                "properties"

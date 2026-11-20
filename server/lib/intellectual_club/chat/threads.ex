@@ -532,39 +532,47 @@ defmodule IntellectualClub.Chat.Threads do
     end)
   end
 
-  defp active_branch_chains_by_chat(chat_ids, actor) when is_list(chat_ids) do
-    chat_ids =
-      chat_ids
-      |> Enum.filter(&is_integer/1)
-      |> Enum.uniq()
+  @doc "Returns active IDs for already-authorized chats with their last_message_id selected."
+  def active_branch_ids_for_chats(chats, actor) do
+    Map.new(active_branch_chains(chats, actor), fn {id, ids} -> {id, MapSet.new(ids)} end)
+  end
 
-    if chat_ids == [] do
+  defp active_branch_chains_by_chat(chat_ids, actor) when is_list(chat_ids) do
+    ids = chat_ids |> Enum.filter(&is_integer/1) |> Enum.uniq()
+
+    if ids == [] do
       %{}
     else
-      chats =
-        Chat
-        |> Ash.Query.filter(id in ^chat_ids)
-        |> Ash.Query.select([:id, :last_message_id])
-        |> Ash.read!(actor: actor)
-
-      messages =
-        ChatMessage
-        |> Ash.Query.filter(chat_id in ^chat_ids)
-        |> Ash.Query.select([:id, :chat_id, :parent_id])
-        |> Ash.read!(actor: actor)
-
-      parents_by_chat =
-        Enum.reduce(messages, %{}, fn msg, acc ->
-          Map.update(acc, msg.chat_id, %{msg.id => msg.parent_id}, fn parents ->
-            Map.put(parents, msg.id, msg.parent_id)
-          end)
-        end)
-
-      Map.new(chats, fn chat ->
-        active_ids = chain_ids(chat.last_message_id, Map.get(parents_by_chat, chat.id, %{}))
-        {chat.id, active_ids}
-      end)
+      Chat
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.Query.select([:id, :last_message_id])
+      |> Ash.read!(actor: actor)
+      |> active_branch_chains(actor)
     end
+  end
+
+  defp active_branch_chains([], _actor), do: %{}
+
+  defp active_branch_chains(chats, actor) do
+    ids = Enum.map(chats, & &1.id)
+
+    parents_by_chat =
+      ChatMessage
+      |> Ash.Query.filter(chat_id in ^ids)
+      |> Ash.Query.select([:id, :chat_id, :parent_id])
+      |> Ash.read!(actor: actor)
+      |> Enum.reduce(%{}, fn msg, parents ->
+        Map.update(
+          parents,
+          msg.chat_id,
+          %{msg.id => msg.parent_id},
+          &Map.put(&1, msg.id, msg.parent_id)
+        )
+      end)
+
+    Map.new(chats, fn chat ->
+      {chat.id, chain_ids(chat.last_message_id, Map.get(parents_by_chat, chat.id, %{}))}
+    end)
   end
 
   defp fetch_chat!(%Chat{} = chat, _actor), do: chat

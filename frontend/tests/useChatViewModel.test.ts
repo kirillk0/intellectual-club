@@ -188,6 +188,41 @@ describe('useChatViewModel loading', () => {
     expect(viewModel.messageMetaLabel({ ...message, role: 'user' })).toBe('User');
   });
 
+  it('cancels stale in-chat searches and only runs queries with a usable prefix', async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (data: unknown) => void;
+    apiMocks.get.mockImplementation((path: string) => {
+      if (path === '/api/bff/chat-state/1') return Promise.resolve(chatState(1));
+      if (path.endsWith('/settings')) return Promise.resolve(chatSettings());
+      if (path.includes('/chat-search/') && path.includes('q=older')) return new Promise((resolve) => { resolveOld = resolve; });
+      return Promise.resolve(undefined);
+    });
+    const { viewModel: vm } = await mountViewModel();
+    await flushPromises();
+    const requests = () => apiMocks.get.mock.calls.filter(([path]) => path.includes('/chat-search/'));
+    vm.branchSearchTerm.value = 'до 12';
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(requests()).toHaveLength(0);
+    vm.branchSearchTerm.value = 'older';
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(requests()).toHaveLength(1);
+    const previous = requests()[0][1].signal as AbortSignal;
+    vm.branchSearchTerm.value = 'баз дан';
+    await flushPromises();
+    expect(previous.aborted).toBe(true);
+    resolveOld({ active: [{ id: 123, content: 'Obsolete' }], inactive: [] });
+    vm.branchSearchOrdered.value = true;
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(requests()).toHaveLength(2);
+    const params = new URL(requests()[1][0], 'http://localhost').searchParams;
+    expect(params.get('q')).toBe('баз дан');
+    expect(params.get('exact')).toBe('1');
+    expect(vm.branchSearchResults.value.active).toEqual([]);
+  });
+
   it.each(['reopen', 'load-first', 'poll-first', 'stale-projection'] as const)(
     'synchronizes independently loaded working details with the body cursor (%s)',
     async (race) => {

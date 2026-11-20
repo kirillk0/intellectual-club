@@ -118,6 +118,25 @@ describe('chat list actions menu', () => {
     vi.restoreAllMocks();
   });
 
+  it('fetches edit permissions for a compact search result only when its menu opens', async () => {
+    const full = chatRow(31, 'Found chat', true);
+    const { can_edit, last_activity_at, ...compact } = full;
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/bff/chat-list/search?')) return { chats: [compact], notes: [31], hits: [], terms: ['found'] };
+      if (path.startsWith('/api/bff/chat-list/31/summary?')) return { chat: full };
+      return listPayload([]);
+    });
+    const details = () => apiMocks.get.mock.calls.filter(([path]) => path.includes('/summary?'));
+    await mountList('/chats?q=found');
+    expect(rowTitles()).toEqual(['Found chat - No bot']);
+    expect(details()).toHaveLength(0);
+    await rows()[0].get('.chat-list-row__actions-button').trigger('click');
+    await flushPromises();
+    expect(details()).toHaveLength(1);
+    expect(menuItem('Edit note')).toBeTruthy();
+    expect(menuItem('Mark as unread')).toBeTruthy();
+  });
+
   it('archives a shared chat using the observed revision and removes it from the inbox', async () => {
     apiMocks.post.mockResolvedValue({ read_state: readState({ is_archived: true, state_version: 3 }) });
     await mountList();

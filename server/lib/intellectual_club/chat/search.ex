@@ -15,15 +15,13 @@ defmodule IntellectualClub.Chat.Search do
   alias IntellectualClub.Chat.Threads
 
   require Ash.Query
-  require Ash.Expr
 
   @default_message_limit 50
   @default_hit_limit 30
   @max_hit_limit 100
   @notes_limit 20
-  @default_probe_window 300
-  @default_probe_chunk 50
-  @cursor_salt "chat-search-hits-v2"
+  @default_probe_window 96
+  @cursor_salt "chat-search-hits-v3"
 
   @type bot_filter :: nil | :none | integer()
 
@@ -60,7 +58,7 @@ defmodule IntellectualClub.Chat.Search do
   @doc """
   Searches one chat's stored messages, split into active and inactive branch hits.
 
-  Options: `exact?` (whole query as one substring, default `false`), `limit`.
+  Options: `exact?` (consecutive word prefixes, default `false`), `limit`.
   """
   @spec search_messages_in_chat(integer(), String.t() | nil, any(), keyword()) :: %{
           active: list(message_hit()),
@@ -77,8 +75,7 @@ defmodule IntellectualClub.Chat.Search do
       search ->
         limit = Keyword.get(opts, :limit, @default_message_limit)
 
-        chat = Ash.get!(Chat, chat_id, actor: actor)
-        active_ids = Threads.active_branch_ids(chat, actor)
+        chat = Ash.get!(Chat, chat_id, actor: actor, load: [:id, :last_message_id], strict?: true)
 
         messages =
           ChatMessage
@@ -88,6 +85,11 @@ defmodule IntellectualClub.Chat.Search do
           )
           |> Ash.Query.limit(limit)
           |> Ash.read!(actor: actor, page: false)
+
+        active_ids =
+          if messages == [],
+            do: MapSet.new(),
+            else: Map.fetch!(Threads.active_branch_ids_for_chats([chat], actor), chat_id)
 
         trace_text_by_message = MessageText.load_texts(messages, actor)
 
@@ -113,22 +115,22 @@ defmodule IntellectualClub.Chat.Search do
   @doc """
   Searches the actor's inbox and archived chats together.
 
-  Returns chats whose note matches (first page only) and message hits newest
-  first, with a cursor for the next page. Message text is searched only when
-  some term can use the trigram index (`text_search?`). The page is read with
-  a short correlated probe over the newest messages and the trigram plan for
-  the rest, so neither common nor rare terms scan everything.
+  Returns note matches (first page only) and unique message hits newest first.
+  Both modes use the same word prefixes; `exact?` requires adjacent positions.
+  A bounded recent window can fill a page without expanding a common prefix
+  through the GIN index. Original text is read only for the returned hits.
 
-  Options: `exact?`, `bot_filter`, `after` (cursor), `limit`.
+  Options: `exact?`, `bot_filter`, `after` (cursor), `limit`, `compact?`.
   """
   @spec search_chat_list(String.t() | nil, any(), keyword()) ::
           {:ok, list_result()} | {:error, :timeout | :invalid_cursor}
   def search_chat_list(query, actor, opts \\ []) when is_list(opts) do
     SearchDeadline.run(fn ->
-      exact? = Keyword.get(opts, :exact?, false)
+      ordered? = Keyword.get(opts, :exact?, false)
       bot_filter = Keyword.get(opts, :bot_filter)
+      compact? = Keyword.get(opts, :compact?, false)
       limit = opts |> Keyword.get(:limit, @default_hit_limit) |> min(@max_hit_limit) |> max(1)
-      search = MessageText.search(query, exact?)
+      search = MessageText.search(query, ordered?)
       scope = cursor_scope(search, actor, bot_filter)
       position = decode_cursor(Keyword.get(opts, :after), scope)
 
@@ -136,66 +138,44 @@ defmodule IntellectualClub.Chat.Search do
         :empty ->
           empty_result()
 
-        {:terms, terms} ->
-          notes =
-            if is_nil(position),
-              do: SearchDeadline.query(fn -> note_chats(search, actor, bot_filter) end),
-              else: []
-
-          text_search? = MessageText.indexable?(search)
-
+        {_mode, terms} ->
           {messages, has_next?} =
-            if text_search?,
-              do:
-                read_hits(
-                  %{q: query, exact?: exact?},
-                  actor,
-                  bot_filter,
-                  position,
-                  limit
-                ),
-              else: {[], false}
+            read_hits(%{q: query, exact?: ordered?}, actor, bot_filter, position, limit)
 
-          note_ids = Enum.map(notes, & &1.id)
-          hit_chat_ids = messages |> Enum.map(& &1.chat_id) |> Enum.uniq()
+          next_cursor = if has_next?, do: encode_cursor(List.last(messages), scope)
 
-          # Chats follow their first hit so grouped rendering stays stable.
-          hit_chats =
-            SearchDeadline.query(fn -> load_chats_by_ids(hit_chat_ids -- note_ids, actor) end)
-            |> Enum.sort_by(&Enum.find_index(hit_chat_ids, fn id -> id == &1.id end))
+          SearchDeadline.query(fn ->
+            notes = if is_nil(position), do: note_ids(search, actor, bot_filter), else: []
+            ids = Enum.uniq(notes ++ Enum.map(messages, & &1.chat_id))
+            chats = load_chats(ids, actor, bot_filter, compact?)
+            by_id = Map.new(chats, &{&1.id, &1})
+            visible = Enum.filter(messages, &Map.has_key?(by_id, &1.chat_id))
+            branches = Threads.active_branch_ids_for_chats(chats, actor)
+            snippets = MessageText.load_snippets(visible, search, actor)
 
-          active_ids_by_chat =
-            SearchDeadline.query(fn ->
-              Threads.active_branch_ids_by_chat(Enum.uniq(note_ids ++ hit_chat_ids), actor)
-            end)
+            hits =
+              Enum.map(visible, fn m ->
+                %{
+                  message_id: m.id,
+                  chat_id: m.chat_id,
+                  role: role_to_string(m.role),
+                  created_at: datetime_iso(m.created_at),
+                  active?: MapSet.member?(Map.fetch!(branches, m.chat_id), m.id),
+                  snippet: Map.get(snippets, m.id)
+                }
+              end)
 
-          snippets =
-            SearchDeadline.query(fn -> MessageText.load_snippets(messages, search, actor) end)
-
-          hits =
-            Enum.map(messages, fn message ->
-              active_ids = Map.get(active_ids_by_chat, message.chat_id, MapSet.new())
-
-              %{
-                message_id: message.id,
-                chat_id: message.chat_id,
-                role: role_to_string(message.role),
-                created_at: datetime_iso(message.created_at),
-                active?: MapSet.member?(active_ids, message.id),
-                snippet: Map.get(snippets, message.id)
-              }
-            end)
-
-          %{
-            chats: notes ++ hit_chats,
-            notes: note_ids,
-            hits: hits,
-            message_counts:
-              Map.new(active_ids_by_chat, fn {id, ids} -> {id, MapSet.size(ids)} end),
-            next_cursor: if(has_next?, do: encode_cursor(List.last(messages), scope), else: nil),
-            text_search?: text_search?,
-            terms: terms
-          }
+            %{
+              chats: for(id <- ids, chat = by_id[id], do: chat),
+              notes: Enum.filter(notes, &Map.has_key?(by_id, &1)),
+              hits: hits,
+              message_counts:
+                Map.new(branches, fn {id, members} -> {id, MapSet.size(members)} end),
+              next_cursor: next_cursor,
+              text_search?: true,
+              terms: terms
+            }
+          end)
       end
     end)
   end
@@ -212,95 +192,55 @@ defmodule IntellectualClub.Chat.Search do
     }
   end
 
-  # Returns `{messages, has_next?}` with at most `limit` messages.
-  #
-  # The newest `window` candidate messages are checked in chunks, newest first,
-  # until the page fills. After each chunk the hit rate so far projects whether
-  # the window can fill the page at all; when it cannot, the trigram plan takes
-  # over immediately and covers only what the probe did not check.
+  # The optional probe is disposable. If it times out, retry the indexed read
+  # at the original cursor, never at a partially examined position.
   defp read_hits(context, actor, bot_filter, position, limit) do
-    window = probe_window()
+    window =
+      Application.get_env(:intellectual_club, :chat_search_probe_window, @default_probe_window)
 
-    candidates =
-      SearchDeadline.query(fn ->
-        window_candidates(actor, bot_filter, position, window)
-      end)
+    wanted = limit + 1
 
     probe =
-      if candidates == [],
-        do: {:ok, {[], nil}},
-        else:
-          SearchDeadline.probe(fn ->
-            probe_chunks(context, actor, bot_filter, candidates, limit + 1)
-          end)
+      SearchDeadline.probe(fn ->
+        candidates = window_candidates(actor, bot_filter, position, window)
+        ids = Enum.map(candidates, & &1.id)
 
-    # A short window means every message after the cursor was a candidate.
-    exhausted? = fn checked ->
-      length(candidates) < window and
-        checked == candidates |> List.last() |> then(&{&1.created_at, &1.id})
-    end
+        hits =
+          if ids == [] do
+            []
+          else
+            hits_query(context, actor, bot_filter, :recent)
+            |> Ash.Query.filter(id in ^ids)
+            |> Ash.Query.limit(wanted)
+            |> Ash.read!(actor: actor, page: false)
+          end
 
-    case probe do
-      {:ok, {rows, _checked}} when length(rows) > limit ->
-        page(rows, limit)
+        {hits, List.last(candidates), length(ids) < window}
+      end)
 
-      {:ok, {rows, checked}} ->
-        if candidates == [] or exhausted?.(checked) do
-          {rows, false}
-        else
-          rest =
-            SearchDeadline.query(fn ->
-              hits_query(context, actor, bot_filter, :indexed)
-              |> after_position(checked)
-              |> Ash.Query.limit(limit + 1 - length(rows))
-              |> Ash.read!(actor: actor, page: false)
-            end)
+    {first, cutoff, exhausted?} =
+      case probe do
+        {:ok, {first, nil, exhausted?}} -> {first, position, exhausted?}
+        {:ok, {first, last, exhausted?}} -> {first, {last.created_at, last.id}, exhausted?}
+        {:error, :statement_timeout} -> {[], position, false}
+      end
 
-          page(rows ++ rest, limit)
-        end
-
-      {:error, :statement_timeout} ->
-        rows =
+    rows =
+      if length(first) == wanted or exhausted? do
+        first
+      else
+        rest =
           SearchDeadline.query(fn ->
             hits_query(context, actor, bot_filter, :indexed)
-            |> after_position(position)
-            |> Ash.Query.limit(limit + 1)
+            |> after_position(cutoff)
+            |> Ash.Query.limit(wanted - length(first))
             |> Ash.read!(actor: actor, page: false)
           end)
 
-        page(rows, limit)
-    end
-  end
+        first ++ rest
+      end
 
-  defp page(rows, limit), do: {Enum.take(rows, limit), length(rows) > limit}
-
-  # Returns `{rows, last_checked}` where `last_checked` is the oldest candidate
-  # whose contents were inspected, as a `{created_at, id}` position.
-  defp probe_chunks(context, actor, bot_filter, candidates, wanted) do
-    total = length(candidates)
-
-    candidates
-    |> Enum.chunk_every(probe_chunk_size())
-    |> Enum.reduce_while({[], nil, 0}, fn chunk, {rows, _checked, checked_count} ->
-      ids = Enum.map(chunk, & &1.id)
-
-      found =
-        hits_query(context, actor, bot_filter, :correlated)
-        |> Ash.Query.filter(id in ^ids)
-        |> Ash.Query.limit(wanted - length(rows))
-        |> Ash.read!(actor: actor, page: false)
-
-      rows = rows ++ found
-      checked_count = checked_count + length(chunk)
-      last = List.last(chunk)
-      state = {rows, {last.created_at, last.id}, checked_count}
-      projected = length(rows) * total / checked_count
-
-      if length(rows) >= wanted or projected < wanted,
-        do: {:halt, state},
-        else: {:cont, state}
-    end)
-    |> then(fn {rows, checked, _count} -> {rows, checked} end)
+    {Enum.take(rows, limit), length(rows) > limit}
   end
 
   defp hits_query(%{q: query, exact?: exact?}, actor, bot_filter, strategy) do
@@ -308,7 +248,7 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.Query.for_read(:list_search, %{q: query, exact: exact?, strategy: strategy},
       actor: actor
     )
-    |> chat_filters(bot_filter)
+    |> chat_filters(actor, bot_filter)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.select([:id, :chat_id, :role, :created_at])
   end
@@ -316,9 +256,8 @@ defmodule IntellectualClub.Chat.Search do
   # The newest messages a probe may inspect, oldest last.
   defp window_candidates(actor, bot_filter, position, window) do
     ChatMessage
-    |> Ash.Query.for_read(:read, %{}, actor: actor)
-    |> Ash.Query.filter(owner_id == ^actor.id and role in [:user, :assistant])
-    |> chat_filters(bot_filter)
+    |> Ash.Query.for_read(:list_search_window, %{}, actor: actor)
+    |> chat_filters(actor, bot_filter)
     |> after_position(position)
     |> Ash.Query.sort(created_at: :desc, id: :desc)
     |> Ash.Query.select([:id, :created_at])
@@ -326,44 +265,23 @@ defmodule IntellectualClub.Chat.Search do
     |> Ash.read!(actor: actor, page: false)
   end
 
-  defp chat_filters(query, bot_filter) do
-    query
-    |> Ash.Query.filter(exists(chat, subagent == false))
-    |> apply_bot_filter_via_chat(bot_filter)
-  end
-
-  defp probe_chunk_size do
-    Application.get_env(:intellectual_club, :chat_search_probe_chunk, @default_probe_chunk)
-  end
-
-  defp probe_window do
-    Application.get_env(:intellectual_club, :chat_search_probe_window, @default_probe_window)
-  end
-
   defp after_position(query, nil), do: query
 
   defp after_position(query, {time, id}),
     do: Ash.Query.filter(query, created_at < ^time or (created_at == ^time and id < ^id))
 
-  defp note_chats(search, actor, bot_filter) do
-    predicate = note_predicate(search)
+  defp note_ids(search, actor, bot_filter) do
+    predicate = MessageText.note_predicate(search)
 
     Chat
-    |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Listing.apply_hierarchy_filter(actor, nil)
+    |> Ash.Query.filter(owner_id == ^actor.id and subagent == false)
     |> Listing.apply_bot_filter(bot_filter)
     |> Ash.Query.filter(^predicate)
     |> Ash.Query.sort(updated_at: :desc, id: :desc)
+    |> Ash.Query.select([:id])
     |> Ash.Query.limit(@notes_limit)
-    |> Ash.Query.load(summary_loads())
-    |> Ash.read!(actor: actor)
-  end
-
-  defp note_predicate({:terms, terms}) do
-    Enum.reduce(terms, true, fn term, acc ->
-      pattern = MessageText.like_pattern(term)
-      Ash.Expr.expr(^acc and fragment("? ILIKE ?", note, ^pattern))
-    end)
+    |> Ash.read!(actor: actor, page: false)
+    |> Enum.map(& &1.id)
   end
 
   defp cursor_scope(search, actor, bot_filter),
@@ -421,16 +339,22 @@ defmodule IntellectualClub.Chat.Search do
 
   defp datetime_iso(_other), do: nil
 
-  defp apply_bot_filter_via_chat(query, nil), do: query
+  defp chat_filters(query, actor, :none),
+    do:
+      Ash.Query.filter(
+        query,
+        exists(chat, owner_id == ^actor.id and subagent == false and is_nil(bot_id))
+      )
 
-  defp apply_bot_filter_via_chat(query, :none),
-    do: Ash.Query.filter(query, exists(chat, is_nil(bot_id)))
+  defp chat_filters(query, actor, bot_id) when is_integer(bot_id),
+    do:
+      Ash.Query.filter(
+        query,
+        exists(chat, owner_id == ^actor.id and subagent == false and bot_id == ^bot_id)
+      )
 
-  defp apply_bot_filter_via_chat(query, bot_id) when is_integer(bot_id) do
-    Ash.Query.filter(query, exists(chat, bot_id == ^bot_id))
-  end
-
-  defp apply_bot_filter_via_chat(query, _other), do: query
+  defp chat_filters(query, actor, _all),
+    do: Ash.Query.filter(query, exists(chat, owner_id == ^actor.id and subagent == false))
 
   defp summary_loads do
     [
@@ -446,13 +370,31 @@ defmodule IntellectualClub.Chat.Search do
     ]
   end
 
-  defp load_chats_by_ids([], _actor), do: []
+  defp load_chats([], _actor, _bot_filter, _compact?), do: []
 
-  defp load_chats_by_ids(chat_ids, actor) when is_list(chat_ids) do
-    Chat
-    |> Ash.Query.filter(owner_id == ^actor.id)
-    |> Ash.Query.filter(id in ^chat_ids)
-    |> Ash.Query.load(summary_loads())
-    |> Ash.read!(actor: actor)
+  defp load_chats(ids, actor, bot_filter, compact?) do
+    query =
+      Chat
+      |> Ash.Query.filter(owner_id == ^actor.id and subagent == false and id in ^ids)
+      |> Listing.apply_bot_filter(bot_filter)
+
+    query =
+      if compact? do
+        query
+        |> Ash.Query.select([
+          :id,
+          :owner_id,
+          :last_message_id,
+          :note,
+          :bot_id,
+          :created_at,
+          :updated_at
+        ])
+        |> Ash.Query.load([:read_state, bot: [:name]], strict?: true)
+      else
+        Ash.Query.load(query, summary_loads())
+      end
+
+    Ash.read!(query, actor: actor, page: false)
   end
 end

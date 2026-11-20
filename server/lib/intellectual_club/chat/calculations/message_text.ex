@@ -4,7 +4,7 @@ defmodule IntellectualClub.Chat.Calculations.MessageText do
   alias IntellectualClub.Chat.MessageText
 
   @impl true
-  def load(_query, _opts, _context), do: [:id, :role]
+  def load(_query, _opts, _context), do: [:id]
 
   @impl true
   def calculate(records, _opts, context) do

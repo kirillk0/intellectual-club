@@ -90,3 +90,21 @@ describe('ChatContextSidebar tool warnings', () => {
     expect(wrapper.emitted('open-context-tool-editor')).toEqual([[11]]);
   });
 });
+
+
+describe('search within a chat', () => {
+  afterEach(() => setPreferredLocale(null));
+
+  it('explains short queries and exposes the ordered toggle in the selected language', async () => {
+    setPreferredLocale('ru');
+    const wrapper = mountSidebar([]);
+    await wrapper.setProps({ leftTab: 'messages', branchSearchTerm: 'до 12', hasBranchSearch: true });
+    expect(wrapper.text()).toContain('Введите слово хотя бы из трёх букв или цифр.');
+    expect(wrapper.text()).not.toContain('No matches found.');
+    const toggle = wrapper.get('.chat-search-order');
+    expect(toggle.text()).toBe('Слова подряд');
+    expect(toggle.attributes('aria-pressed')).toBe('false');
+    await toggle.trigger('click');
+    expect(wrapper.emitted('update:branchSearchOrdered')).toEqual([[true]]);
+  });
+});

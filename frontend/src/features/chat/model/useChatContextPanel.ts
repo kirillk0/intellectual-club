@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, watch, type ComputedRef, type Ref } from 'vue';
 
 import { api } from '@/api/client';
+import { CHAT_SEARCH_DEBOUNCE_MS, parseChatSearch } from '@/features/chat/chatSearch';
 import { createRecordset } from '@/features/catalogs/model/recordsets';
 import type {
   ActiveToolInstance,
@@ -164,8 +165,8 @@ export function useChatContextPanel(params: Params) {
   });
 
   const branchSearchTerm = ref('');
-  // Match the whole query as one phrase instead of every word.
-  const branchSearchExact = ref(false);
+  const branchSearchOrdered = ref(false);
+  const branchQuery = computed(() => parseChatSearch(branchSearchTerm.value, branchSearchOrdered.value));
   const hasBranchSearch = computed(() => branchSearchTerm.value.trim().length > 0);
   const branchSearchLoading = ref(false);
   const branchSearchError = ref('');
@@ -173,9 +174,17 @@ export function useChatContextPanel(params: Params) {
 
   let branchSearchTimer: number | null = null;
   let branchSearchSeq = 0;
+  let branchSearchController: AbortController | null = null;
+
+  const clearBranchSearchTimer = () => {
+    if (branchSearchTimer !== null) window.clearTimeout(branchSearchTimer);
+    branchSearchTimer = null;
+  };
 
   const resetBranchSearch = () => {
     branchSearchSeq += 1;
+    branchSearchController?.abort();
+    branchSearchController = null;
     branchSearchResults.value = { active: [], inactive: [] };
     branchSearchLoading.value = false;
     branchSearchError.value = '';
@@ -184,77 +193,62 @@ export function useChatContextPanel(params: Params) {
   const runBranchSearch = async (term: string) => {
     if (!params.chatId.value) return;
     const query = term.trim();
-    if (!query) {
+    if (!branchQuery.value.terms.length) {
       resetBranchSearch();
       return;
     }
 
     const seq = ++branchSearchSeq;
+    branchSearchController?.abort();
+    const controller = new AbortController();
+    branchSearchController = controller;
     branchSearchLoading.value = true;
     branchSearchError.value = '';
 
     try {
       const searchParams = new URLSearchParams();
       searchParams.set('q', query);
-      if (branchSearchExact.value) searchParams.set('exact', '1');
+      if (branchSearchOrdered.value) searchParams.set('exact', '1');
       const payload = await api.get<BranchSearchResults>(
-        `/api/bff/chat-search/${params.chatId.value}/messages?${searchParams.toString()}`
+        `/api/bff/chat-search/${params.chatId.value}/messages?${searchParams.toString()}`,
+        { signal: controller.signal }
       );
-      if (branchSearchSeq !== seq) return;
+      if (controller.signal.aborted || branchSearchSeq !== seq) return;
       branchSearchResults.value = payload || { active: [], inactive: [] };
     } catch (error) {
-      if (branchSearchSeq !== seq) return;
+      if (controller.signal.aborted || branchSearchSeq !== seq) return;
       console.error(error);
       branchSearchError.value = error instanceof Error ? error.message : 'Failed to search messages.';
       branchSearchResults.value = { active: [], inactive: [] };
     } finally {
       if (branchSearchSeq === seq) {
+        branchSearchController = null;
         branchSearchLoading.value = false;
       }
     }
   };
 
-  const scheduleBranchSearch = (value: string) => {
-    const query = value.trim();
-    if (!query) {
-      if (branchSearchTimer != null) window.clearTimeout(branchSearchTimer);
-      branchSearchTimer = null;
-      resetBranchSearch();
-      return;
-    }
-
-    if (branchSearchTimer != null) window.clearTimeout(branchSearchTimer);
+  watch(branchSearchTerm, (value) => {
+    clearBranchSearchTimer();
+    resetBranchSearch();
+    if (!branchQuery.value.terms.length) return;
+    branchSearchLoading.value = true;
     branchSearchTimer = window.setTimeout(() => {
-      void runBranchSearch(query);
-    }, 250);
-  };
-
-  const clearBranchSearchTimer = () => {
-    if (branchSearchTimer != null) {
-      window.clearTimeout(branchSearchTimer);
       branchSearchTimer = null;
-    }
-  };
-
-  watch(
-    () => branchSearchTerm.value,
-    (value) => {
-      scheduleBranchSearch(value);
-    }
-  );
+      void runBranchSearch(value);
+    }, CHAT_SEARCH_DEBOUNCE_MS);
+  });
 
   const rerunBranchSearch = () => {
-    if (!hasBranchSearch.value) return;
-    void runBranchSearch(branchSearchTerm.value.trim());
+    clearBranchSearchTimer();
+    if (branchQuery.value.terms.length) void runBranchSearch(branchSearchTerm.value);
   };
 
-  watch(
-    () => branchSearchExact.value,
-    () => {
-      clearBranchSearchTimer();
-      rerunBranchSearch();
-    }
-  );
+  const submitBranchSearch = () => {
+    if (branchSearchTimer !== null) rerunBranchSearch();
+  };
+
+  watch(branchSearchOrdered, rerunBranchSearch);
 
   const searchHitMeta = (hit: ChatMessageSearchHit) => {
     const time = formatRelativeDateTime(displayTimestampIso(hit));
@@ -469,6 +463,7 @@ export function useChatContextPanel(params: Params) {
 
   const dispose = () => {
     clearBranchSearchTimer();
+    resetBranchSearch();
     messageRefs.clear();
   };
 
@@ -485,7 +480,7 @@ export function useChatContextPanel(params: Params) {
     isContextSoftLimitReached,
     contextUsagePercent,
     branchSearchTerm,
-    branchSearchExact,
+    branchSearchOrdered,
     hasBranchSearch,
     branchSearchLoading,
     branchSearchError,
@@ -498,6 +493,7 @@ export function useChatContextPanel(params: Params) {
     hasFocusMessageQuery,
     handleFocusMessage,
     rerunBranchSearch,
+    submitBranchSearch,
     resetForChatChange,
     formatStepMetric,
     searchHitMeta,

@@ -547,7 +547,7 @@ fieldset {
   background: var(--color-surface-hover);
 }
 
-/* Square icon button placed next to a search field (clear, exact match). */
+/* Compact buttons next to search fields. */
 .search-icon-button {
   width: 34px;
   min-width: 34px;

@@ -1,0 +1,450 @@
+{
+  "attributes": [
+    {
+      "allow_nil?": false,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": true,
+      "references": {
+        "deferrable": false,
+        "destination_attribute": "id",
+        "destination_attribute_default": null,
+        "destination_attribute_generated": null,
+        "index?": false,
+        "index_where": null,
+        "match_tenant?": false,
+        "match_type": null,
+        "match_with": null,
+        "multitenancy": {
+          "attribute": null,
+          "global": null,
+          "strategy": null
+        },
+        "name": "chat_message_poll_revisions_chat_message_id_fkey",
+        "on_delete": "delete",
+        "on_update": null,
+        "primary_key?": true,
+        "schema": "public",
+        "table": "chat_messages"
+      },
+      "scale": null,
+      "size": null,
+      "source": "chat_message_id",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": true,
+      "default": "nil",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "search_owner_id",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
+      "default": "fragment(\"''::tsvector\")",
+      "generated?": true,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "search_vector",
+      "type": "tsvector"
+    },
+    {
+      "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "revision",
+      "type": "bigint"
+    }
+  ],
+  "base_filter": null,
+  "check_constraints": [],
+  "create_table_options": null,
+  "custom_indexes": [
+    {
+      "all_tenants?": false,
+      "concurrently": false,
+      "error_fields": [
+        "search_vector"
+      ],
+      "fields": [
+        {
+          "type": "string",
+          "value": "(ARRAY[search_owner_id])"
+        },
+        {
+          "type": "atom",
+          "value": "search_vector"
+        }
+      ],
+      "include": null,
+      "include_base_filter?": true,
+      "message": null,
+      "name": "chat_message_poll_revisions_owner_search_vector_gin",
+      "nulls_distinct": true,
+      "prefix": null,
+      "table": null,
+      "unique": false,
+      "using": "gin",
+      "where": null
+    }
+  ],
+  "custom_statements": [
+    {
+      "after_tables": [],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS advance_message_trace_revision()",
+      "global?": false,
+      "name": "advance_message_trace_revision",
+      "up": "CREATE OR REPLACE FUNCTION advance_message_trace_revision()\nRETURNS trigger AS $$\nDECLARE message_id bigint;\nBEGIN\n  IF TG_TABLE_NAME = 'chat_message_steps' THEN\n    message_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_id ELSE NEW.chat_message_id END;\n  ELSIF TG_TABLE_NAME = 'chat_message_items' THEN\n    SELECT chat_message_id INTO message_id FROM chat_message_steps\n      WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_step_id ELSE NEW.chat_message_step_id END;\n  ELSE\n    SELECT s.chat_message_id INTO message_id FROM chat_message_items i\n      JOIN chat_message_steps s ON s.id = i.chat_message_step_id\n      WHERE i.id = CASE WHEN TG_OP = 'DELETE' THEN OLD.chat_message_item_id ELSE NEW.chat_message_item_id END;\n  END IF;\n  INSERT INTO chat_message_poll_revisions (chat_message_id, revision)\n    SELECT id, 1 FROM chat_messages WHERE id = message_id\n    ON CONFLICT (chat_message_id) DO UPDATE\n      SET revision = chat_message_poll_revisions.revision + 1;\n  RETURN NULL;\nEND;\n$$ LANGUAGE plpgsql;\n"
+    },
+    {
+      "after_tables": [],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_step_trace_revision ON chat_message_steps",
+      "global?": false,
+      "name": "advance_step_trace_revision",
+      "up": "CREATE TRIGGER advance_step_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_steps FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    },
+    {
+      "after_tables": [],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_item_trace_revision ON chat_message_items",
+      "global?": false,
+      "name": "advance_item_trace_revision",
+      "up": "CREATE TRIGGER advance_item_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_items FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    },
+    {
+      "after_tables": [],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS advance_content_trace_revision ON chat_message_contents",
+      "global?": false,
+      "name": "advance_content_trace_revision",
+      "up": "CREATE TRIGGER advance_content_trace_revision AFTER INSERT OR UPDATE OR DELETE ON chat_message_contents FOR EACH ROW EXECUTE FUNCTION advance_message_trace_revision()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_search_lexemes(text)",
+      "global?": false,
+      "name": "ic_search_lexemes",
+      "up": "CREATE FUNCTION ic_search_lexemes(body text) RETURNS tsvector LANGUAGE plpgsql IMMUTABLE STRICT AS $$\nBEGIN\n  -- The built-in text parser treats hosts, emails and paths as compound tokens.\n  -- Split ASCII punctuation without treating Unicode combining marks as word breaks.\n  body := regexp_replace(normalize(body, NFC) COLLATE \"C\", '[[:punct:]]+', ' ', 'g');\n  -- PostgreSQL limits a single tsvector to 1 MiB. Preserve the source\n  -- message even for pathological inputs with huge distinct vocabularies.\n  LOOP\n    BEGIN\n      RETURN to_tsvector('pg_catalog.simple'::regconfig, body);\n    EXCEPTION WHEN program_limit_exceeded THEN\n      body := left(body, length(body) / 2);\n    END;\n  END LOOP;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_message_search_documents(bigint[])",
+      "global?": false,
+      "name": "ic_message_search_documents",
+      "up": "CREATE FUNCTION ic_message_search_documents(ids bigint[]) RETURNS TABLE(message_id bigint, search_owner bigint, body text) LANGUAGE sql STABLE AS $$\n  WITH messages AS MATERIALIZED (\n    SELECT m.id, m.owner_id, m.role FROM chat_messages m\n    WHERE m.id = ANY(ids)\n    UNION ALL\n    SELECT m.id, m.owner_id, m.role FROM chat_messages m WHERE ids IS NULL\n  ), items AS (\n    SELECT m.id AS mid, s.sequence AS ss, s.id AS sid, i.sequence AS ii, i.id AS iid,\n           string_agg(c.content_text, '' ORDER BY c.sequence, c.id) AS body\n    FROM messages m\n    JOIN chat_message_steps s ON s.chat_message_id = m.id AND s.owner_id = m.owner_id\n    JOIN chat_message_items i ON i.chat_message_step_id = s.id AND i.owner_id = m.owner_id\n    JOIN chat_message_contents c ON c.chat_message_item_id = i.id AND c.owner_id = m.owner_id\n    WHERE c.kind = 'text' AND (\n      (m.role = 'user' AND i.type IN ('input','handoff_request','handoff_history','handoff_message')) OR\n      (m.role = 'assistant' AND i.type IN ('answer','handoff_summary'))\n    )\n    GROUP BY m.id, s.sequence, s.id, i.sequence, i.id\n  ), documents AS (\n    SELECT x.mid, string_agg(x.body, chr(10) || chr(10) ORDER BY x.ss, x.sid, x.ii, x.iid) AS body\n    FROM items x WHERE x.body !~ '^[[:space:]]*$' GROUP BY x.mid\n  )\n  SELECT m.id, m.owner_id, coalesce(d.body, '') FROM messages m LEFT JOIN documents d ON d.mid = m.id\n$$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_message_search_vectors(bigint[])",
+      "global?": false,
+      "name": "ic_message_search_vectors",
+      "up": "CREATE FUNCTION ic_message_search_vectors(ids bigint[]) RETURNS TABLE(message_id bigint, search_owner bigint, lex tsvector) LANGUAGE sql STABLE AS $$\n  SELECT d.message_id, d.search_owner, ic_search_lexemes(d.body) FROM ic_message_search_documents(ids) d\n$$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_message_search(bigint[])",
+      "global?": false,
+      "name": "ic_refresh_message_search",
+      "up": "CREATE FUNCTION ic_refresh_message_search(ids bigint[]) RETURNS void LANGUAGE plpgsql VOLATILE AS $$\nBEGIN\n  IF coalesce(cardinality(ids), 0) = 0 THEN RETURN; END IF;\n  -- Most leaf rows already exist and were locked by the trace revision trigger.\n  -- Older messages and moves may also need a leaf without incrementing revision.\n  INSERT INTO chat_message_poll_revisions (chat_message_id, revision)\n    SELECT m.id, 0 FROM chat_messages m WHERE m.id = ANY(ids) AND NOT EXISTS (\n      SELECT 1 FROM chat_message_poll_revisions r WHERE r.chat_message_id=m.id\n    ) ORDER BY m.id ON CONFLICT DO NOTHING;\n  PERFORM r.chat_message_id FROM chat_message_poll_revisions r\n    WHERE r.chat_message_id = ANY(ids) ORDER BY r.chat_message_id FOR NO KEY UPDATE;\n  -- Obtain a fresh snapshot after any wait. Never lock or update the generation fence.\n  WITH fresh AS MATERIALIZED (SELECT * FROM ic_message_search_vectors(ids))\n  UPDATE chat_message_poll_revisions r SET search_owner_id=f.search_owner, search_vector=f.lex FROM fresh f\n  WHERE r.chat_message_id = ANY(ids) AND r.chat_message_id=f.message_id\n    AND (r.search_owner_id,r.search_vector) IS DISTINCT FROM (f.search_owner,f.lex);\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_lock_trace_reparent()",
+      "global?": false,
+      "name": "ic_lock_trace_reparent",
+      "up": "CREATE FUNCTION ic_lock_trace_reparent() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  -- Only administrative FK rewrites share this transaction lock (ICFT, MOVE).\n  -- Multi-statement maintenance must take it before any other trace writes,\n  -- or run offline. Normal text, status, and ordering writes never take it.\n  PERFORM pg_advisory_xact_lock(1229145684, 1297045061);\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS ic_lock_content_reparent ON chat_message_contents",
+      "global?": false,
+      "name": "ic_lock_content_reparent",
+      "up": "CREATE TRIGGER ic_lock_content_reparent BEFORE UPDATE OF chat_message_item_id ON chat_message_contents FOR EACH STATEMENT EXECUTE FUNCTION ic_lock_trace_reparent()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS ic_lock_item_reparent ON chat_message_items",
+      "global?": false,
+      "name": "ic_lock_item_reparent",
+      "up": "CREATE TRIGGER ic_lock_item_reparent BEFORE UPDATE OF chat_message_step_id ON chat_message_items FOR EACH STATEMENT EXECUTE FUNCTION ic_lock_trace_reparent()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS ic_lock_step_reparent ON chat_message_steps",
+      "global?": false,
+      "name": "ic_lock_step_reparent",
+      "up": "CREATE TRIGGER ic_lock_step_reparent BEFORE UPDATE OF chat_message_id ON chat_message_steps FOR EACH STATEMENT EXECUTE FUNCTION ic_lock_trace_reparent()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_after_content_insert()",
+      "global?": false,
+      "name": "ic_refresh_search_after_content_insert",
+      "up": "CREATE FUNCTION ic_refresh_search_after_content_insert() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM ic_refresh_message_search(ARRAY(SELECT DISTINCT s.chat_message_id FROM delta d\n  JOIN chat_message_items i ON i.id=d.chat_message_item_id AND i.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary')\n  JOIN chat_message_steps s ON s.id=i.chat_message_step_id WHERE d.kind='text'\n));\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS refresh_search_after_content_insert ON chat_message_contents",
+      "global?": false,
+      "name": "refresh_search_after_content_insert",
+      "up": "CREATE TRIGGER refresh_search_after_content_insert AFTER insert ON chat_message_contents REFERENCING NEW TABLE AS delta FOR EACH STATEMENT EXECUTE FUNCTION ic_refresh_search_after_content_insert()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_after_content_delete()",
+      "global?": false,
+      "name": "ic_refresh_search_after_content_delete",
+      "up": "CREATE FUNCTION ic_refresh_search_after_content_delete() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM ic_refresh_message_search(ARRAY(SELECT DISTINCT s.chat_message_id FROM delta d\n  JOIN chat_message_items i ON i.id=d.chat_message_item_id AND i.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary')\n  JOIN chat_message_steps s ON s.id=i.chat_message_step_id WHERE d.kind='text'\n));\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS refresh_search_after_content_delete ON chat_message_contents",
+      "global?": false,
+      "name": "refresh_search_after_content_delete",
+      "up": "CREATE TRIGGER refresh_search_after_content_delete AFTER delete ON chat_message_contents REFERENCING OLD TABLE AS delta FOR EACH STATEMENT EXECUTE FUNCTION ic_refresh_search_after_content_delete()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_after_content_update()",
+      "global?": false,
+      "name": "ic_refresh_search_after_content_update",
+      "up": "CREATE FUNCTION ic_refresh_search_after_content_update() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM ic_refresh_message_search(ARRAY(SELECT DISTINCT s.chat_message_id FROM previous o JOIN current_rows n USING (id)\n  CROSS JOIN LATERAL (VALUES (o.chat_message_item_id),(n.chat_message_item_id)) d(iid)\n  JOIN chat_message_items i ON i.id=d.iid JOIN chat_message_steps s ON s.id=i.chat_message_step_id\n  WHERE CASE WHEN i.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary') AND (o.kind='text' OR n.kind='text') THEN\n    (o.chat_message_item_id,o.owner_id,o.sequence,o.kind) IS DISTINCT FROM\n    (n.chat_message_item_id,n.owner_id,n.sequence,n.kind) OR o.content_text IS DISTINCT FROM n.content_text\n  ELSE false END\n));\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS refresh_search_after_content_update ON chat_message_contents",
+      "global?": false,
+      "name": "refresh_search_after_content_update",
+      "up": "CREATE TRIGGER refresh_search_after_content_update AFTER update ON chat_message_contents REFERENCING OLD TABLE AS previous NEW TABLE AS current_rows FOR EACH STATEMENT EXECUTE FUNCTION ic_refresh_search_after_content_update()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_after_item_delete()",
+      "global?": false,
+      "name": "ic_refresh_search_after_item_delete",
+      "up": "CREATE FUNCTION ic_refresh_search_after_item_delete() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM ic_refresh_message_search(ARRAY(SELECT DISTINCT s.chat_message_id FROM delta i JOIN chat_message_steps s ON s.id=i.chat_message_step_id\nWHERE i.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary')\n));\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS refresh_search_after_item_delete ON chat_message_items",
+      "global?": false,
+      "name": "refresh_search_after_item_delete",
+      "up": "CREATE TRIGGER refresh_search_after_item_delete AFTER DELETE ON chat_message_items REFERENCING OLD TABLE AS delta FOR EACH STATEMENT EXECUTE FUNCTION ic_refresh_search_after_item_delete()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_after_step_delete()",
+      "global?": false,
+      "name": "ic_refresh_search_after_step_delete",
+      "up": "CREATE FUNCTION ic_refresh_search_after_step_delete() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM ic_refresh_message_search(ARRAY(SELECT DISTINCT chat_message_id FROM delta));\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS refresh_search_after_step_delete ON chat_message_steps",
+      "global?": false,
+      "name": "refresh_search_after_step_delete",
+      "up": "CREATE TRIGGER refresh_search_after_step_delete AFTER DELETE ON chat_message_steps REFERENCING OLD TABLE AS delta FOR EACH STATEMENT EXECUTE FUNCTION ic_refresh_search_after_step_delete()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP FUNCTION IF EXISTS ic_refresh_search_structure()",
+      "global?": false,
+      "name": "ic_refresh_search_structure",
+      "up": "CREATE FUNCTION ic_refresh_search_structure() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF TG_TABLE_NAME = 'chat_message_items' THEN\n    -- Even an apparently empty item can have a concurrent first fragment.\n    IF OLD.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary') OR NEW.type IN ('input','handoff_request','handoff_history','handoff_message','answer','handoff_summary') THEN\n      PERFORM ic_refresh_message_search(ARRAY(\n        SELECT s.chat_message_id FROM chat_message_steps s WHERE s.id IN (OLD.chat_message_step_id, NEW.chat_message_step_id)\n      ));\n    END IF;\n  ELSIF TG_TABLE_NAME = 'chat_message_steps' THEN\n    PERFORM ic_refresh_message_search(ARRAY[OLD.chat_message_id, NEW.chat_message_id]);\n  ELSE\n    PERFORM ic_refresh_message_search(ARRAY[NEW.id]);\n  END IF;\n  RETURN NULL;\nEND $$\n"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS z_search_after_item_move ON chat_message_items",
+      "global?": false,
+      "name": "z_search_after_item_move",
+      "up": "CREATE TRIGGER z_search_after_item_move AFTER UPDATE OF chat_message_step_id,owner_id,sequence,type ON chat_message_items FOR EACH ROW WHEN ((OLD.chat_message_step_id,OLD.owner_id,OLD.sequence,OLD.type) IS DISTINCT FROM (NEW.chat_message_step_id,NEW.owner_id,NEW.sequence,NEW.type)) EXECUTE FUNCTION ic_refresh_search_structure()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS z_search_after_step_move ON chat_message_steps",
+      "global?": false,
+      "name": "z_search_after_step_move",
+      "up": "CREATE TRIGGER z_search_after_step_move AFTER UPDATE OF chat_message_id,owner_id,sequence ON chat_message_steps FOR EACH ROW WHEN ((OLD.chat_message_id,OLD.owner_id,OLD.sequence) IS DISTINCT FROM (NEW.chat_message_id,NEW.owner_id,NEW.sequence)) EXECUTE FUNCTION ic_refresh_search_structure()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "DROP TRIGGER IF EXISTS z_search_after_message_move ON chat_messages",
+      "global?": false,
+      "name": "z_search_after_message_move",
+      "up": "CREATE TRIGGER z_search_after_message_move AFTER UPDATE OF owner_id,role ON chat_messages FOR EACH ROW WHEN ((OLD.owner_id,OLD.role) IS DISTINCT FROM (NEW.owner_id,NEW.role)) EXECUTE FUNCTION ic_refresh_search_structure()"
+    },
+    {
+      "after_tables": [
+        "chat_messages",
+        "chat_message_steps",
+        "chat_message_items",
+        "chat_message_contents"
+      ],
+      "code?": false,
+      "down": "SELECT 1",
+      "global?": false,
+      "name": "baseline_message_search_vectors",
+      "up": "INSERT INTO chat_message_poll_revisions AS r (chat_message_id,revision,search_owner_id,search_vector)\n  SELECT f.message_id,0,f.search_owner,f.lex FROM ic_message_search_vectors(NULL::bigint[]) f\n  WHERE f.lex <> ''::tsvector\n  ON CONFLICT (chat_message_id) DO UPDATE\n    SET search_owner_id=EXCLUDED.search_owner_id, search_vector=EXCLUDED.search_vector\n    WHERE (r.search_owner_id,r.search_vector) IS DISTINCT FROM (EXCLUDED.search_owner_id,EXCLUDED.search_vector)\n"
+    }
+  ],
+  "has_create_action": false,
+  "hash": "E3C08FCEE3AF18BC6936A00947CD8CF4EEF61733D00E369145BBF5C501BA06BF",
+  "identities": [],
+  "multitenancy": {
+    "attribute": null,
+    "global": null,
+    "strategy": null
+  },
+  "repo": "Elixir.IntellectualClub.Repo",
+  "schema": null,
+  "table": "chat_message_poll_revisions",
+  "temporal": null
+}

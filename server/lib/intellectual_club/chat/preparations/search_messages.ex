@@ -12,14 +12,11 @@ defmodule IntellectualClub.Chat.Preparations.SearchMessages do
         Ash.Query.get_argument(query, :exact) == true
       )
 
-    query =
-      case search do
-        :empty -> Ash.Query.filter(query, false)
-        search -> MessageText.filter(query, search)
-      end
+    chat_id = Ash.Query.get_argument(query, :chat_id)
 
     query
-    |> filter_chat(Ash.Query.get_argument(query, :chat_id))
+    |> MessageText.filter(search, recent?: not is_nil(chat_id))
+    |> filter_chat(chat_id)
     |> filter_bot(Ash.Query.get_argument(query, :bot_id))
     |> filter_role(Ash.Query.get_argument(query, :role))
     |> Ash.Query.default_sort(created_at: :desc, id: :desc)

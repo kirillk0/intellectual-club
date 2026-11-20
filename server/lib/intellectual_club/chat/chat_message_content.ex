@@ -91,14 +91,6 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
 
         down("DROP TRIGGER IF EXISTS chat_message_contents_sync_item_type ON chat_message_items")
       end
-
-      statement :chat_message_contents_searchable_content_text_trgm_index do
-        up(
-          "CREATE INDEX IF NOT EXISTS chat_message_contents_searchable_content_text_trgm_index ON chat_message_contents USING gin (content_text gin_trgm_ops) WHERE kind = 'text' AND item_type IN ('input', 'handoff_request', 'handoff_history', 'handoff_message', 'answer', 'handoff_summary')"
-        )
-
-        down("DROP INDEX IF EXISTS chat_message_contents_searchable_content_text_trgm_index")
-      end
     end
   end
 

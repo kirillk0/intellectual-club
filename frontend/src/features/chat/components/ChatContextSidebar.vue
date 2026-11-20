@@ -92,27 +92,11 @@
 
     <div class="stack panel-body" style="gap: 14px">
       <div v-if="leftTab === 'messages'" class="panel-pane" role="tabpanel">
-        <div class="branch-search">
-          <input
-            :value="branchSearchTerm"
-            type="search"
-            class="full"
-            placeholder="Search messages"
-            aria-label="Search messages"
-            @input="handleSearchInput"
-          />
-          <button
-            type="button"
-            class="search-icon-button branch-search__exact"
-            :class="{ active: branchSearchExact }"
-            :aria-pressed="branchSearchExact"
-            :aria-label="translate('Exact')"
-            :title="translate('Match the whole phrase exactly, including spaces')"
-            @click="emit('update:branchSearchExact', !branchSearchExact)"
-          >
-            <SvgIcon name="quote" size="16" />
-          </button>
-          <SearchClearButton v-if="branchSearchTerm" @click="emit('update:branchSearchTerm', '')" />
+        <ChatSearchField
+          class="branch-search" :label="translate('Search messages')" :model-value="branchSearchTerm" :ordered="branchSearchOrdered"
+          @update:model-value="emit('update:branchSearchTerm', $event)" @update:ordered="emit('update:branchSearchOrdered', $event)"
+          @submit="emit('submit-branch-search')"
+        >
           <button
             type="button"
             class="icon-button branch-tree-button"
@@ -122,11 +106,12 @@
           >
             <SvgIcon name="branch" />
           </button>
-        </div>
+        </ChatSearchField>
 
         <div class="stack branch-list">
           <template v-if="hasBranchSearch">
-            <div v-if="branchSearchLoading" class="muted">Searching...</div>
+            <p v-if="branchQuery.hint" class="muted">{{ translate(branchQuery.hint) }}</p>
+            <div v-else-if="branchSearchLoading" class="muted">Searching...</div>
             <div v-else>
               <p v-if="branchSearchError" class="error-text">{{ branchSearchError }}</p>
 
@@ -140,7 +125,7 @@
                 <div class="branch-item-main">
                   <div class="branch-item-meta">{{ searchHitMeta(hit) || '—' }}</div>
                   <div class="branch-item-snippet" :title="hit.content">
-                    {{ hit.snippet || preview(hit.content) }}
+                    <ChatSearchSnippet :text="hit.snippet || preview(hit.content)" :terms="branchQuery.terms" :ordered="branchSearchOrdered" />
                   </div>
                 </div>
               </div>
@@ -157,7 +142,7 @@
                   <div class="branch-item-main">
                     <div class="branch-item-meta">{{ searchHitMeta(hit) || '—' }}</div>
                     <div class="branch-item-snippet" :title="hit.content">
-                      {{ hit.snippet || preview(hit.content) }}
+                      <ChatSearchSnippet :text="hit.snippet || preview(hit.content)" :terms="branchQuery.terms" :ordered="branchSearchOrdered" />
                     </div>
                   </div>
                 </div>
@@ -281,7 +266,9 @@ import type {
   LeftPanelTab,
   LinkedBlock,
 } from '@/features/chat/types';
-import SearchClearButton from '@/components/SearchClearButton.vue';
+import ChatSearchField from './ChatSearchField.vue';
+import ChatSearchSnippet from './ChatSearchSnippet.vue';
+import { parseChatSearch } from '@/features/chat/chatSearch';
 
 interface Props {
   isMobile: boolean;
@@ -297,7 +284,7 @@ interface Props {
   isContextSoftLimitReached: boolean;
   contextUsagePercent: number;
   branchSearchTerm: string;
-  branchSearchExact?: boolean;
+  branchSearchOrdered?: boolean;
   hasBranchSearch: boolean;
   branchSearchLoading: boolean;
   branchSearchError: string;
@@ -319,7 +306,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  branchSearchExact: false,
+  branchSearchOrdered: false,
   readonly: false,
 });
 
@@ -327,7 +314,8 @@ const emit = defineEmits<{
   (e: 'update:leftOpen', value: boolean): void;
   (e: 'update:leftTab', value: LeftPanelTab): void;
   (e: 'update:branchSearchTerm', value: string): void;
-  (e: 'update:branchSearchExact', value: boolean): void;
+  (e: 'update:branchSearchOrdered', value: boolean): void;
+  (e: 'submit-branch-search'): void;
   (e: 'open-prompt-modal'): void;
   (e: 'open-message-tree'): void;
   (e: 'branch-item-click', id?: number | null): void;
@@ -337,10 +325,7 @@ const emit = defineEmits<{
   (e: 'open-context-tool-editor', toolInstanceId: number): void;
 }>();
 
-const handleSearchInput = (event: Event) => {
-  const target = event.target as HTMLInputElement;
-  emit('update:branchSearchTerm', target.value);
-};
+const branchQuery = computed(() => parseChatSearch(props.branchSearchTerm, props.branchSearchOrdered));
 
 const activeToolBindingLabel = (binding: ActiveToolBinding) => {
   const tool = binding.tool_instance;

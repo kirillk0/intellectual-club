@@ -119,7 +119,7 @@
           :is-context-soft-limit-reached="vm.isContextSoftLimitReached"
           :context-usage-percent="vm.contextUsagePercent"
           :branch-search-term="vm.branchSearchTerm"
-          :branch-search-exact="vm.branchSearchExact"
+          :branch-search-ordered="vm.branchSearchOrdered"
           :has-branch-search="vm.hasBranchSearch"
           :branch-search-loading="vm.branchSearchLoading"
           :branch-search-error="vm.branchSearchError"
@@ -141,7 +141,8 @@
           @update:leftOpen="(value) => (vm.leftOpen = value)"
           @update:leftTab="(value) => (vm.leftTab = value)"
           @update:branchSearchTerm="(value) => (vm.branchSearchTerm = value)"
-          @update:branchSearchExact="(value) => (vm.branchSearchExact = value)"
+          @update:branchSearchOrdered="(value) => (vm.branchSearchOrdered = value)"
+          @submit-branch-search="vm.submitBranchSearch"
           @open-prompt-modal="vm.openPromptModal"
           @open-message-tree="openMessageTree"
           @branch-item-click="vm.handleBranchItemClick"
@@ -1249,15 +1250,7 @@ onBeforeUnmount(() => {
 }
 
 .chat-page .branch-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-bottom: 8px;
-}
-
-.chat-page .branch-search input {
-  min-width: 0;
-  flex: 1;
 }
 
 .chat-page .branch-tree-button {

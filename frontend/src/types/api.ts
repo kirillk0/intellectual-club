@@ -216,7 +216,7 @@ export type ChatSummary = {
   subchats?: ChatSummary[];
   created_at: string | null;
   updated_at?: string | null;
-  last_activity_at: string | null;
+  last_activity_at?: string | null;
   message_count?: number | null;
   blocks_count?: number | null;
   tools_count?: number | null;
