@@ -58,6 +58,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert inbox["sections"]["other"]["ids"] == [active.id]
       assert inbox["sections"]["drafts"]["ids"] == []
       assert inbox["stats"]["total_chats"] == 1
+      assert inbox["view_counts"] == %{"inbox" => 1, "archive" => 1}
 
       archived =
         conn |> get("/api/bff/chat-list", Map.put(params, :view, "archive")) |> json_response(200)
@@ -65,6 +66,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
       assert archived["sections"]["other"]["ids"] == [parent.id]
       assert archived["sections"]["drafts"]["ids"] == [child.id]
       assert archived["stats"]["total_chats"] == 1
+      assert archived["view_counts"] == inbox["view_counts"]
       refute archived["idle_revision"] == inbox["idle_revision"]
 
       for view <- ["inbox", "archive"] do
@@ -77,6 +79,19 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         )
         |> response(204)
       end
+
+      create_chat!(actor)
+      archived_params = Map.put(params, :view, "archive")
+
+      conn
+      |> get(
+        "/api/bff/chat-list/idle-state",
+        Map.put(archived_params, :revision, archived["idle_revision"])
+      )
+      |> json_response(200)
+
+      updated = conn |> get("/api/bff/chat-list", archived_params) |> json_response(200)
+      assert updated["view_counts"] == %{"inbox" => 2, "archive" => 1}
 
       conn |> get("/api/bff/chat-list", %{view: "invalid"}) |> json_response(422)
     end
@@ -233,7 +248,8 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
                  )
       end
 
-      for bot_filter <- ["", "none", to_string(bot.id)], page <- [1, 2, 9] do
+      for {bot_filter, expected} <- [{"", 8}, {"none", 7}, {to_string(bot.id), 1}],
+          page <- [1, 2, 9] do
         params = %{
           sections: "drafts,unread,working,other",
           per_page: 2,
@@ -245,6 +261,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         }
 
         grouped = conn |> get("/api/bff/chat-list", params) |> json_response(200)
+        assert grouped["view_counts"] == %{"inbox" => expected, "archive" => 0}
         ids = Enum.map(grouped["chats"], & &1["id"])
         assert length(ids) == length(Enum.uniq(ids))
 
@@ -400,6 +417,7 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
         conn |> get("/api/bff/chat-list", %{sections: "other,drafts,other"}) |> json_response(200)
 
       assert empty["chats"] == []
+      assert empty["view_counts"] == %{"inbox" => 0, "archive" => 0}
       assert Enum.sort(Map.keys(empty["sections"])) == ["drafts", "other"]
       assert empty["sections"]["other"]["page"]["total"] == 0
       chat = create_chat!(actor)

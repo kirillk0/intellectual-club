@@ -35,6 +35,7 @@ defmodule IntellectualClub.Chat.Revisions do
   def chat_list_sections_revision(
         bot_filter,
         sections,
+        view_counts,
         chats,
         read_marker,
         draft_marker,
@@ -46,6 +47,7 @@ defmodule IntellectualClub.Chat.Revisions do
       view,
       normalize_bot_filter(bot_filter),
       Enum.sort(sections),
+      view_counts,
       read_marker,
       draft_marker,
       chats |> Enum.sort_by(& &1.id) |> Enum.map(&chat_list_revision_row/1),

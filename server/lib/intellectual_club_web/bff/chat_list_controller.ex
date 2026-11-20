@@ -45,6 +45,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
       json(conn, %{
         chats: payload,
         sections: result.sections,
+        view_counts: result.view_counts,
         stats: Serializer.chat_list_stats(ListingStats.sidebar(actor, view)),
         next_read_state_expiry: marker.next_expiry,
         idle_revision:
@@ -203,6 +204,7 @@ defmodule IntellectualClubWeb.Bff.ChatListController do
     Revisions.chat_list_sections_revision(
       bot_filter,
       result.sections,
+      result.view_counts,
       result.results,
       read_marker,
       draft_marker,

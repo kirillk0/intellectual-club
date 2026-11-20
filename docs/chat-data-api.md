@@ -155,7 +155,7 @@ four names; duplicates are ignored and unknown names return `422`.
 - `preview_len`: first-message preview budget, default 200, maximum 500.
 
 The response contains unique top-level `chats`, `sections`, shared `stats`,
-`idle_revision`, and `next_read_state_expiry`. Each section has ordered `ids` and
+`view_counts`, `idle_revision`, and `next_read_state_expiry`. Each section has ordered `ids` and
 `page: {number, per_page, total, has_next}`. Counts are exact; out-of-range pages
 have empty IDs and retain the requested page number. Unlike grouped search,
 ordinary list pagination needs no cursors. The client clamps pages after deletions
@@ -165,7 +165,9 @@ Drafts overlap the inbox and may include nested chats. They sort by personal dra
 update time and descending id. Unread, Working, and Other exclude subagents and
 sort by last activity and descending id; unread takes precedence over working.
 Bot and ownership filters apply before counting and pagination. Sidebar stats
-remain independent of the selected bot and sections.
+in `stats` remain independent of the selected bot and sections.
+`view_counts: {inbox, archive}` counts top-level chats in each folder for the
+selected bot filter, regardless of the open folder, sections, or page.
 
 All reads retain Ash authorization. A single lightweight membership query loads
 classification and sorting metadata for matching chats; grouping and pagination

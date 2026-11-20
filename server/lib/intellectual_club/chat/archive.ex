@@ -21,19 +21,26 @@ defmodule IntellectualClub.Chat.Archive do
     end
   end
 
-  def visible_ids(actor, view) do
+  def view_membership(actor, view, bot_filter, include_subchats?) do
     chats =
       Chat
-      |> Ash.Query.filter(owner_id == ^actor.id)
-      |> Ash.Query.select([:id, :parent_chat_id, :subagent])
+      |> Ash.Query.filter(owner_id == ^actor.id and (^include_subchats? or subagent == false))
+      |> Ash.Query.select([:id, :parent_chat_id, :subagent, :bot_id])
       |> Ash.Query.load(:is_archived)
       |> Ash.read!(actor: actor, page: false)
 
     archived = Map.new(chats, &{&1.id, &1.is_archived})
 
-    roots(chats)
-    |> Enum.filter(fn {_id, root} -> Map.get(archived, root, false) == (view == "archive") end)
-    |> Enum.map(&elem(&1, 0))
+    roots = roots(chats)
+    selected = if view == "archive", do: :archive, else: :inbox
+
+    chats
+    |> Enum.filter(&matches_bot?(&1, bot_filter))
+    |> Enum.reduce(%{ids: [], counts: %{inbox: 0, archive: 0}}, fn chat, acc ->
+      folder = if Map.get(archived, roots[chat.id], false), do: :archive, else: :inbox
+      acc = if folder == selected, do: %{acc | ids: [chat.id | acc.ids]}, else: acc
+      if chat.subagent, do: acc, else: update_in(acc, [:counts, folder], &(&1 + 1))
+    end)
   end
 
   def snapshot(actor, bot_filter) do

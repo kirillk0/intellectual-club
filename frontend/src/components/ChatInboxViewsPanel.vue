@@ -17,6 +17,7 @@
       >
         <SvgIcon :name="view.icon" size="16" class="chat-inbox-views__icon" />
         <span class="chat-inbox-views__label">{{ t(view.label) }}</span>
+        <span v-if="counts" class="muted chat-inbox-views__count">{{ counts[view.value] }}</span>
       </button>
     </div>
   </section>
@@ -35,6 +36,7 @@ const VIEWS: { value: ChatInboxView; label: string; icon: string }[] = [
 
 defineProps<{
   modelValue: ChatInboxView;
+  counts: Record<ChatInboxView, number> | null;
 }>();
 
 const emit = defineEmits<{
@@ -96,5 +98,9 @@ const emit = defineEmits<{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.chat-inbox-views__count {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
 }
 </style>

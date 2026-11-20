@@ -28,7 +28,7 @@
         <div class="catalog-split">
           <aside class="catalog-split__sidebar">
             <div class="chat-filters-stack">
-              <ChatInboxViewsPanel :modelValue="archiveView" @update:modelValue="setArchiveView" />
+              <ChatInboxViewsPanel :modelValue="archiveView" :counts="viewCounts" @update:modelValue="setArchiveView" />
               <ChatBotFiltersPanel
                 v-model:searchTerm="botSearchTerm"
                 :sortMode="botSortModeValue"
@@ -189,7 +189,7 @@
       </transition>
 
       <aside v-if="isMobile && filterOpen" class="sidebar overlay align-left chat-filters-overlay">
-        <ChatInboxViewsPanel :modelValue="archiveView" @update:modelValue="setArchiveView">
+        <ChatInboxViewsPanel :modelValue="archiveView" :counts="viewCounts" @update:modelValue="setArchiveView">
           <template #header-extra>
             <button class="panel-toggle" type="button" @click="closeFilter" aria-label="Hide filters">
               <SvgIcon name="chevron-left" />
@@ -291,7 +291,7 @@ import ChatArchiveAllModal from '@/components/chat/ChatArchiveAllModal.vue';
 import ChatSnoozeModal from '@/components/chat/ChatSnoozeModal.vue';
 import { chatReadStateInput, updateChatReadState, isChatReadStateConflict, type ChatReadStateAction } from '@/features/chat/chatReadState';
 import ChatBotFiltersPanel from '@/components/ChatBotFiltersPanel.vue';
-import ChatInboxViewsPanel from '@/components/ChatInboxViewsPanel.vue';
+import ChatInboxViewsPanel, { type ChatInboxView } from '@/components/ChatInboxViewsPanel.vue';
 import InitialRoutePlaceholder from '@/components/InitialRoutePlaceholder.vue';
 import PullToRefresh from '@/components/PullToRefresh.vue';
 import StackToolbarTeleport from '@/components/StackToolbarTeleport.vue';
@@ -395,6 +395,7 @@ type ChatListPayload = {
   chats: ChatSummary[];
   sections?: Partial<Record<ChatSection, { ids?: number[]; page?: Partial<SectionPage> }>>;
   stats?: ChatListStats;
+  view_counts: Record<ChatInboxView, number>;
   idle_revision?: string | null;
 };
 
@@ -481,8 +482,8 @@ sectionPages.value.working.number = readChatListPageQuery(route.query.workingPag
 const pageNumber = computed({ get: () => sectionPages.value.other.number, set: (value) => { sectionPages.value.other.number = value; } });
 const perPage = ref(20);
 const totalChats = ref(0);
-type ArchiveView = 'inbox' | 'archive';
-const archiveView = ref<ArchiveView>(route.query.view === 'archive' ? 'archive' : 'inbox');
+const viewCounts = ref<Record<ChatInboxView, number> | null>(null);
+const archiveView = ref<ChatInboxView>(route.query.view === 'archive' ? 'archive' : 'inbox');
 const sectionActionsAnchor = ref<ChatListActionsAnchor | null>(null);
 const archiveAllTarget = ref<{ bot: string; label: string } | null>(null);
 const archiveNotice = ref('');
@@ -508,7 +509,7 @@ async function finishArchiveAll(count: number) {
   await refreshSections();
 }
 
-function setArchiveView(view: ArchiveView) {
+function setArchiveView(view: ChatInboxView) {
   if (archiveView.value === view) return;
   archiveView.value = view;
   archiveNotice.value = '';
@@ -657,8 +658,8 @@ watch(
     if (botFilter.value !== nextBot) botFilter.value = nextBot;
     if (pageNumber.value !== nextPage) pageNumber.value = nextPage;
 
-    if (shouldLoadChats && (viewChanged || !hasChatSearch.value)) {
-      void loadChats();
+    if (shouldLoadChats) {
+      void loadChats({ silent: hasChatSearch.value });
     }
   }
 );
@@ -686,7 +687,7 @@ function setBotFilter(value: string) {
   if (botFilter.value === value) return;
   botFilter.value = value;
   resetSectionPageNumbers();
-  if (!hasChatSearch.value) void loadChats();
+  void loadChats({ silent: hasChatSearch.value });
   if (isMobile.value) filterOpen.value = false;
 }
 
@@ -1300,8 +1301,10 @@ function openSnoozeModal() {
 
 async function refreshSections() {
   if (unmounted) return;
-  if (hasChatSearch.value) await runChatSearch(chatSearchTerm.value.trim(), { silent: true });
-  else await loadChats({ silent: true });
+  await Promise.all([
+    loadChats({ silent: true }),
+    hasChatSearch.value && runChatSearch(chatSearchTerm.value.trim(), { silent: true }),
+  ]);
 }
 
 async function changeReadStateFromMenu(action: ChatReadStateAction) {
@@ -1501,9 +1504,10 @@ async function loadChats(
     }
     sectionIds.value = Object.fromEntries(SECTION_KEYS.map((key) => [key, payload.sections?.[key]?.ids ?? []])) as Record<ChatSection, number[]>;
     chats.value = uniqueChatRows(payload.chats || []);
-    nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
+    if (!hasChatSearch.value) nextReadStateExpiry.value = payload.next_read_state_expiry ?? null;
     totalChats.value = SECTION_KEYS.filter((key) => key !== 'drafts').reduce((total, key) => total + sectionPages.value[key].total, 0);
     chatListStats.value = normalizeChatListStats(payload.stats);
+    viewCounts.value = payload.view_counts ?? null;
     chatListIdleRevision.value = payload.idle_revision ?? null;
     startChatListIdlePolling();
 
@@ -1691,7 +1695,7 @@ async function refreshChatIndex() {
 
   try {
     if (hasChatSearch.value) {
-      await runChatSearch(chatSearchTerm.value.trim());
+      await Promise.all([runChatSearch(chatSearchTerm.value.trim()), loadChats({ silent: true })]);
     } else {
       await loadChats();
     }

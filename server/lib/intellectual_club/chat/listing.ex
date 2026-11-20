@@ -3,6 +3,7 @@ defmodule IntellectualClub.Chat.Listing do
   Chat list queries and list-level derived values.
   """
 
+  alias IntellectualClub.Chat.Archive
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageContent
@@ -44,12 +45,13 @@ defmodule IntellectualClub.Chat.Listing do
     section_keys =
       Enum.filter(["drafts", "unread", "working", "other"], &Map.has_key?(paginations, &1))
 
+    include_drafts? = "drafts" in section_keys
+    membership = Archive.view_membership(actor, view, bot_filter, include_drafts?)
+
     rows =
       Chat
-      |> Ash.Query.filter(owner_id == ^actor.id)
-      |> section_candidates("drafts" in section_keys)
-      |> apply_view(view, actor, if("drafts" in section_keys, do: "drafts"))
-      |> apply_bot_filter(bot_filter)
+      |> Ash.Query.filter(owner_id == ^actor.id and id in ^membership.ids)
+      |> section_candidates(include_drafts?)
       |> Ash.Query.select([:id, :subagent])
       |> Ash.Query.load([:last_activity_at, :inbox_unread, :personal_draft_updated_at],
         strict?: true
@@ -117,14 +119,19 @@ defmodule IntellectualClub.Chat.Listing do
       end
 
     by_id = Map.new(chats, &{&1.id, &1})
-    %{results: Enum.flat_map(ids, &List.wrap(Map.get(by_id, &1))), sections: sections}
+
+    %{
+      results: Enum.flat_map(ids, &List.wrap(Map.get(by_id, &1))),
+      sections: sections,
+      view_counts: membership.counts
+    }
   end
 
   def apply_view(query, view, actor, section \\ nil)
 
   def apply_view(query, view, actor, "drafts") do
-    ids = IntellectualClub.Chat.Archive.visible_ids(actor, view)
-    Ash.Query.filter(query, id in ^ids)
+    membership = Archive.view_membership(actor, view, nil, true)
+    Ash.Query.filter(query, id in ^membership.ids)
   end
 
   def apply_view(query, view, _actor, _section) do

@@ -32,6 +32,7 @@ describe('ChatsIndexView stack navigation', () => {
         return {
           chats: [],
           sections: Object.fromEntries(['drafts', 'unread', 'working', 'other'].map((section) => [section, { ids: [], page: { number: 1, per_page: 20, total: 0, has_next: false } }])),
+          view_counts: { inbox: 27, archive: 0 },
           stats: { total_chats: 0, no_bot_chat_count: 0, no_bot_last_activity_at: null, bots: [] },
           idle_revision: 'revision-1',
         };
@@ -210,6 +211,10 @@ describe('ChatsIndexView stack navigation', () => {
 
     await vi.waitFor(() => expect(fullListRequests()).toHaveLength(1));
 
+    const folderButtons = () => wrapper.findAll('.chat-inbox-views__option');
+    expect(folderButtons().map((button) => button.text())).toEqual(['Inbox27', 'Archive0']);
+
+    apiMocks.get.mockResolvedValueOnce({ chats: [], view_counts: { inbox: 26, archive: 1 } });
     active.value = false;
     await nextTick();
     active.value = true;
@@ -217,6 +222,7 @@ describe('ChatsIndexView stack navigation', () => {
     await flushPromises();
 
     await vi.waitFor(() => expect(fullListRequests()).toHaveLength(2));
+    expect(folderButtons().map((button) => button.text())).toEqual(['Inbox26', 'Archive1']);
 
     wrapper.unmount();
     queryClient.clear();
