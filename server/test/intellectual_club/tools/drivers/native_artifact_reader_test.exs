@@ -262,13 +262,16 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
     assert raw["pages_total"] >= 1
   end
 
-  test "read_image accepts a valid image payload" do
+  test "read_image gives model media its own file with the detected MIME type" do
     %{user: actor} = user_fixture()
 
     tool_instance =
       create_tool_instance!(actor, type: "native-artifact-reader", name: "Artifact Reader")
 
-    {file, context} = create_context_file!(actor, "pixel.png", "image/png", png_1x1())
+    payload = png_1x1()
+
+    {file, context} =
+      create_context_file!(actor, "pixel.png", "application/octet-stream", payload)
 
     assert {:ok, result} =
              NativeArtifactReader.execute(
@@ -279,8 +282,17 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReaderTest do
              )
 
     assert result.text =~ "Image #{file.external_id}"
-    assert [%{file_external_id: file_external_id, mime_type: "image/png"}] = result.media
-    assert file_external_id == file.external_id
+    assert result.raw["file_id"] == file.external_id
+    assert [media] = result.media
+    refute media.file_id == file.id
+    refute media.file_external_id == file.external_id
+    assert media.mime_type == "image/png"
+    assert {:ok, {copy, ^payload}} = Files.load_payload(media.file_id)
+    assert copy.external_id == media.file_external_id
+    assert copy.mime_type == media.mime_type
+    assert copy.sha256 == file.sha256
+    assert {:ok, {original, ^payload}} = Files.load_payload(file.id)
+    assert original.mime_type == "application/octet-stream"
     assert result.artifacts == []
   end
 

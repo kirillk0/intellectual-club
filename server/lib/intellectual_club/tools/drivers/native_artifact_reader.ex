@@ -412,9 +412,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
          {:ok, {_content, file, payload}} <-
            ContentFiles.load_payload_for_execution(file_external_id, execution_context)
            |> normalize_payload_error(),
-         {:ok, mime_type} <- detect_image_mime(payload) do
-      media = file_result(%{file | mime_type: mime_type})
-
+         {:ok, mime_type} <- detect_image_mime(payload),
+         {:ok, media_file} <- Files.duplicate_file(file.id, mime_type: mime_type) do
       {:ok,
        %ExecutionResult{
          text: "Image #{file.external_id} read from #{file.filename}",
@@ -424,7 +423,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeArtifactReader do
            "mime_type" => mime_type,
            "size_bytes" => file.size_bytes
          },
-         media: [media],
+         media: [file_result(media_file)],
          artifacts: []
        }}
     end

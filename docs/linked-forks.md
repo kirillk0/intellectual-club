@@ -82,7 +82,9 @@ receipts to authorize reading or downloading the original owned artifacts. This
 access survives worker restarts and output truncation. Unrelated chats and other
 owners do not gain access; linked forks inherit only receipts in their projected
 prefix. The original artifact remains the file's storage reference, so removing
-it can make the received reference unavailable.
+it can make the received reference unavailable. An explicit Artifact Reader
+`read_image` call saves model media under a separate logical file ID that shares
+the original payload. Deleting that tool result does not delete the source image.
 
 `ExecutionResult.artifacts` is reserved for publishing attachments. A parent can
 explicitly download a received file and upload it to publish it. Merely checking

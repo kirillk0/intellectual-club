@@ -117,8 +117,32 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
                  context
                )
 
-      assert [%{file_external_id: image_id}] = image_result.media
-      assert image_id == image.external_id
+      read_step = create_step!(actor, context.message_id, sequence: 2, status: :waiting_tools)
+
+      read_item =
+        opaque_item!(actor, read_step, :tool_call, 1, %{
+          "call_id" => "read-returned-image",
+          "name" => "attachments__read_image"
+        })
+
+      read_context = %{context | step_id: read_step.id, tool_call_item_id: read_item.id}
+      assert [read_call] = Persistence.list_missing_tool_calls!(read_step.id)
+      persist_parent_receipt!(read_context, read_call, image_result)
+
+      assert [read_result] =
+               tool_result_items(load_message!(context.message_id, actor), read_item.id)
+
+      assert [media] = Enum.filter(read_result.contents, &(&1.kind == :media))
+      refute media.file_id == image.id
+      assert media.file.sha256 == image.sha256
+      Ash.destroy!(read_result, actor: actor)
+      assert {:error, :not_found} = Files.get_by_external_id(media.file.external_id)
+
+      assert {:ok, {_content, original, bytes}} =
+               ContentFiles.load_payload_for_execution(image.external_id, context)
+
+      assert original.id == image.id
+      assert bytes == png_1x1()
 
       assert {:ok, {_content, loaded, @payload}} =
                ContentFiles.load_payload_for_execution(file.external_id, context)

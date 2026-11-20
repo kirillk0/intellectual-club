@@ -98,8 +98,11 @@ defmodule IntellectualClub.Files do
 
   def get_by_external_id(_external_id), do: {:error, :invalid_external_id}
 
-  @spec duplicate_file(integer()) :: {:ok, File.t()} | {:error, term()}
-  def duplicate_file(file_id) when is_integer(file_id) do
+  @doc "Duplicates the logical file without copying its payload, optionally overriding its MIME type."
+  @spec duplicate_file(integer(), keyword()) :: {:ok, File.t()} | {:error, term()}
+  def duplicate_file(file_id, opts \\ [])
+
+  def duplicate_file(file_id, opts) when is_integer(file_id) do
     with {:ok, %File{} = file} <- Ash.get(File, file_id, authorize?: false) do
       transact_with_payload_lock(file.sha256, fn ->
         with {:ok, %File{} = current_file} <-
@@ -111,7 +114,7 @@ defmodule IntellectualClub.Files do
               sha256: current_file.sha256,
               filename: current_file.filename,
               size_bytes: current_file.size_bytes,
-              mime_type: current_file.mime_type,
+              mime_type: Keyword.get(opts, :mime_type, current_file.mime_type),
               storage_backend: current_file.storage_backend
             },
             authorize?: false
@@ -122,7 +125,7 @@ defmodule IntellectualClub.Files do
     end
   end
 
-  def duplicate_file(_file_id), do: {:error, :invalid_file_id}
+  def duplicate_file(_file_id, _opts), do: {:error, :invalid_file_id}
 
   @doc "Duplicates logical files in input order, including a separate row for each occurrence."
   def duplicate_files([]), do: {:ok, []}
