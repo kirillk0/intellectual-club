@@ -135,9 +135,15 @@ it does not grant access to future results, sibling branches or all parent files
 ## Source deletion and accounting
 
 Deleting an anchor step (including source retry), its message or its chat removes
-its linked descendants through Ash destroy actions. Legacy copied descendants are
-detached, not removed. Runtime work is stopped after the outer transaction commits;
-rollback must not cancel a surviving generation. Accounting ledger snapshots and
+its linked descendants through Ash destroy actions. Deleting a whole chat also
+removes every subchat owned by the same user, including spawns, legacy fork
+copies and their nested subchats. Deleting only a source message or step keeps
+unanchored subchats attached to their parent chat. Ordinary chat copies survive
+deletion of the parent. A legacy subchat owned by another user moves to that
+owner's archive when its parent is deleted. The migration also restores
+previously orphaned subchats to their owners' archives with their history and
+nested subchats intact. Runtime work stops after the outer transaction commits.
+A rollback lets a surviving generation continue. Accounting ledger snapshots and
 background-task envelopes survive with live foreign keys cleared where needed.
 New child statistics count only the child's own actual provider steps.
 
@@ -154,8 +160,10 @@ whole chats, message subtrees, single messages, keep-children reparenting, and
 retry step ranges. Deleted records and surviving lock-only dependencies are separate;
 a retry never walks or fences retained message descendants or unrelated fork chats.
 Each of the three discovery passes uses frontier batches and visits each linked
-node once. Initial chat fences use `FOR NO KEY UPDATE`, then affected message
-fences precede steps, usage and task updates. Growth requiring an earlier lock
+node once. After the initial `FOR NO KEY UPDATE` chat locks and the message
+locks, each chat scheduled for deletion is locked `FOR UPDATE`. This closes
+the window for new subchats to attach before final discovery. Step locks,
+usage and task updates follow. Growth requiring an earlier lock
 fails closed rather than acquiring locks out of order.
 
 Nested destroys receive an explicit capability through plan-aware cascade changes.

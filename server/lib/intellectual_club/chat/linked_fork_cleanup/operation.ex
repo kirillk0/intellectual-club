@@ -26,7 +26,12 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup.Operation do
       roots: group(plan.deleted.messages, & &1.chat_id, &is_nil(&1.parent_id)),
       children: group(plan.deleted.messages, & &1.parent_id),
       steps: group(plan.deleted.steps, & &1.chat_message_id),
-      linked: group(plan.deleted.chats, & &1.fork_source_step_id)
+      dependent_chats:
+        group(plan.deleted.chats, fn chat ->
+          if Map.has_key?(plan.deleted.steps, chat.fork_source_step_id),
+            do: {ChatMessageStep, chat.fork_source_step_id},
+            else: {Chat, chat.parent_chat_id}
+        end)
     }
 
     Process.put(key(operation), state)

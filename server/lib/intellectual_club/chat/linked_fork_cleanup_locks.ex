@@ -5,8 +5,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocks do
   Call `prepare!/2` inside the outer transaction, before taking any other fence.
   The order is chats, messages, then steps. Initial chat fences use FOR NO KEY
   UPDATE so a message-fenced worker can still insert its first accounting row
-  whose chat FK takes KEY SHARE. Only a deleted root chat is finally upgraded to
-  FOR UPDATE, after all affected generation messages have been fenced.
+  whose chat FK takes KEY SHARE. After fencing the messages, upgrade every
+  deleted chat to FOR UPDATE so new subchats cannot attach after final discovery.
 
   Discovery follows deletion dependencies, affected task authorities and their
   ancestors using authorized Ash reads, never manager RPCs. Each discovery uses
@@ -58,16 +58,18 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocks do
          %Plan{} = after_chats <- discover(scope, resource, id, actor),
          :ok <- require_subset!(after_chats.locks.chats, initial.locks.chats),
          :ok <- lock_rows(ChatMessage, after_chats.locks.messages, actor),
+         :ok <- lock_rows(Chat, id_set(after_chats.deleted.chats), actor),
          %Plan{} = after_messages <- discover(scope, resource, id, actor) do
       require_subset!(after_messages.locks.chats, initial.locks.chats)
       require_subset!(after_messages.locks.messages, after_chats.locks.messages)
+      require_subset!(id_set(after_messages.deleted.chats), id_set(after_chats.deleted.chats))
 
       # New steps discovered after waiting for a message are safe to fence now.
       # Every deleted step's owning message is already FOR UPDATE locked, so its
       # FK also prevents new step insertions while this final set is locked.
       lock_rows(ChatMessageStep, after_messages.locks.steps, actor)
 
-      case read_root(resource, id, actor, :for_update) do
+      case read_root(resource, id, actor, if(resource != Chat, do: :for_update)) do
         nil -> nil
         current -> put_root(after_messages, current)
       end
@@ -234,7 +236,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocks do
     steps = read_by(ChatMessageStep, :chat_message_id, message_ids, actor, @step_fields)
     new_steps = Enum.reject(steps, &Map.has_key?(deleted.steps, &1.id))
     step_ids = frontier.steps ++ Enum.map(new_steps, & &1.id)
-    chats = read_by(Chat, :fork_source_step_id, step_ids, actor, @chat_fields)
+    chats = dependent_chats(frontier.chats, step_ids, actor)
     new_chats = Enum.reject(chats, &Map.has_key?(deleted.chats, &1.id))
 
     deleted = %{
@@ -254,6 +256,18 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupLocks do
           actor
         )
     end
+  end
+
+  defp dependent_chats([], [], _actor), do: []
+
+  defp dependent_chats(parent_ids, step_ids, actor) do
+    Chat
+    |> Ash.Query.filter(
+      fork_source_step_id in ^step_ids or
+        (owner_id == ^actor.id and subagent and parent_chat_id in ^parent_ids)
+    )
+    |> Ash.Query.select(@chat_fields)
+    |> Ash.read!(actor: actor)
   end
 
   defp affected_tasks(deleted, item_ids, actor) do

@@ -37,15 +37,17 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       assert id == source.chat.id
       assert length(capture.discoveries) == 3
 
-      assert [chats, messages, steps, root] = Enum.map(SqlCapture.lock_queries(capture), & &1.sql)
+      assert [chats, messages, deleted_chats, steps] =
+               Enum.map(SqlCapture.lock_queries(capture), & &1.sql)
+
       assert chats =~ ~s(FROM "chats")
       assert chats =~ "FOR NO KEY UPDATE"
       assert messages =~ ~s(FROM "chat_messages")
       assert messages =~ "FOR UPDATE"
+      assert deleted_chats =~ ~s(FROM "chats")
+      assert deleted_chats =~ "FOR UPDATE"
       assert steps =~ ~s(FROM "chat_message_steps")
       assert steps =~ "FOR UPDATE"
-      assert root =~ ~s(FROM "chats")
-      assert root =~ "FOR UPDATE"
 
       refute Enum.any?(
                capture.queries,
@@ -56,7 +58,9 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       assert step_plan.root_record.id == source.step.id
       refute Ash.Resource.selected?(step_plan.root_record, :raw_request)
       refute Ash.Resource.selected?(step_plan.root_record, :raw_response)
-      assert Enum.count(SqlCapture.lock_queries(capture), &(&1.source == "chats")) == 1
+
+      assert SqlCapture.locked_ids(capture, "chats") ==
+               MapSet.new([source.chat.id, child.chat.id])
     end
 
     test "local step discovery neither reads nor locks its physical ancestors", %{actor: actor} do

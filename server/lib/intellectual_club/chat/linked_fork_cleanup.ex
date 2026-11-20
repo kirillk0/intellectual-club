@@ -101,13 +101,9 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
     Operation.record!(operation, changeset.resource, changeset.data.id, actor)
     prepare_references!(operation, actor)
 
-    if changeset.resource == ChatMessageStep do
-      state = Operation.state!(operation, actor)
-
-      state.linked
-      |> Map.get(changeset.data.id, [])
-      |> Enum.each(&destroy!(&1, :destroy, operation, actor))
-    end
+    Operation.state!(operation, actor).dependent_chats
+    |> Map.get({changeset.resource, changeset.data.id}, [])
+    |> Enum.each(&destroy!(&1, :destroy, operation, actor))
 
     changeset
   rescue

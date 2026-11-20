@@ -1,3 +1,8 @@
+Code.require_file(
+  "../../../priv/repo/migrations/20261120150500_archive_orphaned_subchats.exs",
+  __DIR__
+)
+
 defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
   @moduledoc """
   Behaviour of linked fork cleanup: anchor integrity, what deleting a fork
@@ -26,6 +31,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
   alias IntellectualClub.Chat.LinkedForkCleanupLocks, as: Locks
   alias IntellectualClub.Chat.LinkedForkCleanupLocksHelper, as: LocksHelper
   alias IntellectualClub.Chat.MessageBookmark
+  alias IntellectualClub.Chat.ReadState
+  alias IntellectualClub.Repo.Migrations.ArchiveOrphanedSubchats
   alias IntellectualClub.SqlCapture
   alias IntellectualClub.Chat.Threads
   alias IntellectualClub.Files
@@ -140,22 +147,27 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       assert legacy.parent_chat_id == source.chat.id
     end
 
-    test "chat deletion clears both parent references without destroying legacy chats", %{
+    test "chat deletion cascades through spawn and fork subchats and detaches ordinary copies", %{
       actor: actor,
       source: source
     } do
       child = create_linked_chat!(actor, source)
-      _child_anchor = create_tool_call_anchor!(actor, chat: child)
+      spawn = create_subchat!(actor, child, :spawn)
+      nested = create_linked_chat!(actor, create_tool_call_anchor!(actor, chat: spawn))
       legacy = create_legacy_fork!(actor, source)
-      legacy_anchor = create_tool_call_anchor!(actor, chat: legacy)
+      leaf = create_subchat!(actor, legacy, :spawn)
+      copy = create_legacy_fork!(actor, source, subagent: false)
+      survivor = create_subchat!(actor, copy, :spawn)
 
       assert :ok = Ash.destroy(source.chat, actor: actor)
-      assert_missing!(Chat, child.id, actor)
-      assert_missing!(Chat, source.chat.id, actor)
-      legacy = Ash.get!(Chat, legacy.id, actor: actor)
-      assert legacy.parent_chat_id == nil
-      assert legacy.parent_message_id == nil
-      assert Ash.get!(ChatMessageStep, legacy_anchor.step.id, actor: actor)
+
+      for chat <- [source.chat, child, spawn, nested, legacy, leaf],
+          do: assert_missing!(Chat, chat.id, actor)
+
+      copy = Ash.get!(Chat, copy.id, actor: actor)
+      assert copy.parent_chat_id == nil
+      assert copy.parent_message_id == nil
+      assert Ash.get!(Chat, survivor.id, actor: actor).parent_chat_id == copy.id
     end
 
     test "a once-shared source keeps foreign legacy copies and drops dangling bookmarks", %{
@@ -175,10 +187,12 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
         |> Ash.create!(actor: actor)
 
       Ash.destroy!(source.chat, actor: actor)
-      retained = Ash.get!(Chat, legacy.id, actor: recipient)
+      retained = Ash.get!(Chat, legacy.id, actor: recipient, load: [:is_archived])
       assert retained.owner_id == recipient.id
       assert retained.parent_chat_id == nil
       assert retained.parent_message_id == nil
+      refute retained.subagent
+      assert retained.is_archived
       assert_missing!(MessageBookmark, bookmark.id, recipient)
     end
 
@@ -314,6 +328,49 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       %{user: stranger} = user_fixture()
       assert {:error, _} = Ash.destroy(source.step, actor: stranger)
       assert Ash.get!(Chat, child.id, actor: actor)
+    end
+  end
+
+  describe "orphaned subchat migration" do
+    test "restores only orphan roots to the owner's archive and preserves history and read state",
+         %{actor: actor, source: source} do
+      version = 20_261_120_150_500
+      opts = [log: false, migration_lock: false]
+      assert :ok = Ecto.Migrator.down(Repo, version, ArchiveOrphanedSubchats, opts)
+
+      orphan = create_empty_chat!(actor, subagent: true, parent_relation_kind: :spawn)
+      nested = create_subchat!(actor, orphan, :spawn)
+      message = create_generating_message!(actor, orphan)
+      set_message_status!(actor, message, :done)
+
+      assert {:ok, %{read_state: previous}} =
+               ReadState.mutate(
+                 orphan.id,
+                 %{"action" => "unread", "expected_state_version" => 0},
+                 actor
+               )
+
+      assert :ok = Ecto.Migrator.up(Repo, version, ArchiveOrphanedSubchats, opts)
+
+      restored = Ash.get!(Chat, orphan.id, actor: actor, load: [:is_archived, :read_state])
+      refute restored.subagent
+      assert is_nil(restored.parent_relation_kind)
+      assert restored.is_archived
+
+      assert restored.read_state == %{
+               previous
+               | is_archived: true,
+                 state_version: previous.state_version + 1
+             }
+
+      assert restored.read_state.activity_revision == 1
+      assert Ash.get!(ChatMessage, message.id, actor: actor).chat_id == orphan.id
+
+      assert %{subagent: true, parent_chat_id: parent_id} =
+               Ash.get!(Chat, nested.id, actor: actor)
+
+      assert parent_id == orphan.id
+      refute Ash.get!(Chat, source.chat.id, actor: actor, load: [:is_archived]).is_archived
     end
   end
 
