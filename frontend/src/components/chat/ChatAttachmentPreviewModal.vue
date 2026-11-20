@@ -22,7 +22,10 @@
             :href="url"
             :download="title"
             :aria-label="translate('Download {name}', { name: title })"
-          >{{ title }}</a>
+          >
+            <SvgIcon name="import" />
+            <span class="attachment-preview-filename">{{ title }}</span>
+          </a>
           <button
             v-else-if="url"
             type="button"
@@ -32,7 +35,8 @@
             :title="translate('Download {name}', { name: title })"
             @click="emit('download')"
           >
-            {{ title }}
+            <SvgIcon name="import" />
+            <span class="attachment-preview-filename">{{ title }}</span>
           </button>
           <span v-else>{{ title }}</span>
         </h3>
@@ -337,9 +341,10 @@ const handleCancel = () => {
 
 .attachment-preview-title-link {
   color: inherit;
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
   max-width: 100%;
-  overflow: hidden;
   padding: 0;
   border: 0;
   background: transparent;
@@ -347,9 +352,13 @@ const handleCancel = () => {
   text-align: left;
   text-decoration: underline;
   text-underline-offset: 0.12em;
+  cursor: pointer;
+}
+
+.attachment-preview-filename {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .attachment-preview-title-link:hover:not(:disabled) {
