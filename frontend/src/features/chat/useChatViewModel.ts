@@ -1327,6 +1327,7 @@ export function useChatViewModel() {
     retryDraft: composerRuntime.retryDraft,
     resolveDraft: composerRuntime.resolveDraft,
     pendingFiles: composerRuntime.pendingFiles,
+    attachmentError: composerRuntime.attachmentError,
     addPendingFiles: composerRuntime.addPendingFiles,
     onPendingFilesSelected: composerRuntime.onPendingFilesSelected,
     removePendingFile: composerRuntime.removePendingFile,

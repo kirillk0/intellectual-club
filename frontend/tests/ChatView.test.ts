@@ -10,6 +10,7 @@ vi.mock('@/features/chat/useChatViewModel', () => viewModelMocks);
 
 import ChatView from '@/views/ChatView.vue';
 import { i18n, setPreferredLocale } from '@/i18n';
+import { validateFilesForChatUpload } from '@/features/chat/attachments';
 
 let activeWrapper: VueWrapper | null = null;
 
@@ -50,6 +51,7 @@ function loadedChatViewModel({
     chatSettingsStatus: ref('ready'),
     chatSettingsError: ref(''),
     loadError: ref(''),
+    attachmentError: ref(''),
     chatFullTitle: ref('Queue test'),
     chatBaseTitle: ref('Queue test'),
     gridColumns: ref('1fr'),
@@ -227,6 +229,26 @@ describe('ChatView composer expansion', () => {
     document.body.innerHTML = '';
     Element.prototype.scrollIntoView = originalScrollIntoView;
     setPreferredLocale(null);
+  });
+
+  it('shows the localized attachment rejection beside the textarea in both editor sizes', async () => {
+    const { wrapper, viewModel } = await mountLoadedChat();
+    const file = new File(['doc'], 'Настройка шпинделя.doc', { type: 'application/msword' });
+    const policy = { allowsFiles: true, imagesOnly: true, maxFileSizeBytes: 1024, accept: 'image/*' };
+    viewModel.addPendingFiles.mockImplementation((files: File[]) => {
+      viewModel.attachmentError.value = validateFilesForChatUpload(files, policy).errors[0] ?? '';
+    });
+    await wrapper.get('textarea').trigger('drop', { dataTransfer: { files: [file] } });
+
+    const alert = wrapper.get('.chat-input-form [role="alert"]');
+    expect(alert.text()).toBe('Only image files are allowed. "Настройка шпинделя.doc" was rejected.');
+    setPreferredLocale('ru');
+    await flushPromises();
+    expect(alert.text()).toBe('Можно прикреплять только изображения. Файл "Настройка шпинделя.doc" не добавлен.');
+    expect(wrapper.find('.chat-page > .error-text').exists()).toBe(false);
+
+    await wrapper.get('.chat-composer__expand').trigger('click');
+    expect(expandedLayer()?.querySelector('.chat-input-form [role="alert"]')).toBe(alert.element);
   });
 
   it('moves the same composer into a full-screen editor and back, keeping focus and selection', async () => {

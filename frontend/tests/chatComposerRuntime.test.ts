@@ -295,6 +295,25 @@ describe('chat composer runtime', () => {
       return { snapshots, uploads };
     };
 
+    it('keeps attachment rejections in the current composer and clears them on the next accepted file', async () => {
+      mockDraftServer();
+      const { runtime, chatId, loadError } = createRuntime(null, false, [], undefined, true);
+      const large = new File([new Uint8Array(1025)], 'large.doc');
+      loadError.value = 'Page error';
+      runtime.addPendingFiles([large]);
+      expect(runtime.attachmentError.value).toContain('"large.doc"');
+      expect(loadError.value).toBe('Page error');
+
+      runtime.addPendingFiles([new File(['note'], 'note.txt', { type: 'text/plain' })]);
+      expect(runtime.attachmentError.value).toBe('');
+      await flushPromises();
+      runtime.addPendingFiles([large]);
+      chatId.value++;
+      expect(runtime.attachmentError.value).toBe('');
+      expect(loadError.value).toBe('Page error');
+      await runtime.dispose();
+    });
+
     it('uploads both image versions immediately and restores the selected version on another device', async () => {
       const server = mockDraftServer();
       const original = new File(['original'], 'photo.heic', { type: 'image/heic' });
@@ -1240,7 +1259,8 @@ describe('chat composer runtime', () => {
         expect(loadError.value).toBe('');
         await vi.waitFor(() => expect(runtime.pendingFiles.value.map((file) => file.name)).toEqual(['note.txt']));
 
-        expect(loadError.value).toBe(sizeError);
+        expect(runtime.attachmentError.value).toBe(sizeError);
+        expect(loadError.value).toBe('');
         await runtime.dispose();
       });
 

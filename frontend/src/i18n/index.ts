@@ -156,6 +156,10 @@ const translatePatternRu = (key: string): string | null => {
     [/^Show message stats for message (\d+)$/u, (match) => `Показать статистику сообщения ${match[1]}`],
     [/^Download (.+)$/u, (match) => `Скачать ${match[1]}`],
     [/^Open attachment (.+)$/u, (match) => `Открыть вложение ${match[1]}`],
+    [/^Only image files are allowed\. (".*") was rejected\.$/su, ([, filename]) =>
+      interpolate(ruMessages['Only image files are allowed. {filename} was rejected.'], { filename })],
+    [/^File (".*") exceeds the maximum size of (.+)\.$/su, ([, filename, size]) =>
+      interpolate(ruMessages['File {filename} exceeds the maximum size of {size}.'], { filename, size })],
     [/^Branch message (\d+) to new chat$/u, (match) => `Создать ветку от сообщения ${match[1]} в новом чате`],
     [/^Move branch from message (\d+) to new chat$/u, (match) =>
       `Переместить ветку от сообщения ${match[1]} в новый чат`],

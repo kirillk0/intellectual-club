@@ -718,7 +718,7 @@ export const ruMessages: Record<string, string> = {
   'Only enabled files are visible to the model as file_id placeholders.': 'Модель видит как плейсхолдеры file_id только включенные файлы.',
   'Only image files are allowed.': 'Разрешены только изображения.',
   'Only for per-user aliases': 'Только для пользовательских алиасов',
-  'Only image files are allowed. {filename} was rejected.': 'Разрешены только изображения. Файл {filename} отклонен.',
+  'Only image files are allowed. {filename} was rejected.': 'Можно прикреплять только изображения. Файл {filename} не добавлен.',
   'Only the first queued follow-up can be sent next.': 'Следующим можно отправить только первое сообщение очереди.',
   'Open bookmarks': 'Открыть закладки',
   'Open full-screen editor': 'Открыть полноэкранный редактор',
@@ -1220,6 +1220,7 @@ export const ruMessages: Record<string, string> = {
     'Чат переключится на выбранную конфигурацию.',
   'File uploads are disabled for the current bot and configuration.':
     'Загрузка файлов отключена для текущего бота и конфигурации.',
+  'File {filename} exceeds the maximum size of {size}.': 'Файл {filename} превышает допустимый размер {size}.',
   'Original': 'Оригинал',
   'Upload the original file without compression': 'Загрузить исходный файл без сжатия',
   'Processing image…': 'Обработка изображения…',

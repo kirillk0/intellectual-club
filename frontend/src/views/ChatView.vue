@@ -362,6 +362,9 @@
                     >✕</button>
                   </div>
                 </div>
+                <div v-if="vm.attachmentError" class="chat-attachment-error error-text" role="alert">
+                  {{ translate(vm.attachmentError) }}
+                </div>
                 <div class="chat-composer">
                   <textarea
                     ref="composerTextareaRef"
@@ -1566,6 +1569,10 @@ onBeforeUnmount(() => {
 .chat-input-form--dragging {
   border-color: var(--color-focus);
   background: color-mix(in srgb, var(--color-info-bg) 70%, transparent);
+}
+
+.chat-attachment-error {
+  overflow-wrap: anywhere;
 }
 
 .pending-files {

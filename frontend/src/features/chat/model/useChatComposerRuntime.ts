@@ -87,6 +87,7 @@ type Params = {
 export function useChatComposerRuntime(params: Params) {
   const uploadChunkRetryDelaysMs = [500, 1_500];
   const pendingFiles = ref<PendingChatFile[]>([]);
+  const attachmentError = ref('');
   const draft = ref('');
   const sending = ref(false);
   const sendingMode = ref<'send' | 'queue' | 'continue' | null>(null);
@@ -102,6 +103,7 @@ export function useChatComposerRuntime(params: Params) {
   watch(
     () => params.chatId.value,
     () => {
+      attachmentError.value = '';
       if (params.draftUserId) return;
       draft.value = '';
     },
@@ -851,7 +853,7 @@ export function useChatComposerRuntime(params: Params) {
       return userId && params.chatId.value && draftReady.value && !params.readOnly.value
         ? { userId, chatId: params.chatId.value } : null;
     }),
-    files: pendingFiles, policy: params.fileUploadPolicy, error: params.loadError,
+    files: pendingFiles, policy: params.fileUploadPolicy, error: attachmentError,
     upload: uploadPendingFile,
   });
   const prepareComposerFiles = async (ids: ReadonlySet<string>) => draftAttachments.enabled.value
@@ -1277,6 +1279,7 @@ export function useChatComposerRuntime(params: Params) {
     const pendingFileIds = new Set(pendingFiles.value.map((file) => file.id));
     sending.value = true;
     sendingMode.value = 'send';
+    attachmentError.value = '';
     params.loadError.value = '';
 
     try {
@@ -1356,6 +1359,7 @@ export function useChatComposerRuntime(params: Params) {
     let draftAccepted = false;
     sending.value = true;
     sendingMode.value = 'queue';
+    attachmentError.value = '';
     params.loadError.value = '';
 
     try {
@@ -1399,6 +1403,7 @@ export function useChatComposerRuntime(params: Params) {
 
     sending.value = true;
     sendingMode.value = 'continue';
+    attachmentError.value = '';
     params.loadError.value = '';
 
     try {
@@ -1438,6 +1443,7 @@ export function useChatComposerRuntime(params: Params) {
     let draftSubmission: DraftSubmission | undefined;
     let draftAccepted = false;
     steeringGenerationId.value = messageId;
+    attachmentError.value = '';
     params.loadError.value = '';
 
     try {
@@ -1522,8 +1528,9 @@ export function useChatComposerRuntime(params: Params) {
     if (params.readOnly.value) return;
     if (!files.length) return;
     if (draftAttachments.enabled.value) { draftAttachments.add(files); return; }
+    const chatId = params.chatId.value;
     addPendingFilesToCollection(pendingFiles, files, params.fileUploadPolicy.value, (error) => {
-      params.loadError.value = error;
+      if (params.chatId.value === chatId) attachmentError.value = error;
     });
   };
 
@@ -1569,6 +1576,7 @@ export function useChatComposerRuntime(params: Params) {
 
   return {
     pendingFiles,
+    attachmentError,
     activeGenerationId: params.activeGenerationId,
     cancelingGenerationId: params.cancelingGenerationId,
     draft,
