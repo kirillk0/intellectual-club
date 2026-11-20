@@ -12,7 +12,7 @@ vi.mock('@/api/client', () => ({
 }));
 
 import { useChatInspectors } from '@/features/chat/model/useChatInspectors';
-import type { ExistingChatAttachment, PendingChatFile } from '@/features/chat/attachments';
+import { createPendingChatFiles, type ExistingChatAttachment, type PendingChatFile } from '@/features/chat/attachments';
 import * as download from '@/utils/download';
 
 const createInspectors = (
@@ -134,6 +134,76 @@ describe('attachment preview', () => {
     } else {
       expect(fetchMock).not.toHaveBeenCalled();
     }
+  });
+
+  const officeContent = (filename: string, size = 100) => ({
+    id: 18, sequence: 1, kind: 'media' as const,
+    media: { external_id: 'office', filename, mime_type: 'application/octet-stream', size_bytes: size, sha256: '', is_image: false },
+  });
+
+  it.each(['docx', 'xlsx'])('shares the same downloaded %s file used by the viewer', async (ext) => {
+    const source = new File(['document'], `notes.${ext}`);
+    const load = vi.spyOn(download, 'loadUrlAsFile').mockResolvedValue(source);
+    vi.spyOn(download, 'shouldUseFileShareForDownloads').mockReturnValue(true);
+    const save = vi.spyOn(download, 'saveBlobAsFile').mockResolvedValue(undefined);
+    const inspectors = createInspectors();
+    await inspectors.openAttachmentPreview({ messageId: 7, content: officeContent(source.name) });
+    expect(inspectors.attachmentPreviewFile.value).toBe(source);
+    await inspectors.downloadAttachmentPreview();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(source, source.name);
+    inspectors.closeAttachmentPreview();
+    expect(inspectors.attachmentPreviewFile.value).toBeNull();
+  });
+
+  it('opens a selected Office file without requesting a URL', async () => {
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:local', revokeObjectURL: vi.fn() });
+    const file = new File(['doc'], 'local.docx');
+    const [pending] = createPendingChatFiles([file]);
+    const inspectors = createInspectors([], [pending]);
+    const load = vi.spyOn(download, 'loadUrlAsFile');
+    await inspectors.openPendingAttachmentPreview(pending.id);
+    expect(inspectors.attachmentPreviewFile.value).toBe(file);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('offers an explicit download for a large Office file without loading it automatically', async () => {
+    const content = officeContent('large.xlsx', 10 * 1024 * 1024 + 1);
+    const load = vi.spyOn(download, 'loadUrlAsFile');
+    vi.spyOn(download, 'shouldUseFileShareForDownloads').mockReturnValue(true);
+    const save = vi.spyOn(download, 'saveUrlAsFile').mockResolvedValue(undefined);
+    const inspectors = createInspectors();
+    await inspectors.openAttachmentPreview({ messageId: 7, content });
+    expect(inspectors.attachmentPreviewError.value).toContain('10 MiB');
+    expect(load).not.toHaveBeenCalled();
+    await inspectors.downloadAttachmentPreview();
+    expect(save).toHaveBeenCalledWith(inspectors.attachmentPreviewUrl.value, content.media.filename, content.media.mime_type);
+  });
+
+  it('checks the real size of an Office file even when the metadata reports a small size', async () => {
+    const file = new File([], 'large.xlsx');
+    Object.defineProperty(file, 'size', { value: 10 * 1024 * 1024 + 1 });
+    vi.spyOn(download, 'loadUrlAsFile').mockResolvedValue(file);
+    const inspectors = createInspectors();
+    await inspectors.openAttachmentPreview({ messageId: 7, content: officeContent(file.name) });
+    expect(inspectors.attachmentPreviewError.value).toContain('10 MiB');
+    expect(inspectors.attachmentPreviewFile.value).toBeNull();
+    expect(inspectors.attachmentPreviewDownloadPending.value).toBe(false);
+  });
+
+  it('aborts an Office file request on close and ignores late results', async () => {
+    let resolveFile!: (value: File) => void;
+    const load = vi.spyOn(download, 'loadUrlAsFile').mockReturnValue(new Promise(resolve => { resolveFile = resolve; }));
+    const inspectors = createInspectors();
+    const open = inspectors.openAttachmentPreview({ messageId: 7, content: officeContent('slow.docx') });
+    const signal = load.mock.calls[0][3];
+    expect(inspectors.attachmentPreviewLoading.value).toBe(true);
+    inspectors.closeAttachmentPreview();
+    expect(signal?.aborted).toBe(true);
+    resolveFile(new File(['file'], 'slow.docx'));
+    await open;
+    expect(inspectors.attachmentPreviewOpen.value).toBe(false);
+    expect(inspectors.attachmentPreviewFile.value).toBeNull();
   });
 
   it('downloads a linked attachment whose type cannot be previewed', async () => {

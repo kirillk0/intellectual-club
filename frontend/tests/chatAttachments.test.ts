@@ -41,6 +41,13 @@ describe('getAttachmentPreviewKind', () => {
     ['sound.bin', 'Audio/Ogg; codecs=opus', false, 'audio'],
     ['document.pdf', 'application/pdf', false, 'pdf'],
     ['document.bin', ' APPLICATION/PDF ; version=1.7', false, 'pdf'],
+    ['report.bin', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', false, 'docx'],
+    ['report.DOCX', '', false, 'docx'],
+    ['table.bin', 'Application/Vnd.Openxmlformats-Officedocument.Spreadsheetml.Sheet; version=1', false, 'xlsx'],
+    ['table.XLSX', 'application/octet-stream', false, 'xlsx'],
+    ['table.xlsx', 'application/zip', false, 'xlsx'],
+    ['legacy.xls', 'application/vnd.ms-excel', false, 'binary'],
+    ['macro.docm', 'application/octet-stream', false, 'binary'],
     ['unknown.mp4', 'application/octet-stream', false, 'binary'],
     ['archive.zip', 'application/zip', false, 'binary'],
   ])('keeps %s classified as %s', (name, mimeType, isImage, expected) => {

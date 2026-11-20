@@ -1,7 +1,16 @@
-import { mount, type VueWrapper } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 
 import ChatAttachmentPreviewModal from '@/components/chat/ChatAttachmentPreviewModal.vue';
 import type { AttachmentPreviewKind } from '@/features/chat/attachments';
+
+vi.mock('@/components/chat/DocxPreview.vue', () => ({
+  __esModule: true,
+  default: { name: 'DocxPreview', props: ['file', 'title'], emits: ['ready', 'error'], template: '<div>DOCX</div>' },
+}));
+vi.mock('@/components/chat/XlsxPreview.vue', () => ({
+  __esModule: true,
+  default: { name: 'XlsxPreview', props: ['file', 'title'], emits: ['ready', 'error'], template: '<div>XLSX</div>' },
+}));
 
 const ModalWindowStub = {
   props: ['modalClass', 'backdropClass', 'closeOnBackdrop'],
@@ -53,6 +62,37 @@ describe('ChatAttachmentPreviewModal', () => {
     await wrapper.setProps({ url: '/second' });
     expect(wrapper.get(kind).attributes('src')).toBe('/second');
     expect(wrapper.text()).not.toContain('This browser cannot preview this file.');
+  });
+
+  it('shows a download fallback on office render errors and resets when switching files', async () => {
+    const wrapper = mountPreview('docx');
+    wrappers.push(wrapper);
+    await wrapper.setProps({ file: new File(['word'], 'first.docx') });
+    await flushPromises();
+    const docx = wrapper.getComponent({ name: 'DocxPreview' });
+    expect(docx.props('file')).toBe(wrapper.props('file'));
+    expect(wrapper.text()).toContain('Loading attachment…');
+    docx.vm.$emit('error');
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('Download it to open it');
+    await wrapper.get('button[aria-label="Download preview.html"]').trigger('click');
+    expect(wrapper.emitted('download')).toHaveLength(1);
+
+    await wrapper.setProps({ kind: 'xlsx', file: new File(['sheet'], 'second.xlsx'), url: '/second' });
+    await flushPromises();
+    const xlsx = wrapper.getComponent({ name: 'XlsxPreview' });
+    xlsx.vm.$emit('ready');
+    await wrapper.vm.$nextTick();
+    expect(xlsx.isVisible()).toBe(true);
+    expect(wrapper.text()).not.toContain('Loading attachment…');
+    expect(wrapper.text()).not.toContain('Download it to open it');
+  });
+
+  it('links directly to the original when an office file cannot be loaded for preview', async () => {
+    const wrapper = mountPreview('xlsx');
+    wrappers.push(wrapper);
+    await wrapper.setProps({ error: 'Too large', title: 'book.xlsx' });
+    expect(wrapper.get('a').attributes()).toMatchObject({ href: '/attachment', download: 'book.xlsx' });
   });
 
   it('embeds PDF using the browser viewer', () => {

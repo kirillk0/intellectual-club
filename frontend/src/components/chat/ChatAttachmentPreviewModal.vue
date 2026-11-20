@@ -16,8 +16,15 @@
     >
       <div v-if="!fullscreen" class="attachment-preview-title-wrap">
         <h3 class="attachment-preview-title">
+          <a
+            v-if="url && errorText && !file && (kind === 'docx' || kind === 'xlsx')"
+            class="attachment-preview-title-link"
+            :href="url"
+            :download="title"
+            :aria-label="translate('Download {name}', { name: title })"
+          >{{ title }}</a>
           <button
-            v-if="url"
+            v-else-if="url"
             type="button"
             class="attachment-preview-title-link"
             :disabled="downloadPending"
@@ -95,6 +102,14 @@
       <div v-else-if="mediaError || (kind === 'pdf' && !pdfViewerEnabled)" class="attachment-preview-state muted">
         {{ translate('This browser cannot preview this file. Download it to open it in another application.') }}
       </div>
+      <OfficeAttachmentPreview
+        v-else-if="open && file && (kind === 'docx' || kind === 'xlsx')"
+        :key="url"
+        :kind="kind"
+        :file="file"
+        :title="title"
+        class="attachment-preview-office"
+      />
       <div v-else-if="kind === 'video' || kind === 'audio'" class="attachment-preview-media-wrap">
         <component
           :is="kind"
@@ -156,6 +171,7 @@
 import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue';
 
 import ModalWindow from '@/components/ModalWindow.vue';
+import OfficeAttachmentPreview from './OfficeAttachmentPreview.vue';
 import SvgIcon from '@/components/icons/SvgIcon.vue';
 import type { AttachmentPreviewKind } from '@/features/chat/attachments';
 import { translate } from '@/i18n';
@@ -171,6 +187,7 @@ interface Props {
   downloadPending?: boolean;
   error?: string;
   text?: string;
+  file?: Blob | null;
 }
 
 const props = defineProps<Props>();
@@ -493,6 +510,7 @@ const handleCancel = () => {
   max-height: 100%;
 }
 
+.attachment-preview-office,
 .attachment-preview-html,
 .attachment-preview-pdf {
   display: block;
@@ -504,6 +522,13 @@ const handleCancel = () => {
   background: #fff;
 }
 
+.attachment-preview-office {
+  box-sizing: border-box;
+  overflow: auto;
+  background: var(--color-surface);
+}
+
+.attachment-preview-content--fullscreen .attachment-preview-office,
 .attachment-preview-content--fullscreen .attachment-preview-html,
 .attachment-preview-content--fullscreen .attachment-preview-pdf {
   height: 100%;

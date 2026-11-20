@@ -84,7 +84,7 @@ const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd']);
 const HTML_EXTENSIONS = new Set(['html', 'htm', 'xhtml']);
 const DEFAULT_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 
-export type AttachmentPreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'html' | 'markdown' | 'text' | 'binary';
+export type AttachmentPreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'docx' | 'xlsx' | 'html' | 'markdown' | 'text' | 'binary';
 
 export const formatFileBytes = (value: number) => {
   if (!Number.isFinite(value) || value < 0) return '0 B';
@@ -522,6 +522,12 @@ export const getAttachmentPreviewKind = (
   if (normalizedMimeType.startsWith('video/')) return 'video';
   if (normalizedMimeType.startsWith('audio/')) return 'audio';
   if (normalizedMimeType === 'application/pdf') return 'pdf';
+  if (normalizedMimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  if (normalizedMimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'xlsx';
+  if (!normalizedMimeType || normalizedMimeType === 'application/octet-stream' || normalizedMimeType === 'application/zip') {
+    const extension = getAttachmentExtension(name);
+    if (extension === 'docx' || extension === 'xlsx') return extension;
+  }
   if (isHtmlAttachment(name, mimeType)) return 'html';
   if (isMarkdownAttachment(name, mimeType)) return 'markdown';
   if (isTextAttachment(name, mimeType)) return 'text';

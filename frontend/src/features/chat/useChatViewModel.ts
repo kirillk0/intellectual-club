@@ -1439,6 +1439,7 @@ export function useChatViewModel() {
     attachmentPreviewDownloadPending: inspectors.attachmentPreviewDownloadPending,
     attachmentPreviewError: inspectors.attachmentPreviewError,
     attachmentPreviewText: inspectors.attachmentPreviewText,
+    attachmentPreviewFile: inspectors.attachmentPreviewFile,
     attachmentPreviewCanNavigate: inspectors.attachmentPreviewCanNavigate,
     openAttachmentPreview: inspectors.openAttachmentPreview,
     openPendingAttachmentPreview: inspectors.openPendingAttachmentPreview,

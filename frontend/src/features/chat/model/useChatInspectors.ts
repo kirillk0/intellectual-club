@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from 'vue';
+import { computed, ref, shallowRef, type Ref } from 'vue';
 
 import { api, getApiErrorMessage, isHttpError } from '@/api/client';
 import {
@@ -7,6 +7,7 @@ import {
   getAttachmentMimeType,
   getAttachmentName,
   getAttachmentPreviewKind,
+  getAttachmentSize,
   type AttachmentPreviewKind,
   type ChatAttachmentOpenPayload,
   type ExistingChatAttachment,
@@ -75,6 +76,9 @@ type PreparedAttachmentDownload = {
   file: File | null;
   error: unknown | null;
 };
+
+const OFFICE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
+const isOfficePreview = (kind: AttachmentPreviewKind) => kind === 'docx' || kind === 'xlsx';
 
 export function useChatInspectors(params: Params) {
   const errorMessage = (error: unknown, fallback: string) => getApiErrorMessage(error, fallback);
@@ -389,6 +393,7 @@ export function useChatInspectors(params: Params) {
   const attachmentPreviewDownloadPending = ref(false);
   const attachmentPreviewError = ref('');
   const attachmentPreviewText = ref('');
+  const attachmentPreviewFile = shallowRef<File | null>(null);
   const attachmentPreviewRequestToken = ref(0);
   const attachmentPreviewItems = ref<AttachmentPreviewItem[]>([]);
   const attachmentPreviewIndex = ref(0);
@@ -396,7 +401,7 @@ export function useChatInspectors(params: Params) {
   const attachmentPreviewCurrentItem = ref<AttachmentPreviewItem | null>(null);
   let attachmentPreviewObjectUrl: string | null = null;
   let preparedAttachmentDownload: PreparedAttachmentDownload | null = null;
-  let preparedAttachmentDownloadAbort: AbortController | null = null;
+  let attachmentFileLoadAbort: AbortController | null = null;
 
   const previewItemKey = (item: AttachmentPreviewItem) => item.key;
   const messagePreviewKey = (messageId: number, contentId: number) => `message-${messageId}-${contentId}`;
@@ -518,8 +523,8 @@ export function useChatInspectors(params: Params) {
   };
 
   const resetPreparedAttachmentDownload = (abort = true) => {
-    if (abort) preparedAttachmentDownloadAbort?.abort();
-    preparedAttachmentDownloadAbort = null;
+    if (abort) attachmentFileLoadAbort?.abort();
+    attachmentFileLoadAbort = null;
     preparedAttachmentDownload = null;
   };
 
@@ -534,7 +539,7 @@ export function useChatInspectors(params: Params) {
 
     const key = previewItemKey(item);
     const abortController = new AbortController();
-    preparedAttachmentDownloadAbort = abortController;
+    attachmentFileLoadAbort = abortController;
     preparedAttachmentDownload = { key, file: null, error: null };
     attachmentPreviewDownloadPending.value = true;
 
@@ -550,9 +555,45 @@ export function useChatInspectors(params: Params) {
       })
       .finally(() => {
         if (attachmentPreviewRequestToken.value !== token || preparedAttachmentDownload?.key !== key) return;
-        preparedAttachmentDownloadAbort = null;
+        attachmentFileLoadAbort = null;
         attachmentPreviewDownloadPending.value = false;
       });
+  };
+
+  const loadOfficePreview = async (source: File | string, size: number, mimeType: string, token: number) => {
+    const tooLarge = () => translate('This file exceeds the 10 MiB preview limit. Download it to open it.');
+    attachmentPreviewLoading.value = false;
+    if (!source) {
+      attachmentPreviewError.value = translate('Upload is unfinished. Finish it on the original device or remove and attach the file again.');
+      return;
+    }
+    if (size > OFFICE_PREVIEW_MAX_BYTES) {
+      attachmentPreviewError.value = tooLarge();
+      return;
+    }
+
+    const controller = new AbortController();
+    attachmentFileLoadAbort = controller;
+    attachmentPreviewLoading.value = true;
+    attachmentPreviewDownloadPending.value = true;
+    try {
+      const file = typeof source === 'string'
+        ? await loadUrlAsFile(source, attachmentPreviewTitle.value, mimeType, controller.signal)
+        : source;
+      if (attachmentPreviewRequestToken.value !== token) return;
+      if (file.size > OFFICE_PREVIEW_MAX_BYTES) attachmentPreviewError.value = tooLarge();
+      else attachmentPreviewFile.value = file;
+    } catch {
+      if (attachmentPreviewRequestToken.value === token) {
+        attachmentPreviewError.value = translate('This browser cannot preview this file. Download it to open it in another application.');
+      }
+    } finally {
+      if (attachmentPreviewRequestToken.value === token) {
+        attachmentPreviewDownloadPending.value = false;
+        attachmentPreviewLoading.value = false;
+        attachmentFileLoadAbort = null;
+      }
+    }
   };
 
   const downloadAttachmentItem = async (
@@ -564,6 +605,11 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewDownloadPending.value = true;
 
     try {
+      if (options.usePreparedDownload && attachmentPreviewFile.value) {
+        await saveBlobAsFile(attachmentPreviewFile.value, attachmentPreviewTitle.value);
+        return;
+      }
+
       if (item.type === 'message' || item.type === 'queued') {
         const contentId = Number(item.content?.id || 0);
         const name = getAttachmentName(item.content);
@@ -571,7 +617,7 @@ export function useChatInspectors(params: Params) {
         const url = contentId ? persistedAttachmentUrl(item, contentId) : '';
         if (!url) throw new Error('Attachment is not available.');
 
-        if (options.usePreparedDownload && shouldUseFileShareForDownloads()) {
+        if (options.usePreparedDownload && !isOfficePreview(attachmentPreviewKind.value) && shouldUseFileShareForDownloads()) {
           const prepared = preparedAttachmentDownload;
           const key = previewItemKey(item);
 
@@ -642,6 +688,7 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewOpen.value = true;
     attachmentPreviewError.value = '';
     attachmentPreviewText.value = '';
+    attachmentPreviewFile.value = null;
     attachmentPreviewDownloadPending.value = false;
     attachmentPreviewCurrentItem.value = item;
 
@@ -655,6 +702,7 @@ export function useChatInspectors(params: Params) {
       attachmentPreviewTitle.value = name;
       attachmentPreviewUrl.value = url;
       attachmentPreviewKind.value = kind;
+      if (isOfficePreview(kind) && url) return loadOfficePreview(url, getAttachmentSize(item.content), mimeType, token);
       attachmentPreviewLoading.value = ['html', 'markdown', 'text'].includes(kind);
       prepareAttachmentDownloadForFileShare(item, url, name, mimeType, token);
 
@@ -701,6 +749,9 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewTitle.value = pending.name;
     attachmentPreviewUrl.value = objectUrl;
     attachmentPreviewKind.value = kind;
+    if (isOfficePreview(kind)) {
+      return loadOfficePreview(pending.file instanceof File ? pending.file : objectUrl, pending.size, pending.mimeType, token);
+    }
     attachmentPreviewLoading.value = ['html', 'markdown', 'text'].includes(kind);
 
     if (!attachmentPreviewLoading.value) return;
@@ -873,6 +924,7 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewDownloadPending.value = false;
     attachmentPreviewError.value = '';
     attachmentPreviewText.value = '';
+    attachmentPreviewFile.value = null;
     attachmentPreviewItems.value = [];
     attachmentPreviewIndex.value = 0;
     attachmentPreviewCurrentItem.value = null;
@@ -880,6 +932,8 @@ export function useChatInspectors(params: Params) {
   };
 
   const dispose = () => {
+    attachmentPreviewRequestToken.value += 1;
+    attachmentPreviewFile.value = null;
     revokeAttachmentPreviewObjectUrl();
     resetPreparedAttachmentDownload();
   };
@@ -927,6 +981,7 @@ export function useChatInspectors(params: Params) {
     attachmentPreviewDownloadPending,
     attachmentPreviewError,
     attachmentPreviewText,
+    attachmentPreviewFile,
     attachmentPreviewCanNavigate,
     openAttachmentPreview,
     openPendingAttachmentPreview,

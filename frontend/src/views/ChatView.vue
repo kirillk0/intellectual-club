@@ -737,6 +737,7 @@
         :download-pending="vm.attachmentPreviewDownloadPending"
         :error="vm.attachmentPreviewError"
         :text="vm.attachmentPreviewText"
+        :file="vm.attachmentPreviewFile"
         @prev="vm.showPreviousAttachmentPreview"
         @next="vm.showNextAttachmentPreview"
         @download="vm.downloadAttachmentPreview"
