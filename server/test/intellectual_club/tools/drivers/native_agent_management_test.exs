@@ -277,6 +277,53 @@ defmodule IntellectualClub.Tools.Drivers.NativeAgentManagementTest do
       end
     end
 
+    test "checking or canceling a legacy outlet result never publishes its files" do
+      %{user: actor} = user_fixture()
+      tool = create_tool_instance!(actor, type: "native-agent-management")
+      context = %ExecutionContext{owner_id: actor.id}
+      file = %{file_id: 42, file_external_id: Ash.UUID.generate(), filename: "out.txt"}
+
+      task =
+        create_background_task!(actor, %{
+          kind: "outlet_function",
+          adapter: "outlet",
+          status: :running
+        })
+
+      assert {:ok, _} =
+               BackgroundTasks.mark_completed(task, %ExecutionResult{
+                 text: "done",
+                 raw: %{"exit_code" => 0},
+                 media: [file],
+                 artifacts: [file]
+               })
+
+      for {operation, args} <- [
+            {"check_background_task_status", %{}},
+            {"check_background_task_status", %{"cursor" => "0"}},
+            {"cancel_background_task", %{}}
+          ] do
+        assert {:ok, result} =
+                 NativeAgentManagement.execute(
+                   tool,
+                   operation,
+                   Map.put(args, "background_task_id", task.id),
+                   context
+                 )
+
+        assert result.media == []
+        assert result.artifacts == []
+        assert result.file_references == []
+
+        assert decode_background_snapshot!(result.text)["result"] == %{
+                 "text" => "done",
+                 "raw" => %{"exit_code" => 0},
+                 "media" => [],
+                 "artifacts" => []
+               }
+      end
+    end
+
     test "background status check preserves terminal media and artifacts" do
       %{user: actor} = user_fixture()
 

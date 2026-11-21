@@ -9,7 +9,10 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
   use IntellectualClub.DataCase, async: false
 
   import IntellectualClub.OutletBackgroundFixtures
-  import IntellectualClub.OutletRunnerHelpers, only: [wait_for_pending_operations!: 2]
+
+  import IntellectualClub.OutletRunnerHelpers,
+    only: [complete_outlet_call!: 4, wait_for_pending_operations!: 2]
+
   import IntellectualClub.SubagentFixtures
 
   alias IntellectualClub.BackgroundTasks
@@ -289,8 +292,8 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
       result = %{
         "text" => "finished",
         "raw" => %{"exit_code" => 0},
-        "media" => [%{"type" => "text", "text" => "media"}],
-        "artifacts" => [%{"name" => "output.txt", "content" => "done"}]
+        "media" => [],
+        "artifacts" => []
       }
 
       complete_background_call!(tool_instance, runner, second_status, %{
@@ -318,6 +321,35 @@ defmodule IntellectualClub.BackgroundTasksOutletTest do
       assert persisted_snapshot["result"] == result
       assert persisted_snapshot["status_detail"] == "outlet_unavailable"
       assert persisted_snapshot["next_cursor"] == "2"
+    end
+
+    for field <- ["media", "artifacts"], layer <- [:envelope, :result] do
+      path = if layer == :result, do: ["result_raw", "result", field], else: ["result_" <> field]
+
+      test "#{field} in the #{layer} fails the task without storing the attachment", %{
+        actor: actor,
+        tool_instance: tool_instance
+      } do
+        runner = connect_runner!(tool_instance, "runner-files", "session-files")
+        task_id = start_running_background!(actor, tool_instance, runner, "produce output")
+        check = Task.async(fn -> BackgroundTasks.snapshot(task_id, nil, actor.id) end)
+        call = wait_for_control_call!(tool_instance, runner, "background_status")
+
+        result = %{
+          "background_task_id" => task_id,
+          "status" => "completed",
+          "result" => %{"text" => "done"}
+        }
+
+        payload = put_in(%{"result_raw" => result}, unquote(path), [%{"file_id" => 42}])
+        complete_outlet_call!(tool_instance, runner, call, payload)
+
+        assert {:ok, snapshot} = Task.await(check, 5_000)
+        assert snapshot["status"] == "failed"
+        assert snapshot["error"]["code"] == "outlet_background_attachments_not_supported"
+        assert is_nil(snapshot["result"])
+        assert {:ok, %{status: :failed, result: nil}} = load_owned_task(task_id, actor.id)
+      end
     end
 
     test "snapshot pages split progress and injects missing entry cursors", %{

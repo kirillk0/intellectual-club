@@ -185,7 +185,7 @@ defmodule IntellectualClubWeb.OutletController do
       |> put_status(:unauthorized)
       |> json(%{error: "Unauthorized."})
     else
-      with {:ok, _execution_context} <- outlet_call_context(tool_instance, call_id),
+      with {:ok, :foreground, _execution_context} <- outlet_call_context(tool_instance, call_id),
            {:ok, conn, file} <- persist_outlet_upload(conn, payload) do
         json(conn, %{
           file: %{
@@ -199,6 +199,11 @@ defmodule IntellectualClubWeb.OutletController do
           }
         })
       else
+        {:ok, :background, _execution_context} ->
+          conn
+          |> put_status(:forbidden)
+          |> json(%{error: "File uploads are not supported for background outlet tasks."})
+
         {:error, :not_found} ->
           conn
           |> put_status(:not_found)
@@ -248,7 +253,7 @@ defmodule IntellectualClubWeb.OutletController do
       |> json(%{error: "Unauthorized."})
     else
       case outlet_call_context(tool_instance, call_id) do
-        {:ok, execution_context} ->
+        {:ok, _mode, execution_context} ->
           case ContentFiles.load_path_for_execution(file_external_id, execution_context) do
             {:ok, {_content, file, path}} ->
               disposition =
@@ -300,7 +305,7 @@ defmodule IntellectualClubWeb.OutletController do
       |> json(%{error: "Unauthorized."})
     else
       case outlet_call_context(tool_instance, call_id) do
-        {:ok, execution_context} ->
+        {:ok, _mode, execution_context} ->
           case SecretResolver.resolve_selected(tool_instance, [name], execution_context) do
             {:ok, %{^name => value}} ->
               json(conn, %{name: name, value: value})
@@ -348,20 +353,26 @@ defmodule IntellectualClubWeb.OutletController do
       with_runtime(fn -> Runtime.fetch_running_call(tool_instance, call_id) end)
 
     case runtime_result do
-      {:ok, {:ok, %{execution_context: execution_context}}} ->
-        {:ok, execution_context}
+      {:ok, {:ok, %{operation: "execute", execution_context: context}}} ->
+        {:ok, :foreground, context}
 
-      {:ok, {:ok, _call}} ->
-        {:ok, nil}
+      {:ok, {:ok, %{execution_context: context}}} ->
+        {:ok, :background, context}
 
       {:ok, {:error, :not_found}} ->
-        BackgroundTasks.fetch_outlet_execution_context(tool_instance, call_id)
+        background_call_context(tool_instance, call_id)
 
       {:error, _reason} = runtime_error ->
-        case BackgroundTasks.fetch_outlet_execution_context(tool_instance, call_id) do
-          {:ok, execution_context} -> {:ok, execution_context}
+        case background_call_context(tool_instance, call_id) do
           {:error, :not_found} -> runtime_error
+          result -> result
         end
+    end
+  end
+
+  defp background_call_context(tool_instance, call_id) do
+    with {:ok, context} <- BackgroundTasks.fetch_outlet_execution_context(tool_instance, call_id) do
+      {:ok, :background, context}
     end
   end
 

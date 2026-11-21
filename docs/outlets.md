@@ -207,7 +207,7 @@ After executing a task, the runner posts a completion with:
 - `runner_session_id`;
 - `call_id`;
 - completion status;
-- result payload, media, artifacts, and/or error text;
+- result payload and/or error text; synchronous tool calls may also return media and artifacts;
 - runner metadata.
 
 The server uses `call_id` to find the running call and uses the runner/session ids to
@@ -356,6 +356,13 @@ the id with a different payload is an error. Status responses use the common sta
 `queued`, `running`, `completed`, `failed`, and `canceled`, and return only progress
 after the supplied cursor plus a `next_cursor`.
 
+Background outlet results may return text and structured `raw` data, but not files.
+Omit `result_media` and `result_artifacts` on the control completion and `media`
+and `artifacts` inside `result_raw.result`, or send empty arrays. A non-empty
+attachment field fails the task with `outlet_background_attachments_not_supported`.
+Polling or canceling a task never publishes an attachment. To
+publish a file produced by a background command, use a separate synchronous upload.
+
 The server persists a minimal coordination envelope before dispatch. It remains the
 source of truth for ownership, routing, and launch idempotency, while the live runner
 is the source of truth for outlet progress and results. If the backend restarts, a
@@ -374,7 +381,7 @@ version.
 
 ## Call-scoped file transport
 
-Runners upload artifacts with `POST /api/outlet/calls/:call_id/files`, passing URL-encoded
+Synchronous outlet calls upload artifacts with `POST /api/outlet/calls/:call_id/files`, passing URL-encoded
 `filename` and `mime_type` query parameters. The body is the raw file stream with
 `Content-Type: application/octet-stream`, **not** the document MIME type: sending
 `application/json` or a form type as the transport content type lets the general HTTP
@@ -392,8 +399,9 @@ never resizes), and the tool result notes the conversion and the unchanged origi
 
 `GET /api/outlet/calls/:call_id/files/:file_id` downloads an authorized attachment.
 Both operations use the outlet bearer token and the server's immutable call context;
-routing ids are not a substitute for file authorization. Background providers use the
-server-issued `background_task_id` as `:call_id` in these endpoints, as supplied by `CallContext`.
+routing ids are not a substitute for file authorization. Background providers may **download**
+using the server-issued `background_task_id` as `:call_id`, as supplied by `CallContext`.
+They may not upload files using either a task id or a background control call id.
 
 ## Managed secret fetches
 

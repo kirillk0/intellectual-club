@@ -505,7 +505,7 @@ defmodule IntellectualClubWeb.OutletControllerTest do
       assert List.first(get_resp_header(conn, "content-disposition")) =~ "download.txt"
     end
 
-    test "POST /api/outlet/calls/:call_id/files accepts a durable background task id after its control call completes" do
+    test "POST /api/outlet/calls/:call_id/files rejects background task and control call IDs without creating files" do
       %{user: actor} = user_fixture()
 
       tool_instance =
@@ -565,6 +565,21 @@ defmodule IntellectualClubWeb.OutletControllerTest do
       assert control_task["background_task_id"] == background_task.id
       assert control_task["call_id"] != background_task.id
 
+      for id <- [control_task["call_id"], background_task.id] do
+        response =
+          build_conn()
+          |> put_req_header("authorization", "Bearer runner-durable-upload")
+          |> put_req_header("content-type", "application/octet-stream")
+          |> post("/api/outlet/calls/#{id}/files?filename=durable.txt", "durable payload")
+          |> json_response(403)
+
+        assert response["error"] =~ "background outlet tasks"
+      end
+
+      refute Files.File
+             |> Ash.Query.filter(filename == "durable.txt")
+             |> Ash.exists?(authorize?: false)
+
       assert %{"status" => "ok"} =
                complete_outlet("runner-durable-upload", %{
                  "call_id" => control_task["call_id"],
@@ -580,22 +595,6 @@ defmodule IntellectualClubWeb.OutletControllerTest do
                })
 
       assert {:ok, _result} = Task.await(control_waiter, 5_000)
-
-      assert {:error, :not_found} =
-               Runtime.fetch_running_call(tool_instance, control_task["call_id"])
-
-      response =
-        build_conn()
-        |> put_req_header("authorization", "Bearer runner-durable-upload")
-        |> put_req_header("content-type", "text/plain")
-        |> post(
-          "/api/outlet/calls/#{background_task.id}/files?filename=durable.txt",
-          "durable payload"
-        )
-        |> json_response(200)
-
-      assert response["file"]["filename"] == "durable.txt"
-      assert response["file"]["size_bytes"] == 15
     end
 
     test "GET /api/outlet/calls/:call_id/files/:file_id uses persisted background execution context" do

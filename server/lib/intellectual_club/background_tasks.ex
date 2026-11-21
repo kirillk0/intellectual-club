@@ -1152,7 +1152,7 @@ defmodule IntellectualClub.BackgroundTasks do
           }
         end),
       "next_cursor" => next_cursor,
-      "result" => task.result,
+      "result" => snapshot_result(task),
       "error" => task.error,
       "created_at" => datetime_iso(task.inserted_at),
       "started_at" => datetime_iso(task.started_at),
@@ -1160,6 +1160,13 @@ defmodule IntellectualClub.BackgroundTasks do
       "updated_at" => datetime_iso(task.updated_at)
     }
   end
+
+  # Older outlet tasks may still contain attachment descriptors. A status or
+  # cancellation receipt must never publish those files or grant access to them.
+  defp snapshot_result(%BackgroundTask{adapter: "outlet", result: %{} = result}),
+    do: Map.merge(Map.delete(result, "file_references"), %{"media" => [], "artifacts" => []})
+
+  defp snapshot_result(%BackgroundTask{result: result}), do: result
 
   defp reconcile_adapter_snapshot(%BackgroundTask{status: status} = task, cursor)
        when status in @terminal_statuses do

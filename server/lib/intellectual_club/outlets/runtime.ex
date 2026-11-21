@@ -489,6 +489,8 @@ defmodule IntellectualClub.Outlets.Runtime do
               {:reply, {:error, :runner_already_active}, state}
 
             {:ok, instance, state} ->
+              payload = validate_completion(call, payload)
+
               status =
                 payload
                 |> Map.get("status", "done")
@@ -1159,6 +1161,43 @@ defmodule IntellectualClub.Outlets.Runtime do
   defp maybe_put_task_value(payload, _key, nil), do: payload
   defp maybe_put_task_value(payload, _key, ""), do: payload
   defp maybe_put_task_value(payload, key, value), do: Map.put(payload, key, value)
+
+  defp validate_completion(call, payload) do
+    if background_control_call?(call) and background_attachments?(payload) do
+      # Acknowledge delivery, but fail the task rather than retry the same invalid result.
+      %{
+        "result_raw" => %{
+          "background_task_id" => call.background_task_id,
+          "status" => "failed",
+          "error" => %{
+            "code" => "outlet_background_attachments_not_supported",
+            "message" => "Background outlet calls cannot return media or artifacts.",
+            "outcome" => "unknown"
+          }
+        }
+      }
+    else
+      payload
+    end
+  end
+
+  defp background_attachments?(payload) do
+    result =
+      case payload["result_raw"] do
+        %{"result" => %{} = result} -> result
+        _other -> %{}
+      end
+
+    Enum.any?(
+      [
+        payload["result_media"],
+        payload["result_artifacts"],
+        result["media"],
+        result["artifacts"]
+      ],
+      &(&1 not in [nil, []])
+    )
+  end
 
   defp background_control_call?(call) when is_map(call) do
     Map.get(call, :operation, "execute") in [

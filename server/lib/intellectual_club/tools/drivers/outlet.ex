@@ -695,9 +695,7 @@ defmodule IntellectualClub.Tools.Drivers.Outlet do
   defp runner_execution_result(result) when is_map(result) do
     ExecutionResult.normalize(%ExecutionResult{
       text: Map.get(result, "text", ""),
-      raw: Map.get(result, "raw", %{}),
-      media: Map.get(result, "media", []),
-      artifacts: Map.get(result, "artifacts", [])
+      raw: Map.get(result, "raw", %{})
     })
   end
 
