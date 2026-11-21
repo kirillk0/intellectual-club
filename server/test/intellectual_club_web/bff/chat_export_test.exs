@@ -122,7 +122,7 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
     %{user: actor} = fixture = user_fixture()
     chat = create_empty_chat!(actor)
     {:ok, message} = Threads.add_message_to_end(chat, :assistant, "Answer 1", actor: actor)
-    {:ok, file} = Files.create_from_binary("history.md", "text/markdown", "ARCHIVE_BODY")
+    archive_attrs = [filename: "history.md", mime_type: "text/markdown", payload: "ARCHIVE_BODY"]
     long_history = String.duplicate("History line\n", 10) <> "FULL_EXPORT_TAIL"
 
     for sequence <- [1, 2] do
@@ -143,12 +143,20 @@ defmodule IntellectualClubWeb.Bff.ChatExportTest do
         }
       )
 
-      create_content!(actor, history, sequence: 2, kind: :media, file_id: file.id)
+      create_content!(actor, history,
+        sequence: 2,
+        kind: :media,
+        file_id: create_file!(archive_attrs).id
+      )
 
       summary =
         create_text_item!(actor, step, "Summary #{sequence}", type: :handoff_message, sequence: 3)
 
-      create_content!(actor, summary, sequence: 2, kind: :media, file_id: file.id)
+      create_content!(actor, summary,
+        sequence: 2,
+        kind: :media,
+        file_id: create_file!(archive_attrs).id
+      )
     end
 
     step = create_step!(actor, message, sequence: 3)

@@ -574,7 +574,13 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
       %{user: actor} = fixture = user_fixture()
       chat = create_empty_chat!(actor)
       message = create_message!(actor, chat)
-      {:ok, file} = Files.create_from_binary("checkpoint.md", "text/markdown", "Archived history")
+
+      archive_attrs = [
+        filename: "checkpoint.md",
+        mime_type: "text/markdown",
+        payload: "Archived history"
+      ]
+
       long_text = String.duplicate("Readable history\n", 10) <> "FULL_HISTORY_TAIL"
 
       checkpoints =
@@ -593,7 +599,11 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
               }
             )
 
-          create_content!(actor, history, kind: :media, file_id: file.id, sequence: 2)
+          create_content!(actor, history,
+            kind: :media,
+            file_id: create_file!(archive_attrs).id,
+            sequence: 2
+          )
 
           summary =
             create_text_item!(actor, step, "Summary #{sequence}",
@@ -601,7 +611,12 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
               sequence: 3
             )
 
-          create_content!(actor, summary, kind: :media, file_id: file.id, sequence: 2)
+          create_content!(actor, summary,
+            kind: :media,
+            file_id: create_file!(archive_attrs).id,
+            sequence: 2
+          )
+
           {step, content}
         end
 

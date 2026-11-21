@@ -599,7 +599,7 @@ defmodule IntellectualClub.Generation.HistoryTest do
       %{user: actor} = user_fixture()
       chat = create_empty_chat!(actor)
       file = create_file!(filename: "original-report.md", payload: "Original artifact")
-      old_archive = create_file!(filename: "full_conversation.md", payload: "OLD ARCHIVE")
+      archive_attrs = [filename: "full_conversation.md", payload: "OLD ARCHIVE"]
       {:ok, root} = Threads.add_message_to_end(chat, :user, "Original request", actor: actor)
       message = create_message!(actor, chat, parent_id: root.id, status: :generating)
       step = create_step!(actor, message, status: :done)
@@ -608,20 +608,25 @@ defmodule IntellectualClub.Generation.HistoryTest do
       artifact = create_item!(actor, step, type: :artifact, sequence: 3)
       create_content!(actor, artifact, kind: :media, file_id: file.id)
 
-      for sequence <- [4, 6] do
-        copy =
-          create_text_item!(actor, step, "COPIED HISTORY",
-            type: :handoff_history,
-            sequence: sequence
+      old_archives =
+        for sequence <- [4, 6] do
+          archive_file = create_file!(archive_attrs)
+
+          copy =
+            create_text_item!(actor, step, "COPIED HISTORY",
+              type: :handoff_history,
+              sequence: sequence
+            )
+
+          create_content!(actor, copy, kind: :media, file_id: archive_file.id, sequence: 2)
+
+          create_text_item!(actor, step, "COPIED SUMMARY",
+            type: :handoff_message,
+            sequence: sequence + 1
           )
 
-        create_content!(actor, copy, kind: :media, file_id: old_archive.id, sequence: 2)
-
-        create_text_item!(actor, step, "COPIED SUMMARY",
-          type: :handoff_message,
-          sequence: sequence + 1
-        )
-      end
+          archive_file
+        end
 
       create_text_item!(actor, step, "Same-step continuation", type: :answer, sequence: 8)
       later_step = create_step!(actor, message, sequence: 2, status: :waiting_tools)
@@ -693,11 +698,12 @@ defmodule IntellectualClub.Generation.HistoryTest do
             "Not reasoning",
             "After source boundary",
             "Other branch",
-            "file_id=#{old_archive.external_id}",
             "full_conversation.md"
           ] do
         refute archive =~ excluded
       end
+
+      for old_archive <- old_archives, do: refute(archive =~ "file_id=#{old_archive.external_id}")
     end
 
     test "user checkpoints do not duplicate earlier dialogue and an explicitly selected branch controls the archive" do

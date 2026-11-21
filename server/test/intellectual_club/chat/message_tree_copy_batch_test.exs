@@ -84,7 +84,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
       assert trace_signature(copied_second) == trace_signature(second)
       ids = media_file_ids(copied_first)
       assert length(Enum.uniq(ids)) == 2
-      refute file.id in ids
+      assert MapSet.disjoint?(MapSet.new(media_file_ids(first)), MapSet.new(ids))
       assert Enum.all?(ids, &(Ash.get!(StoredFile, &1, actor: actor).sha256 == file.sha256))
     end
 
@@ -351,7 +351,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
     copied_file_ids = media_file_ids(copied)
     assert length(copied_file_ids) == 2
     assert length(Enum.uniq(copied_file_ids)) == 2
-    refute file.id in copied_file_ids
+    assert MapSet.disjoint?(MapSet.new(media_file_ids(source)), MapSet.new(copied_file_ids))
 
     for id <- copied_file_ids do
       duplicate = Ash.get!(StoredFile, id, actor: actor)
@@ -360,7 +360,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
       assert duplicate.external_id != file.external_id
     end
 
-    assert media_file_ids(loaded_message!(source.id, actor)) == [file.id, file.id]
+    assert media_file_ids(loaded_message!(source.id, actor)) == media_file_ids(source)
     assert trace_signature(copied) == trace_signature(source)
   end
 
@@ -394,7 +394,7 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
 
     assert copy_record_ids(actor) == before_ids
     assert Ash.get!(Chat, target.id, actor: actor).last_message_id == nil
-    assert media_file_ids(loaded_message!(source.id, actor)) == [file.id, file.id]
+    assert media_file_ids(loaded_message!(source.id, actor)) == media_file_ids(source)
     assert trace_signature(loaded_message!(source.id, actor)) == trace_signature(source)
   end
 
@@ -611,13 +611,15 @@ defmodule IntellectualClub.Chat.MessageTreeCopyBatchTest do
       contents = if opaque?.(item), do: [text, opaque], else: [text]
 
       if opts[:file_id] && item.type == :answer do
+        {:ok, attachment} = Files.duplicate_file(opts[:file_id])
+
         contents ++
           [
             %{
               chat_message_item_id: item.id,
               sequence: 5,
               kind: :media,
-              file_id: opts[:file_id]
+              file_id: attachment.id
             }
           ]
       else

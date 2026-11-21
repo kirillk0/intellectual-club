@@ -3,7 +3,7 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   A content block inside a `ChatMessageItem`.
 
   Text blocks store text payloads. Opaque blocks store provider-specific JSON.
-  Media blocks reference a stored `File`.
+  Each media block owns a separate logical `File`; identical payloads can share storage.
   """
 
   use IntellectualClub.Resource,
@@ -19,10 +19,6 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   postgres do
     table("chat_message_contents")
     repo(IntellectualClub.Repo)
-
-    custom_indexes do
-      index([:file_id], name: "chat_message_contents_file_id_index")
-    end
 
     custom_statements do
       statement :chat_message_contents_set_item_type_function do
@@ -172,6 +168,7 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
   identities do
     identity(:unique_item_sequence, [:chat_message_item_id, :sequence])
     identity(:unique_external_id, [:external_id])
+    identity(:unique_file, [:file_id])
   end
 
   json_api do

@@ -28,7 +28,6 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       image = file!("answer.png", "image/png", png_1x1())
       attach!(actor, step, file, 2)
       attach!(actor, step, image, 3)
-      attach!(actor, step, file, 4)
 
       assert {:error, :not_found} =
                ContentFiles.load_payload_for_execution(file.external_id, context)
@@ -315,7 +314,8 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
       "raw" => %{"fork_instruction" => %{"subagent" => true}}
     })
 
-    attach!(actor, marker, copied, 2)
+    marker_file = create_file!(filename: "marker.txt", payload: "fork instruction")
+    attach!(actor, marker, marker_file, 2)
     own_step = create_step!(actor, message, sequence: 3)
     attach!(actor, own_step, viewed, 1, :tool_result)
     attach!(actor, own_step, first, 2)
@@ -326,8 +326,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
     create_content!(actor, summary, kind: :text, content_text: "Continue work")
 
     final_step = create_step!(actor, message, sequence: 4)
-    attach!(actor, final_step, first, 1)
-    attach!(actor, final_step, final, 2)
+    attach!(actor, final_step, final, 1)
 
     assert {:ok, snapshot} = Subagent.snapshot(reference, actor)
 
@@ -338,6 +337,7 @@ defmodule IntellectualClub.Chat.SubagentAttachmentsTest do
 
     assert snapshot.result.raw["fork"]["final_message_id"] == message.id
     refute snapshot.result.text =~ copied.external_id
+    refute snapshot.result.text =~ marker_file.external_id
     refute snapshot.result.text =~ viewed.external_id
     refute snapshot.result.text =~ archive.external_id
   end

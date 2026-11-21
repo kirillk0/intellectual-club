@@ -9,6 +9,24 @@ defmodule IntellectualClub.Chat.ContentFilesTest do
   alias IntellectualClub.Files
   alias IntellectualClub.Tools.ExecutionContext
 
+  test "contents own logical files exclusively but may share payloads or have no file" do
+    %{user: actor} = user_fixture()
+    %{item: first} = create_tool_call_anchor!(actor, item: [type: :artifact])
+    %{item: second} = create_tool_call_anchor!(actor, item: [type: :artifact])
+    file = create_file!()
+    {:ok, copy} = Files.duplicate_file(file.id)
+    assert copy.id != file.id and copy.sha256 == file.sha256
+
+    create_content!(actor, first, sequence: 1, kind: :media, file_id: file.id)
+    create_content!(actor, second, sequence: 1, kind: :media, file_id: copy.id)
+    create_content!(actor, first, sequence: 2, content_text: "first")
+    create_content!(actor, second, sequence: 2, content_text: "second")
+
+    assert_raise Ash.Error.Invalid, ~r/file_id/, fn ->
+      create_content!(actor, second, sequence: 3, kind: :media, file_id: file.id)
+    end
+  end
+
   test "load_payload_for_execution loads media payload by file external_id within the execution context" do
     %{user: actor} = user_fixture()
     chat = create_chat!(actor)
