@@ -18,7 +18,17 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
     table("chat_message_items")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:chat_message_step,
+        on_delete: :delete,
+        match_with: [owner_id: :owner_id],
+        deferrable: true
+      )
+    end
+
     custom_indexes do
+      index([:id, :owner_id], unique: true, name: "chat_message_items_id_owner_id_index")
+
       index([:tool_call_item_id], name: "chat_message_items_tool_call_item_id_index")
     end
   end
@@ -100,7 +110,8 @@ defmodule IntellectualClub.Chat.ChatMessageItem do
 
     destroy :destroy do
       primary?(true)
-      change(cascade_destroy(:contents, after_action?: false))
+      require_atomic?(false)
+      change(IntellectualClub.Chat.Changes.DestroyItemContents)
     end
 
     create :create do

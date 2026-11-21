@@ -22,6 +22,18 @@ defmodule IntellectualClub.Chat.ChatMessageStep do
   postgres do
     table("chat_message_steps")
     repo(IntellectualClub.Repo)
+
+    references do
+      reference(:chat_message,
+        on_delete: :delete,
+        match_with: [owner_id: :owner_id],
+        deferrable: true
+      )
+    end
+
+    custom_indexes do
+      index([:id, :owner_id], unique: true, name: "chat_message_steps_id_owner_id_index")
+    end
   end
 
   attributes do

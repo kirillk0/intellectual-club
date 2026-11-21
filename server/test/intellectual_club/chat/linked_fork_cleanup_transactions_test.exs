@@ -16,6 +16,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTransactionsTest do
   import IntellectualClub.Chat.ForkFixtures
   import IntellectualClub.ChatFixtures
   import IntellectualClub.LlmFixtures, only: [create_usage_record!: 2]
+  import IntellectualClub.FilesFixtures, only: [create_file!: 1]
   import IntellectualClub.RepoTestHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -30,7 +31,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTransactionsTest do
   alias IntellectualClub.Chat.LinkedForkCleanupLocksHelper, as: LocksHelper
   alias IntellectualClub.Chat.LinkedForkCleanupLocksUsageFixture
   alias IntellectualClub.Chat.Threads
-  alias IntellectualClub.Files.UploadStaging
+  alias IntellectualClub.Files.{FilesystemStorage, GarbageCollector, UploadStaging}
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
   alias IntellectualClub.Llm.LlmUsageRecord
@@ -142,6 +143,76 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTransactionsTest do
         end
 
         refute Repo.in_transaction?()
+      end)
+    end
+
+    for target <- [:chat, :step, :item] do
+      @target target
+      @tag :whitebox
+      test "deleting a #{target} captures a media file committed while it waits for the item",
+           f do
+        attach_query_barrier!()
+        parent = self()
+
+        writer =
+          db_task!(fn ->
+            Repo.transaction(fn ->
+              file = create_file!(payload: "concurrent-content-#{f.child.step.id}")
+
+              # Stop after INSERT has taken KEY SHARE on the existing item but
+              # before commit, so the new content is invisible to discovery.
+              pause_after_query(
+                &String.starts_with?(&1, ~s(INSERT INTO "chat_message_contents")),
+                parent
+              )
+
+              create_content!(f.actor, f.child.item, kind: :media, file_id: file.id)
+              file.id
+            end)
+          end)
+
+        record =
+          Map.fetch!(%{chat: f.source.chat, step: f.child.step, item: f.child.item}, @target)
+
+        assert {:ok, file_id} = race_cleanup!(writer, record, f.actor)
+
+        Sandbox.unboxed_run(Repo, fn ->
+          assert_missing!(record.__struct__, record.id, f.actor)
+          assert_missing!(IntellectualClub.Files.File, file_id, f.actor)
+        end)
+      end
+    end
+
+    @tag :whitebox
+    test "partial item deletion captures a file attached to an existing content row", f do
+      attach_query_barrier!()
+      parent = self()
+      content = Sandbox.unboxed_run(Repo, fn -> create_content!(f.actor, f.child.item) end)
+
+      writer =
+        db_task!(fn ->
+          Repo.transaction(fn ->
+            file = create_file!(payload: "concurrent-update-#{content.id}")
+
+            pause_after_query(
+              &String.starts_with?(&1, ~s(UPDATE "chat_message_contents")),
+              parent
+            )
+
+            content
+            |> Ash.Changeset.for_update(:update, %{file_id: file.id, kind: :media},
+              actor: f.actor
+            )
+            |> Ash.update!(actor: f.actor)
+
+            file.id
+          end)
+        end)
+
+      assert {:ok, file_id} = race_cleanup!(writer, f.child.item, f.actor)
+
+      Sandbox.unboxed_run(Repo, fn ->
+        assert_missing!(IntellectualClub.Files.File, file_id, f.actor)
       end)
     end
 
@@ -416,6 +487,32 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTransactionsTest do
             assert Ash.get!(ChatMessageStep, f.child.step.id, actor: f.actor)
           end)
         end
+      end
+
+      test "physical trace file cleanup honors an outer #{@outcome}", f do
+        IntellectualClub.TestEnv.put_app_env(:file_gc_enabled, true)
+        previous = :sys.get_state(GarbageCollector).enabled
+        :sys.replace_state(GarbageCollector, &%{&1 | enabled: true})
+        on_exit(fn -> :sys.replace_state(GarbageCollector, &%{&1 | enabled: previous}) end)
+
+        payload = "trace-payload-#{Ecto.UUID.generate()}"
+
+        file =
+          Sandbox.unboxed_run(Repo, fn ->
+            file = create_file!(payload: payload)
+            create_content!(f.actor, f.child.item, kind: :media, file_id: file.id)
+            file
+          end)
+
+        {:ok, path} = FilesystemStorage.path_for(file.sha256)
+        on_exit(fn -> File.rm(path) end)
+        held = hold_delete!(fn -> Ash.destroy!(f.source.chat, actor: f.actor) end, f.actor)
+        assert File.read(path) == {:ok, payload}
+        release!(held, @outcome, f.actor)
+        # The monitored post-commit task has exited; drain any casts it sent.
+        :sys.get_state(GarbageCollector)
+        expected = if @outcome == :commit, do: {:error, :enoent}, else: {:ok, payload}
+        assert File.read(path) == expected
       end
 
       test "pending child upload staging honors an outer #{@outcome}", f do
@@ -926,7 +1023,11 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTransactionsTest do
 
         # Exercise preflight and the real cascade in one transaction, including
         # the reentrant calls made by cleanup prepare/1 after integration.
-        current = LocksHelper.lock!(resource, record, actor)
+        current =
+          if resource == IntellectualClub.Chat.ChatMessageItem,
+            do: record,
+            else: LocksHelper.lock!(resource, record, actor)
+
         Ash.destroy!(current, actor: actor)
         :deleted
       end)

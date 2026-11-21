@@ -83,10 +83,13 @@ defmodule IntellectualClub.Chat.ChatMessage do
     repo(IntellectualClub.Repo)
 
     references do
+      reference(:chat, on_delete: :delete, match_with: [owner_id: :owner_id], deferrable: true)
       reference(:llm_configuration, on_delete: :nilify)
     end
 
     custom_indexes do
+      index([:id, :owner_id], unique: true, name: "chat_messages_id_owner_id_index")
+
       index([:chat_id, :created_at, :id], name: "chat_messages_chat_created_id_index")
       index([:chat_id, :parent_id], name: "chat_messages_chat_parent_id_index")
       index([:owner_id, :chat_id], name: "chat_messages_owner_chat_id_index")

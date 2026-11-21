@@ -168,14 +168,21 @@ the window for new subchats to attach before final discovery. Step locks,
 usage and task updates follow. Growth requiring an earlier lock
 fails closed rather than acquiring locks out of order.
 
-Nested destroys receive an explicit capability through plan-aware cascade changes.
-It is valid only in the same process, transaction and lexical operation; it cannot
-be reused after success, failure or rollback. The capability does not bypass Ash
-permissions or local-history mutation restrictions. Ordinary relation cascades use
-Ash's per-record callbacks even for bulk/JSON API callers, avoiding the Ash 3.29
-batch-to-single notification adapter. Reference cleanup runs once,
-using conditional atomic updates so accounting snapshots and surviving foreign
-keys remain intact. Content and request-file destroy actions remain unchanged.
+Nested destroys receive a capability valid only in the same process, transaction
+and lexical operation. When a whole chat is deleted, Ash authorizes and deletes
+its dependent chats first (including forks anchored to its steps). PostgreSQL
+then cascades from the chat through messages, steps, items, contents and step
+request-file bindings. For each edge with an independent owner the FK matches
+both the parent ID and `owner_id`. A legacy mismatch stops the migration rather
+than being reassigned or made deletable. This is not a cascade between chats:
+unrelated copies and other owners' subchats retain the behavior above. Deleting an individual message
+or retrying steps still uses the scoped Ash trace actions for the selected range.
+
+Whole-chat deletion captures the trace's logical file IDs before the cascade
+and releases them in bulk inside the same transaction. Physical payloads can be
+shared: the file collector rechecks references after commit. Reference cleanup
+runs once, using conditional atomic updates so accounting snapshots and surviving
+foreign keys remain intact.
 
 Retry preparation runs inside the lease transaction, after manager liveness RPCs
 but before row locks, and passes its operation to persistence. There is no outer
@@ -183,13 +190,13 @@ row-lock transaction around Lease manager calls and no second plan in persistenc
 Keep-children deletion prepares before its first reparent and reuses the plan for
 the final destroy. All writes remain atomic, including nested rollback.
 
-Only operations with runtime/upload cleanup capture their PostgreSQL xid8. The
+Only operations with runtime, upload or payload cleanup capture their PostgreSQL xid8. The
 supervised cleanup task waits for that exact outer transaction's committed/aborted
 outcome before side effects; row absence is not a commit signal. This covers a root
 created and deleted in one transaction and a delayed job after rollback followed by
 a different deletion. Metadata queries are encapsulated in private authorized Ash
 actions, with no schema change (PostgreSQL 14+). Waiting holds no row locks or open
-transaction; ordinary finished-history deletion needs no outcome queries.
+transaction; finished-history deletion without files or active work needs no outcome queries.
 
 See [BFF and UI contract](linked-fork-bff.md) for the separate read-only inherited
 context payload, revision updates and export behavior.

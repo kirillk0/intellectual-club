@@ -10,7 +10,7 @@ defmodule IntellectualClub.Chat.Changes.CleanupLinkedForks do
     |> Ash.Changeset.around_action(&LinkedForkCleanup.around_destroy/2)
     |> Ash.Changeset.before_action(&LinkedForkCleanup.prepare/1)
     |> Ash.Changeset.after_action(fn changeset, record ->
-      LinkedForkCleanup.schedule_after_delete(changeset)
+      LinkedForkCleanup.after_delete(changeset)
       {:ok, record}
     end)
   end

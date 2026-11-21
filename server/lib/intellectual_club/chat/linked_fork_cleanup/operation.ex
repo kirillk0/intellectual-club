@@ -22,16 +22,10 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup.Operation do
       plan: plan,
       prepared?: false,
       scheduled?: false,
-      work: %{message_ids: [], task_ids: [], upload_ids: []},
-      roots: group(plan.deleted.messages, & &1.chat_id, &is_nil(&1.parent_id)),
+      work: nil,
       children: group(plan.deleted.messages, & &1.parent_id),
       steps: group(plan.deleted.steps, & &1.chat_message_id),
-      dependent_chats:
-        group(plan.deleted.chats, fn chat ->
-          if Map.has_key?(plan.deleted.steps, chat.fork_source_step_id),
-            do: {ChatMessageStep, chat.fork_source_step_id},
-            else: {Chat, chat.parent_chat_id}
-        end)
+      dependent_chats: group(plan.deleted.chats, &deletion_parent(&1, plan.deleted))
     }
 
     Process.put(key(operation), state)
@@ -85,10 +79,26 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup.Operation do
     end
   end
 
-  defp group(records, key_fun, include? \\ fn _ -> true end) do
+  # A whole chat's trace disappears inside PostgreSQL, so its anchor steps do
+  # not run Ash hooks. Visit forks of those steps before deleting the chat.
+  # For partial deletions the anchor step still owns its ordinary destroy hook.
+  defp deletion_parent(chat, deleted) do
+    case deleted.steps[chat.fork_source_step_id] do
+      nil ->
+        {Chat, chat.parent_chat_id}
+
+      step ->
+        message = deleted.messages[step.chat_message_id]
+
+        if message && Map.has_key?(deleted.chats, message.chat_id),
+          do: {Chat, message.chat_id},
+          else: {ChatMessageStep, step.id}
+    end
+  end
+
+  defp group(records, key_fun) do
     records
     |> Map.values()
-    |> Enum.filter(include?)
     |> Enum.sort_by(& &1.id)
     |> Enum.group_by(key_fun)
   end

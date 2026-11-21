@@ -14,6 +14,10 @@ defmodule IntellectualClub.Chat.ChatMessageStepRequestFile do
   postgres do
     table("chat_message_step_request_files")
     repo(IntellectualClub.Repo)
+
+    references do
+      reference(:chat_message_step, on_delete: :delete)
+    end
   end
 
   attributes do

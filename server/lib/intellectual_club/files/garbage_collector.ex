@@ -33,6 +33,9 @@ defmodule IntellectualClub.Files.GarbageCollector do
     GenServer.start_link(__MODULE__, opts, gen_server_opts)
   end
 
+  @doc false
+  def enabled?, do: Application.get_env(:intellectual_club, :file_gc_enabled, true) == true
+
   @spec request_collection(String.t()) :: :ok
   def request_collection(sha256) when is_binary(sha256) do
     if Process.whereis(__MODULE__) do
@@ -98,12 +101,7 @@ defmodule IntellectualClub.Files.GarbageCollector do
 
   @impl true
   def init(opts) do
-    enabled =
-      Keyword.get(
-        opts,
-        :enabled,
-        Application.get_env(:intellectual_club, :file_gc_enabled, true)
-      )
+    enabled = Keyword.get(opts, :enabled, enabled?())
 
     interval_ms =
       Keyword.get(

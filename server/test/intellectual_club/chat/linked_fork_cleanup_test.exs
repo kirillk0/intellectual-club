@@ -156,7 +156,14 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       nested = create_linked_chat!(actor, create_tool_call_anchor!(actor, chat: spawn))
       legacy = create_legacy_fork!(actor, source)
       leaf = create_subchat!(actor, legacy, :spawn)
-      copy = create_legacy_fork!(actor, source, subagent: false)
+      copy_item = create_item!(actor, source.step, sequence: 2)
+
+      copy =
+        create_legacy_fork!(actor, source,
+          subagent: false,
+          parent_tool_call_item_id: copy_item.id
+        )
+
       survivor = create_subchat!(actor, copy, :spawn)
 
       assert :ok = Ash.destroy(source.chat, actor: actor)
@@ -167,6 +174,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       copy = Ash.get!(Chat, copy.id, actor: actor)
       assert copy.parent_chat_id == nil
       assert copy.parent_message_id == nil
+      assert copy.parent_tool_call_item_id == nil
       assert Ash.get!(Chat, survivor.id, actor: actor).parent_chat_id == copy.id
     end
 
@@ -178,7 +186,11 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
 
       # Model references left by an old share after access to the source was revoked.
       legacy =
-        force_update!(actor, create_legacy_fork!(actor, source), %{owner_id: recipient.id})
+        force_update!(
+          actor,
+          create_legacy_fork!(actor, source, parent_tool_call_item_id: source.item.id),
+          %{owner_id: recipient.id}
+        )
 
       bookmark =
         MessageBookmark
@@ -191,9 +203,26 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       assert retained.owner_id == recipient.id
       assert retained.parent_chat_id == nil
       assert retained.parent_message_id == nil
+      assert retained.parent_tool_call_item_id == nil
       refute retained.subagent
       assert retained.is_archived
       assert_missing!(MessageBookmark, bookmark.id, recipient)
+    end
+
+    test "clearing a legacy tool pointer preserves its surviving parent chat and message", %{
+      actor: actor,
+      source: source
+    } do
+      %{user: recipient} = user_fixture()
+      surviving = create_tool_call_anchor!(recipient)
+      copy = create_legacy_fork!(recipient, surviving, subagent: false)
+      copy = corrupt_chat!(recipient, copy, %{parent_tool_call_item_id: source.item.id})
+
+      Ash.destroy!(source.chat, actor: actor)
+      retained = Ash.get!(Chat, copy.id, actor: recipient)
+      assert is_nil(retained.parent_tool_call_item_id)
+      assert retained.parent_chat_id == surviving.chat.id
+      assert retained.parent_message_id == surviving.message.id
     end
 
     test "retry replacement removes forks of the replaced step", %{actor: actor, source: source} do
@@ -323,11 +352,42 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupTest do
       assert_missing!(MessageBookmark, bookmark.id, actor)
     end
 
+    test "a physical history edge cannot attach one owner's row to another owner's trace", %{
+      actor: actor,
+      source: source
+    } do
+      %{user: stranger} = user_fixture()
+      foreign = create_tool_call_anchor!(stranger, step: %{sequence: 2}, item: %{sequence: 2})
+      content = create_content!(actor, source.item, content_text: "owned")
+
+      # A database cascade does not run child Ash policies. Even a writer below
+      # those policies must be unable to create an edge unsafe to follow.
+      for {table, parent, id, foreign_id} <- [
+            {"chat_messages", "chat_id", source.message.id, foreign.chat.id},
+            {"chat_message_steps", "chat_message_id", source.step.id, foreign.message.id},
+            {"chat_message_items", "chat_message_step_id", source.item.id, foreign.step.id},
+            {"chat_message_contents", "chat_message_item_id", content.id, foreign.item.id}
+          ] do
+        assert {:error, %Postgrex.Error{postgres: %{code: :foreign_key_violation}}} =
+                 Repo.query("UPDATE #{table} SET #{parent} = $1 WHERE id = $2", [foreign_id, id],
+                   mode: :savepoint
+                 )
+      end
+
+      assert :ok = Ash.destroy(source.chat, actor: actor)
+      assert Ash.get!(ChatMessageStep, foreign.step.id, actor: stranger)
+    end
+
     test "only an owner may destroy a fork source", %{actor: actor, source: source} do
       child = create_linked_chat!(actor, source)
       %{user: stranger} = user_fixture()
-      assert {:error, _} = Ash.destroy(source.step, actor: stranger)
-      assert Ash.get!(Chat, child.id, actor: actor)
+
+      for record <- [source.step, source.chat] do
+        assert {:error, _} = Ash.destroy(record, actor: stranger)
+        assert Ash.get!(Chat, source.chat.id, actor: actor)
+        assert Ash.get!(Chat, child.id, actor: actor)
+        assert Ash.get!(ChatMessageStep, source.step.id, actor: actor)
+      end
     end
   end
 

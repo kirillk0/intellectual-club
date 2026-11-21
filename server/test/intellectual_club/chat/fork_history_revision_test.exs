@@ -256,6 +256,15 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
     %{user: stranger} = user_fixture()
     original = revision(child, actor)
 
+    # Exercise revision visibility against a transient inconsistent trace. No
+    # such cross-owner edge may commit; revalidate as soon as it is restored.
+    owned_fks = """
+    SET CONSTRAINTS chat_messages_chat_id_fkey, chat_message_steps_chat_message_id_fkey,
+                    chat_message_items_chat_message_step_id_fkey, chat_message_contents_chat_message_item_id_fkey
+    """
+
+    Repo.query!(owned_fks <> " DEFERRED")
+
     for {record, action} <- [
           {source.root, :set_generation_state},
           {source.step, :update},
@@ -268,6 +277,8 @@ defmodule IntellectualClub.Chat.ForkHistoryRevisionTest do
       force_update!(stranger, hidden, %{owner_id: actor.id, updated_at: frozen}, action)
       assert revision(child, actor) == original
     end
+
+    Repo.query!(owned_fks <> " IMMEDIATE")
   end
 
   test "file metadata participates even though Files have no updated_at", %{

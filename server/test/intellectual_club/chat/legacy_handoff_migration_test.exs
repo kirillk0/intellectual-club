@@ -3,6 +3,11 @@ Code.require_file(
   __DIR__
 )
 
+Code.require_file(
+  "../../../priv/repo/migrations/20261121091825_cascade_owned_chat_history.exs",
+  __DIR__
+)
+
 defmodule IntellectualClub.Chat.LegacyHandoffMigrationTest do
   use IntellectualClub.DataCase, async: false
 
@@ -17,9 +22,18 @@ defmodule IntellectualClub.Chat.LegacyHandoffMigrationTest do
     QueuedMessage
   }
 
+  alias IntellectualClub.Repo.Migrations.CascadeOwnedChatHistory
   alias IntellectualClub.Repo.Migrations.MergeLegacyHandoffFamilies, as: Migration
 
   setup do
+    # The historical migrator inspects the actual FK catalog and accepts legacy
+    # owner mismatches. Restore its single-column trace FKs inside the sandbox.
+    assert :ok =
+             Ecto.Migrator.down(Repo, 20_261_121_091_825, CascadeOwnedChatHistory,
+               log: false,
+               migration_lock: false
+             )
+
     %{user: actor} = user_fixture()
     %{user: background_actor} = user_fixture()
     background = segment(background_actor, :input)

@@ -2,9 +2,9 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
   @moduledoc """
   Executes one explicitly scoped cleanup plan per deletion or retry operation.
 
-  Discovery and reference cleanup run once. Nested Ash destroys keep authorization
-  and normal content/file actions, but receive a transaction-local capability and
-  never rediscover dependencies. PostgreSQL transaction outcome, not row absence,
+  Discovery and reference cleanup run once. Ash destroys dependent chats before
+  PostgreSQL cascades through each whole chat's trace. Partial history deletes
+  retain their scoped actions. PostgreSQL transaction outcome, not row absence,
   defers runtime cancellation until the outermost commit, including nested callers.
   """
   use Ash.Domain, validate_config_inclusion?: false
@@ -17,12 +17,14 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
   alias IntellectualClub.Chat.LinkedForkCleanup.{
     Bookmark,
     GenerationEvent,
+    LegacyChatReference,
     Operation,
+    TraceFiles,
     TransactionOutcome
   }
 
   alias IntellectualClub.Chat.LinkedForkCleanupLocks
-  alias IntellectualClub.Files.UploadStaging
+  alias IntellectualClub.Files.{GarbageCollector, UploadStaging}
   alias IntellectualClub.Generation.Supervisor, as: GenerationSupervisor
   alias IntellectualClub.Generation.Worker
   alias IntellectualClub.Llm.LlmUsageRecord
@@ -33,6 +35,7 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
   resources do
     resource(Bookmark)
     resource(GenerationEvent)
+    resource(LegacyChatReference)
     resource(TransactionOutcome)
   end
 
@@ -105,7 +108,14 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
     |> Map.get({changeset.resource, changeset.data.id}, [])
     |> Enum.each(&destroy!(&1, :destroy, operation, actor))
 
-    changeset
+    if changeset.resource == Chat do
+      chat_id = changeset.data.id
+      captured = TraceFiles.capture!(chat_id, actor, operation)
+      LegacyChatReference.detach!(chat_id, actor, operation)
+      Changeset.put_context(changeset, :cleanup_trace_files, captured)
+    else
+      changeset
+    end
   rescue
     error in ArgumentError -> Changeset.add_error(changeset, message: Exception.message(error))
   end
@@ -120,7 +130,6 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
 
     records =
       case {changeset.resource, relationship} do
-        {Chat, :root_messages} -> Map.get(state.roots, changeset.data.id, [])
         {ChatMessage, :children} -> Map.get(state.children, changeset.data.id, [])
         {ChatMessage, :steps} -> Map.get(state.steps, changeset.data.id, []) |> Enum.reverse()
       end
@@ -211,7 +220,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
       work = %{
         message_ids: worker_messages,
         task_ids: tasks |> Enum.filter(&(&1.status in [:queued, :running])) |> Enum.map(& &1.id),
-        upload_ids: Enum.map(uploads, & &1.external_id)
+        upload_ids: Enum.map(uploads, & &1.external_id),
+        file_hashes: MapSet.new()
       }
 
       Operation.update!(operation, actor, &%{&1 | prepared?: true, work: work})
@@ -245,19 +255,40 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
   end
 
   @doc false
-  def schedule_after_delete(changeset) do
+  def after_delete(changeset) do
     actor = changeset.context[:private][:actor]
     operation = Map.fetch!(changeset.context, @operation_key)
+
+    if changeset.resource == Chat do
+      hashes = changeset.context |> Map.fetch!(:cleanup_trace_files) |> TraceFiles.delete!(actor)
+
+      if GarbageCollector.enabled?() and hashes != [] do
+        Operation.update!(operation, actor, fn state ->
+          update_in(state.work.file_hashes, &MapSet.union(&1, MapSet.new(hashes)))
+        end)
+      end
+    end
+
     state = Operation.state!(operation, actor)
     barrier = {changeset.resource, changeset.data.id}
 
     if not state.scheduled? and state.plan.barrier == barrier do
       Operation.update!(operation, actor, &%{&1 | scheduled?: true})
-      schedule_work(barrier, actor, state.work)
+
+      schedule_work(barrier, actor, %{
+        state.work
+        | file_hashes: MapSet.to_list(state.work.file_hashes)
+      })
     end
   end
 
-  defp schedule_work(_barrier, _actor, %{message_ids: [], task_ids: [], upload_ids: []}), do: :ok
+  defp schedule_work(_barrier, _actor, %{
+         message_ids: [],
+         task_ids: [],
+         upload_ids: [],
+         file_hashes: []
+       }),
+       do: :ok
 
   defp schedule_work(_barrier, actor, work) do
     transaction_id = TransactionOutcome.capture!(actor)
@@ -279,6 +310,8 @@ defmodule IntellectualClub.Chat.LinkedForkCleanup do
     # another operation after this one rolls back. Only this xid's commit allows
     # side effects; polling holds no row lock or open transaction.
     if TransactionOutcome.await_committed?(transaction_id, actor) do
+      Enum.each(work.file_hashes, &GarbageCollector.request_collection/1)
+
       Enum.each(work.upload_ids, fn external_id ->
         external_id |> UploadStaging.chat_upload_path() |> UploadStaging.cleanup_path()
       end)

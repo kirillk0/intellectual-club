@@ -20,6 +20,14 @@ defmodule IntellectualClub.Chat.ChatMessageContent do
     table("chat_message_contents")
     repo(IntellectualClub.Repo)
 
+    references do
+      reference(:chat_message_item,
+        on_delete: :delete,
+        match_with: [owner_id: :owner_id],
+        deferrable: true
+      )
+    end
+
     custom_statements do
       statement :chat_message_contents_set_item_type_function do
         up("""

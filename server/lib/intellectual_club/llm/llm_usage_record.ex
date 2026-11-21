@@ -28,6 +28,16 @@ defmodule IntellectualClub.Llm.LlmUsageRecord do
     custom_indexes do
       index([:chat_id], name: "llm_usage_records_chat_id_index")
 
+      index([:chat_message_id],
+        name: "llm_usage_records_chat_message_id_index",
+        where: "chat_message_id IS NOT NULL"
+      )
+
+      index([:chat_message_step_id],
+        name: "llm_usage_records_chat_message_step_id_index",
+        where: "chat_message_step_id IS NOT NULL"
+      )
+
       index([:configuration_owner_id_snapshot, :occurred_at],
         name: "llm_usage_records_owner_occurred_at_index"
       )

@@ -350,6 +350,8 @@ defmodule IntellectualClub.Chat.Chat do
     end
 
     custom_indexes do
+      index([:id, :owner_id], unique: true, name: "chats_id_owner_id_index")
+
       index([:owner_id, :updated_at, :id], name: "chats_owner_updated_id_index")
 
       index([:owner_id, :subagent, :updated_at, :id],
@@ -641,11 +643,6 @@ defmodule IntellectualClub.Chat.Chat do
       change(
         {IntellectualClub.Chat.Changes.CascadeDestroyInCleanup,
          relationship: :queued_messages, after_action?: false}
-      )
-
-      change(
-        {IntellectualClub.Chat.Changes.CascadePlannedDestroy,
-         relationship: :root_messages, action: :destroy_with_children}
       )
     end
 

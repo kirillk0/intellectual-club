@@ -10,10 +10,12 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
   alias IntellectualClub.Chat.Chat
   alias IntellectualClub.Chat.ChatMessage
   alias IntellectualClub.Chat.ChatMessageStep
+  alias IntellectualClub.Chat.ChatMessageStepRequestFile
   alias IntellectualClub.Chat.LinkedForkCleanup
   alias IntellectualClub.Chat.LinkedForkCleanupLocks, as: Locks
   alias IntellectualClub.SqlCapture
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Files.File, as: StoredFile
   alias IntellectualClub.Generation.Lease
   alias IntellectualClub.Generation.Persistence
 
@@ -95,21 +97,64 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
   end
 
   describe "cleanup operations" do
-    test "chat cascades reuse one plan and avoid per-message rediscovery", %{actor: actor} do
+    test "whole chat deletion needs no per-row queries for multistep history and its files", %{
+      actor: actor
+    } do
       [small, large] =
-        for count <- [3, 30] do
-          anchors = history!(actor, count)
+        for message_count <- [2, 15] do
+          anchors = history!(actor, message_count)
           chat = hd(anchors).chat
-          {result, stats} = measure(fn -> Ash.destroy(chat, actor: actor) end)
-          assert result == :ok
-          assert_one_plan(stats)
+
+          files =
+            for anchor <- anchors,
+                step <- [anchor.step, create_step!(actor, anchor.message, sequence: 2)] do
+              owner_file = create_file!(payload: "content-#{step.id}")
+              pin = create_file!(payload: "request-#{step.id}")
+              item = create_item!(actor, step, sequence: 2)
+              create_content!(actor, item, kind: :media, file_id: owner_file.id)
+
+              create!(
+                ChatMessageStepRequestFile,
+                %{
+                  chat_message_step_id: step.id,
+                  file_id: pin.id,
+                  reference_key: pin.external_id,
+                  source_file_external_id: owner_file.external_id,
+                  variant_key: "original"
+                },
+                actor
+              )
+
+              [owner_file.id, pin.id]
+            end
+
+          {:ok, capture} = SqlCapture.measure(fn -> Ash.destroy(chat, actor: actor) end)
+          assert [_plan] = capture.plans
+          assert length(capture.discoveries) == 3
+
+          # Internal FK actions do not cross the client connection. Checking the
+          # emitted statements also distinguishes a native cascade from bulk DELETEs.
+          for table <-
+                ~w(chat_messages chat_message_steps chat_message_items chat_message_contents chat_message_step_request_files) do
+            refute Enum.any?(capture.queries, &delete_from?(&1.sql, table)), table
+          end
+
+          assert Enum.any?(capture.queries, &delete_from?(&1.sql, "chats"))
           assert_missing!(Chat, chat.id, actor)
           assert_missing!(ChatMessageStep, List.last(anchors).step.id, actor)
-          stats
+
+          assert Repo.aggregate(
+                   from(f in StoredFile, where: f.id in ^List.flatten(files)),
+                   :count
+                 ) ==
+                   0
+
+          # The independent post-commit worker can poll at any time. It is not
+          # part of the calling transaction's round-trip budget.
+          Enum.count(capture.queries, &(not String.contains?(&1.sql, "pg_xact_status")))
         end
 
-      # Ash item/message cascades stay linear; repeated cleanup planning must not.
-      assert large.queries <= small.queries + 50 * (30 - 3), inspect([small, large])
+      assert large <= small + 4, inspect(%{small: small, large: large})
     end
 
     test "keep-children deletion near the start fences neither retained history nor depth", %{
@@ -238,6 +283,10 @@ defmodule IntellectualClub.Chat.LinkedForkCleanupPerformanceTest do
       assert_one_plan(stats)
       assert_missing!(ChatMessageStep, anchor.step.id, actor)
     end
+  end
+
+  defp delete_from?(sql, table) do
+    Regex.match?(~r/\bDELETE\s+FROM\s+(?:"?public"?\.)?"?#{table}"?\b/i, sql)
   end
 
   defp measure(operation) do

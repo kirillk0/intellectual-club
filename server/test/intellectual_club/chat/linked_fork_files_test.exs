@@ -14,6 +14,46 @@ defmodule IntellectualClub.Chat.LinkedForkFilesTest do
   @invalid_fallback "[Image omitted: attached file could not be validated as an image.]"
   @task "Read only the inherited files."
 
+  test "whole chat deletion releases owned files atomically without removing a shared payload" do
+    %{user: actor} = user_fixture()
+    chat = create_empty_chat!(actor)
+    step = followup_step!(actor, chat)
+    item = create_item!(actor, step)
+    payload = "shared-#{System.unique_integer([:positive])}"
+    attachment = create_file!(payload: payload)
+    create_content!(actor, item, kind: :media, file_id: attachment.id)
+    {:ok, pin} = Files.duplicate_file(attachment.id)
+    {:ok, retained} = Files.duplicate_file(attachment.id)
+
+    ChatMessageStepRequestFile
+    |> Ash.Changeset.for_create(:create, %{
+      chat_message_step_id: step.id,
+      reference_key: pin.external_id,
+      source_file_external_id: attachment.external_id,
+      variant_key: "original",
+      file_id: pin.id
+    })
+    |> Ash.create!()
+
+    assert {:error, :keep_chat} =
+             IntellectualClub.Repo.transaction(fn ->
+               Ash.destroy!(chat, actor: actor)
+               assert {:error, :not_found} = Files.get_by_external_id(attachment.external_id)
+               assert {:error, :not_found} = Files.get_by_external_id(pin.external_id)
+               IntellectualClub.Repo.rollback(:keep_chat)
+             end)
+
+    for file <- [attachment, pin, retained] do
+      assert {:ok, {_record, ^payload}} = Files.load_payload(file.id)
+    end
+
+    Ash.destroy!(chat, actor: actor)
+    assert {:error, :not_found} = Files.get_by_external_id(attachment.external_id)
+    assert {:error, :not_found} = Files.get_by_external_id(pin.external_id)
+    assert {:ok, :retained} = Files.GarbageCollector.collect_sha256(attachment.sha256)
+    assert {:ok, {_record, ^payload}} = Files.load_payload(retained.id)
+  end
+
   test "an empty linked fork reads only files in its inherited provider-response prefix" do
     fixture = fork_fixture!()
     context = context(fixture.child, fixture.actor)
