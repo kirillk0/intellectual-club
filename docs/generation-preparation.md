@@ -89,6 +89,21 @@ configuration (`Chat.GenerationConfiguration`). Tool compaction keeps the runnin
 turn's pinned model, prompt and tools. A manual checkpoint waits for the next turn;
 that turn and queued follow-ups follow the current chat selection.
 
+## Provider HTTP headers
+
+The provider owner can set custom HTTP headers in the provider settings, for example
+`User-Agent: MyClient/1.0` or a gateway API key. An empty list keeps the transport
+defaults. A matching name (case-insensitive) replaces the default; removing the
+override restores it. Framing and WebSocket protocol headers such as `Host`,
+`Content-Length` and `Sec-WebSocket-Key` cannot be overridden.
+
+Overrides apply to generation, including the Responses WebSocket handshake and
+HTTP fallback, and to model discovery. They do not apply to OAuth token refresh.
+When overrides are present, HTTP redirects to a different origin are blocked.
+These are transport settings, not model parameters: they are not written to
+pinned requests or supplied to the model. Recovery reloads them from the pinned
+configuration's provider.
+
 ## Branch options
 
 `POST /api/bff/chat-generation/:id/branch` (in-chat) and

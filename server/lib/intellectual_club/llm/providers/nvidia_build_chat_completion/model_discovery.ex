@@ -16,7 +16,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion.ModelDiscover
     with {:ok, token} <- bearer_token(provider),
          {:ok, url} <- CommonModelDiscovery.models_url(provider),
          {:ok, body} <-
-           CommonModelDiscovery.request_json(url, [
+           CommonModelDiscovery.request_json(provider, url, [
              {"authorization", "Bearer " <> token},
              {"accept", "application/json"}
            ]) do

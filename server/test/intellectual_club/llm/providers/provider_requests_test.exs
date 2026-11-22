@@ -1,6 +1,9 @@
 defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   use ExUnit.Case, async: true
 
+  import IntellectualClub.TestHttpServer
+  import IntellectualClub.ProviderStreamHelpers
+
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.GoogleInteractions
   alias IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion
@@ -10,6 +13,112 @@ defmodule IntellectualClub.Llm.Providers.ProviderRequestsTest do
   alias IntellectualClub.Llm.Providers.Common.PreparedRequest
   alias IntellectualClub.Llm.Providers.Common.RequestBuilder
   alias IntellectualClub.Generation.RuntimeTrace
+
+  describe "provider header overrides" do
+    for {provider, auth_header} <- [
+          {AnthropicMessages, "X-Api-Key"},
+          {GoogleInteractions, "X-Goog-Api-Key"},
+          {NvidiaBuildChatCompletion, "Authorization"},
+          {OpenRouterChatCompletion, "Authorization"},
+          {Responses, "Authorization"}
+        ] do
+      test "#{inspect(provider)} overrides headers for generation and discovery, not the logical payload" do
+        provider = unquote(provider)
+        auth_header = unquote(auth_header)
+        parent = self()
+
+        {base_url, _} =
+          start_http_server!(fn conn, _ ->
+            {:ok, body, conn} = Plug.Conn.read_body(conn)
+            send(parent, {conn.method, conn.req_headers, body})
+
+            if conn.method == "GET" do
+              Req.Test.json(conn, %{"models" => [], "data" => []})
+            else
+              Plug.Conn.send_resp(conn, 400, "invalid test payload")
+            end
+          end)
+
+        custom = %{
+          "UsEr-AgEnT" => "test-agent",
+          auth_header => "override-token",
+          "X-Gateway" => "route"
+        }
+
+        payload = %{"model" => "test-model"}
+
+        context = %{
+          provider_type: provider.type(),
+          provider_base_url: base_url,
+          provider_api_key: "original",
+          provider_custom_headers: custom
+        }
+
+        run_and_capture_error!(provider, %{context: context, request_payload: payload})
+
+        assert {:ok, []} =
+                 provider.list_models(%{
+                   base_url: base_url,
+                   api_key: "original",
+                   custom_headers: custom
+                 })
+
+        for method <- ["POST", "GET"] do
+          assert_receive {^method, headers, body}
+          assert for({"user-agent", value} <- headers, do: value) == ["test-agent"]
+
+          assert for({name, value} <- headers, name == String.downcase(auth_header), do: value) ==
+                   ["override-token"]
+
+          assert {"x-gateway", "route"} in headers
+          refute body =~ "override-token"
+        end
+      end
+    end
+
+    test "keeps custom headers on same-origin redirects and blocks cross-origin redirects" do
+      parent = self()
+
+      {external, _} =
+        start_http_server!(fn conn, _ ->
+          send(parent, :external_request)
+          Plug.Conn.send_resp(conn, 200, "{}")
+        end)
+
+      {base_url, _} =
+        start_http_server!(fn conn, _ ->
+          case conn.request_path do
+            "/allowed/models" ->
+              conn
+              |> Plug.Conn.put_resp_header("location", "/final")
+              |> Plug.Conn.send_resp(307, "")
+
+            "/forbidden/models" ->
+              conn
+              |> Plug.Conn.put_resp_header("location", external)
+              |> Plug.Conn.send_resp(307, "")
+
+            "/final" ->
+              send(parent, {:redirect_headers, Plug.Conn.get_req_header(conn, "x-gateway")})
+              Req.Test.json(conn, %{"data" => []})
+          end
+        end)
+
+      provider = %{api_key: "original", custom_headers: %{"X-Gateway" => "secret"}}
+
+      assert {:ok, []} =
+               AnthropicMessages.list_models(Map.put(provider, :base_url, base_url <> "/allowed"))
+
+      assert_receive {:redirect_headers, ["secret"]}
+
+      assert {:error, _} =
+               AnthropicMessages.list_models(
+                 Map.put(provider, :base_url, base_url <> "/forbidden")
+               )
+
+      refute_received :external_request
+    end
+  end
 
   describe "OpenRouter and NVIDIA Chat Completions requests" do
     test "openrouter provider builds initial request and snapshot from canonical chat history" do

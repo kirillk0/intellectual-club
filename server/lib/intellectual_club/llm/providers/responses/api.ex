@@ -6,6 +6,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
   https://www.openresponses.org
   """
 
+  alias IntellectualClub.Llm.Providers.Common.CustomHeaders
   alias IntellectualClub.Llm.Providers.Responses
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
@@ -25,6 +26,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           %{
             optional(:base_url) => String.t() | nil,
             required(:api_key) => String.t(),
+            optional(:custom_headers) => map() | nil,
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
             optional(:image_cache) => map(),
@@ -87,7 +89,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.Api do
           |> Keyword.merge(extra_req_options())
 
         try do
-          response = Req.request!(request_opts)
+          response = CustomHeaders.request!(request_opts, Map.get(opts, :custom_headers))
 
           if response.status >= 400 do
             body_text = read_full_text(response)

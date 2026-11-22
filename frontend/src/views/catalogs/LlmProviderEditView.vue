@@ -94,6 +94,27 @@
             />
             <div v-if="errors.hasField('base_url')" class="error-text">{{ errors.messageFor('base_url') }}</div>
           </label>
+
+          <fieldset v-if="!sharedReadonly && (form.type !== 'demo' || form.header_rows.length)" class="stack header-editor" @input="errors.clearField('custom_headers')">
+            <legend>{{ translate('Custom HTTP headers') }}</legend>
+            <div class="muted">{{ translate('Leave the list empty to use the default headers. A matching name overrides the default, regardless of case.') }}</div>
+            <div v-for="(row, index) in form.header_rows" :key="row.id" class="header-row">
+              <input v-model="row.name" :aria-label="translate('Header {index} name', { index: index + 1 })"
+                :placeholder="translate('Header name')" autocomplete="off" spellcheck="false" />
+              <input v-model="row.value" :type="showHeaderValues ? 'text' : 'password'" :aria-label="translate('Header {index} value', { index: index + 1 })"
+                :placeholder="translate('Header value')" autocomplete="new-password" spellcheck="false" />
+              <button type="button" class="danger" @click="form.header_rows.splice(index, 1); errors.clearField('custom_headers')">
+                {{ translate('Remove') }}
+              </button>
+            </div>
+            <label v-if="form.header_rows.length" class="flex">
+              <input v-model="showHeaderValues" type="checkbox" /> {{ translate('Show header values') }}
+            </label>
+            <button type="button" class="add-header" @click="form.header_rows.push(headerRow()); errors.clearField('custom_headers')">
+              {{ translate('Add header') }}
+            </button>
+            <div v-if="errors.hasField('custom_headers')" class="error-text" role="alert">{{ translate(errors.messageFor('custom_headers')) }}</div>
+          </fieldset>
         </div>
 
           <div v-else class="stack">
@@ -207,6 +228,7 @@
 import { computed, ref, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { api } from '@/api/client';
+import { translate } from '@/i18n';
 import CrudHeader from '@/components/CrudHeader.vue';
 import RemoteUpdateNotice from '@/components/RemoteUpdateNotice.vue';
 import EditableCombobox from '@/components/EditableCombobox.vue';
@@ -216,7 +238,33 @@ import { useUnsavedChangesGuard } from '@/features/catalogs/model/useUnsavedChan
 import { serverStateKeys } from '@/features/serverState/queryClient';
 import type { JsonApiResource } from '@/api/jsonApi';
 
+let headerRowId = 0;
+function headerRow(name = '', value = '') {
+  return { id: ++headerRowId, name, value };
+}
+
+type HeaderRow = ReturnType<typeof headerRow>;
+
+function headerRowsError(rows: HeaderRow[]) {
+  const seen = new Set<string>();
+  for (const [i, row] of rows.entries()) {
+    const index = i + 1;
+    const name = row.name.trim();
+    if (!name) return translate('Header {index}: name is required.', { index });
+    if (!/^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(name)) {
+      return translate('Header {index}: the name is invalid.', { index });
+    }
+    if (seen.has(name.toLowerCase())) return translate('Header {index}: the name is duplicated.', { index });
+    if (/[\x00-\x1f\x7f-\x9f]/.test(row.value)) {
+      return translate('Header {index}: the value contains invalid control characters.', { index });
+    }
+    seen.add(name.toLowerCase());
+  }
+  return null;
+}
+
 type ProviderForm = {
+  header_rows: HeaderRow[];
   name: string;
   type: string;
   auth_method: string;
@@ -266,6 +314,9 @@ function fromApi(resource: JsonApiResource): Partial<ProviderForm> {
     base_url: String(attrs.base_url || ''),
     api_key: '',
     oauth_refresh_token: '',
+    header_rows: attrs.can_edit !== false && attrs.custom_headers && typeof attrs.custom_headers === 'object'
+      ? Object.entries(attrs.custom_headers).flatMap(([name, value]) => typeof value === 'string' ? [headerRow(name, value)] : [])
+      : [],
     credentials_present,
     can_edit: attrs.can_edit !== false,
     shared_incoming: Boolean(attrs.shared_incoming),
@@ -303,18 +354,22 @@ const editor = useCrudEditor<ProviderForm>({
     api_key: '',
     oauth_refresh_token: '',
     credentials_present: [],
+    header_rows: [],
     can_edit: true,
     shared_incoming: false,
     shared_outgoing: false,
   }),
   fromApi,
-  toAttributes: (form) => {
+  toAttributes: (form): Record<string, unknown> => {
     const attrs: Record<string, unknown> = {
       name: form.name,
       type: form.type,
       auth_method: form.auth_method,
       base_url: form.base_url || null,
     };
+    if (JSON.stringify(form.header_rows) !== JSON.stringify(editor.base.value.header_rows)) {
+      attrs.custom_headers = Object.fromEntries(form.header_rows.map(({ name, value }) => [name.trim(), value]));
+    }
     const apiKey = form.api_key.trim();
     const refreshToken = form.oauth_refresh_token.trim();
 
@@ -331,6 +386,7 @@ const editor = useCrudEditor<ProviderForm>({
     type: form.type,
     auth_method: form.auth_method,
     base_url: form.base_url,
+    header_rows: form.header_rows.map(({ name, value }) => [name, value]),
     api_key_set: Boolean(form.api_key.trim()),
     oauth_refresh_token_set: Boolean(form.oauth_refresh_token.trim()),
     clear_api_key: Boolean(clearApiKey.value),
@@ -341,6 +397,8 @@ const editor = useCrudEditor<ProviderForm>({
 
 useUnsavedChangesGuard(editor.dirty);
 
+const showHeaderValues = ref(false);
+watch(editor.idParam, () => { showHeaderValues.value = false; });
 const form = editor.form;
 const errors = editor.errors;
 const formErrors = computed(() => errors.formErrors.value);
@@ -501,13 +559,22 @@ const goPrev = editor.goPrev;
 const goNext = editor.goNext;
 
 const save = async () => {
+  const headerError = headerRowsError(form.header_rows);
+  if (headerError) {
+    providerTab.value = 'settings';
+    errors.setField('custom_headers', headerError);
+    return;
+  }
   const saved = await editor.save();
+  if (!saved && errors.hasField('custom_headers')) providerTab.value = 'settings';
   if (!saved) return;
+  showHeaderValues.value = false;
   clearApiKey.value = false;
   clearOauthRefreshToken.value = false;
   await editor.reloadRemoteDocument();
 };
 const reset = () => {
+  showHeaderValues.value = false;
   clearApiKey.value = false;
   clearOauthRefreshToken.value = false;
   editor.reset();
@@ -519,6 +586,22 @@ const goList = editor.goList;
 </script>
 
 <style scoped>
+.header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto;
+  gap: 8px;
+}
+
+.add-header {
+  align-self: flex-start;
+  justify-self: start;
+}
+
+@media (max-width: 600px) {
+  .header-row { grid-template-columns: 1fr; }
+  .header-row > button { justify-self: start; }
+}
+
 .share-banner {
   display: flex;
   gap: 8px;

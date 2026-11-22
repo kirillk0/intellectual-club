@@ -11,8 +11,11 @@ defmodule IntellectualClub.Llm.LlmProvider do
   alias IntellectualClub.Duplication
   alias IntellectualClub.Llm.Changes.ValidateProviderAuth
   alias IntellectualClub.Llm.LlmConfiguration
+  alias IntellectualClub.Llm.Validations.ValidCustomHeaders
 
   require Ash.Query
+
+  @editable_fields ~w(name type auth_method base_url api_key oauth_refresh_token custom_headers)a
 
   postgres do
     table("llm_providers")
@@ -42,6 +45,13 @@ defmodule IntellectualClub.Llm.LlmProvider do
     attribute :base_url, :string do
       allow_nil?(true)
       public?(true)
+    end
+
+    attribute :custom_headers, :map do
+      allow_nil?(false)
+      default(%{})
+      constraints(preserve_nil_values?: true)
+      sensitive?(true)
     end
 
     attribute :api_key, :string do
@@ -92,6 +102,17 @@ defmodule IntellectualClub.Llm.LlmProvider do
       load [:api_key, :oauth_refresh_token]
     end
 
+    # The private attribute is available to generation for shared configurations.
+    # Only expose its contents to the owner in JSON:API, even on explicit field selection.
+    calculate :editable_custom_headers,
+              :map,
+              expr(if(owner_id == ^actor(:id), do: custom_headers, else: %{})) do
+      public?(true)
+      sensitive?(true)
+      filterable?(false)
+      sortable?(false)
+    end
+
     calculate :can_edit, :boolean, expr(owner_id == ^actor(:id)) do
       public?(true)
     end
@@ -112,6 +133,7 @@ defmodule IntellectualClub.Llm.LlmProvider do
 
   json_api do
     type "llm-providers"
+    field_names(editable_custom_headers: :custom_headers)
   end
 
   actions do
@@ -154,7 +176,8 @@ defmodule IntellectualClub.Llm.LlmProvider do
     end
 
     create :create do
-      accept([:name, :type, :auth_method, :base_url, :api_key, :oauth_refresh_token])
+      accept(@editable_fields)
+      validate(ValidCustomHeaders)
       change(relate_actor(:owner))
       change({ValidateProviderAuth, []})
     end
@@ -183,6 +206,7 @@ defmodule IntellectualClub.Llm.LlmProvider do
           type: source.type,
           auth_method: source.auth_method,
           base_url: source.base_url,
+          custom_headers: if(preserve_credentials?, do: source.custom_headers, else: %{}),
           api_key: if(preserve_credentials?, do: source.api_key, else: nil),
           oauth_refresh_token:
             if(preserve_credentials?, do: source.oauth_refresh_token, else: nil)
@@ -193,7 +217,8 @@ defmodule IntellectualClub.Llm.LlmProvider do
     end
 
     update :update do
-      accept([:name, :type, :auth_method, :base_url, :api_key, :oauth_refresh_token])
+      accept(@editable_fields)
+      validate(ValidCustomHeaders)
       require_atomic?(false)
       change({ValidateProviderAuth, []})
     end

@@ -320,6 +320,29 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
     assert replay["input"] == payload["input"]
   end
 
+  test "changing custom handshake headers opens a new connection before using a continuation" do
+    {base_url, agent} =
+      start_wss_server!([[completed_event("first")], [completed_event("second")]])
+
+    session = start_supervised!({Session, %{}})
+    payload = %{"input" => [%{"role" => "user", "content" => "Hi"}]}
+    opts = %{base_url: base_url, api_key: "test", request_payload: payload}
+
+    for beta <- ["first-feature", "second-feature"] do
+      assert :ok =
+               Session.stream_generate(
+                 session,
+                 Map.put(opts, :custom_headers, %{"OpenAI-Beta" => beta}),
+                 fn _ -> :ok end
+               )
+    end
+
+    assert beta_headers_for(agent) == [["first-feature"], ["second-feature"]]
+    assert [_, replay] = requests_for(agent)
+    refute Map.has_key?(replay, "previous_response_id")
+    assert replay["input"] == payload["input"]
+  end
+
   test "a change of cache key opens a connection with the new session header" do
     {base_url, agent} =
       start_wss_server!([[completed_event("first")], [completed_event("second")]])
@@ -659,6 +682,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       provider_type: Responses.type(),
       provider_auth_method: "api_key",
       provider_api_key: "test-key",
+      provider_custom_headers: %{"User-Agent" => "custom-agent", "X-Gateway" => "gateway"},
       owner_id: 12
     }
 
@@ -670,6 +694,9 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.SessionTest do
       )
 
     handler = fn conn, _opts ->
+      assert Plug.Conn.get_req_header(conn, "user-agent") == ["custom-agent"]
+      assert Plug.Conn.get_req_header(conn, "x-gateway") == ["gateway"]
+
       if Plug.Conn.get_req_header(conn, "upgrade") == ["websocket"] do
         send(parent, :websocket_upgrade_attempted)
         Plug.Conn.send_resp(conn, 400, "WebSocket unavailable")

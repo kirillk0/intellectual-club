@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
   Anthropic Messages API streaming client.
   """
 
+  alias IntellectualClub.Llm.Providers.Common.CustomHeaders
   alias IntellectualClub.Llm.Providers.AnthropicMessages.Payload
   alias IntellectualClub.Llm.Providers.AnthropicMessages
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
@@ -28,6 +29,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
           %{
             required(:base_url) => String.t(),
             required(:api_key) => String.t(),
+            optional(:custom_headers) => map() | nil,
             required(:request_payload) => map(),
             optional(:request_step_id) => integer() | nil,
             optional(:image_cache) => map(),
@@ -81,7 +83,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.Api do
         ]
 
         try do
-          response = Req.request!(request_opts)
+          response = CustomHeaders.request!(request_opts, Map.get(opts, :custom_headers))
 
           if response.status >= 400 do
             body_text = read_full_text(response)

@@ -63,6 +63,37 @@ defmodule IntellectualClub.Generation.ContextTest do
       assert step.finished_at == nil
     end
 
+    test "keeps provider headers out of pinned requests and reloads them for recovery" do
+      %{user: actor} = user_fixture()
+      headers = %{"x-gateway-key" => "private-header-value"}
+
+      configuration =
+        create_configuration!(actor,
+          provider_attrs: %{type: :openrouter_chat_completion, custom_headers: headers}
+        )
+
+      chat = chat_with_input!(actor, %{llm_configuration_id: configuration.id}, "Hello")
+      context = build!(chat, actor)
+      request = StepRequests.request_for_step!(context.step_id, actor: actor)
+      refute Jason.encode!(request) =~ "private-header-value"
+
+      prepared =
+        Context.build_prepared!(chat.id, context.message_id, context.step_id, request,
+          actor: actor
+        )
+
+      assert {:ok, retry} =
+               Context.prepare_retry(context.message_id,
+                 actor: actor,
+                 allowed_statuses: [:generating]
+               )
+
+      for runtime <- [context, prepared, retry] do
+        assert runtime.provider_custom_headers == headers
+        refute inspect(runtime) =~ "private-header-value"
+      end
+    end
+
     test "fixes canonical history before building the initial provider request" do
       %{user: actor} = user_fixture()
 

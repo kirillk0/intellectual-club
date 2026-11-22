@@ -36,7 +36,13 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
       %{user: owner} = user_fixture()
       %{user: recipient} = recipient_fixture = user_fixture()
       %{group: group} = user_group_fixture(%{users: [owner, recipient]})
-      provider = create_provider!(owner, provider_attrs(:refresh_token_provider))
+
+      attrs =
+        Map.put(provider_attrs(:refresh_token_provider), :custom_headers, %{
+          "X-Private" => "provider-secret"
+        })
+
+      provider = create_provider!(owner, attrs)
 
       for model <- ["shared-model-a", "shared-model-b"] do
         configuration = create_configuration!(owner, provider: provider, model_name: model)
@@ -52,6 +58,65 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
       assert attributes["shared_outgoing"] == true
       assert attributes["credentials_present"] == ["oauth_refresh_token"]
       for key <- @secret_keys, do: refute(Map.has_key?(attributes, key))
+      assert attributes["custom_headers"] == %{}
+
+      sparse =
+        api_get!(recipient_fixture, "/api/ash/llm-providers?fields[llm-providers]=custom_headers")
+
+      refute inspect(sparse) =~ "provider-secret"
+      assert Enum.any?(sparse["data"], &(&1["attributes"]["custom_headers"] == %{}))
+    end
+  end
+
+  describe "custom headers" do
+    test "the owner can set, edit and clear the map; omission preserves it" do
+      fixture = user_fixture()
+      collection = "/api/ash/llm-providers"
+      headers = %{"Authorization" => "Bearer owner-value", "User-Agent" => "my-client/1"}
+      attrs = %{"name" => "Custom provider", "type" => "demo", "custom_headers" => headers}
+
+      id =
+        fixture
+        |> api_create(collection, "llm-providers", attrs)
+        |> json_response(201)
+        |> response_id()
+
+      path = "#{collection}/#{id}"
+
+      assert api_attributes!(fixture, path)["custom_headers"] == headers
+      assert api_patch(fixture, path, "llm-providers", id, %{"name" => "Renamed"}).status == 200
+      assert api_attributes!(fixture, path)["custom_headers"] == headers
+
+      for value <- [%{"x-extra" => "new"}, %{}] do
+        assert api_patch(fixture, path, "llm-providers", id, %{"custom_headers" => value}).status ==
+                 200
+
+        assert api_attributes!(fixture, path)["custom_headers"] == value
+      end
+    end
+
+    test "rejects invalid headers without persisting or echoing values" do
+      %{user: actor} = fixture = user_fixture()
+      provider = create_provider!(actor)
+      path = "/api/ash/llm-providers/#{provider.id}"
+
+      for invalid <- [
+            %{"X Invalid" => "do-not-log"},
+            %{"x-header" => "do-not-log\r\ninjected"},
+            %{"x-header" => ["do-not-log"]},
+            %{"x-header" => nil},
+            %{"X-Test" => "do-not-log", "x-test" => "duplicate"},
+            %{"Content-Length" => "do-not-log"},
+            %{"Sec-WebSocket-Key" => "do-not-log"}
+          ] do
+        conn =
+          api_patch(fixture, path, "llm-providers", provider.id, %{"custom_headers" => invalid})
+
+        assert_invalid!(conn)
+        refute conn.resp_body =~ "do-not-log"
+      end
+
+      assert api_attributes!(fixture, path)["custom_headers"] == %{}
     end
   end
 
@@ -134,7 +199,8 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
           create_provider!(owner,
             type: :openrouter_chat_completion,
             api_key: "sk-test-123",
-            oauth_refresh_token: "rt-test-123"
+            oauth_refresh_token: "rt-test-123",
+            custom_headers: %{"X-Private" => "provider-secret"}
           )
 
         configuration = create_configuration!(owner, provider: source)
@@ -151,6 +217,10 @@ defmodule IntellectualClubWeb.AshJsonApi.LlmProvidersTest do
         copy = Ash.get!(LlmProvider, copy_id, actor: copier)
         assert copy.owner_id == copier.id
         assert copy.base_url == source.base_url
+
+        assert copy.custom_headers ==
+                 if(unquote(keeps_credentials?), do: source.custom_headers, else: %{})
+
         assert {copy.api_key, copy.oauth_refresh_token} == expected_credentials
       end
     end

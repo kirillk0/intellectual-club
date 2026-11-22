@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
   Shared OpenAI-compatible Chat Completions streaming client.
   """
 
+  alias IntellectualClub.Llm.Providers.Common.CustomHeaders
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias Req.Response
 
@@ -21,6 +22,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
           %{
             required(:base_url) => String.t(),
             required(:api_key) => String.t(),
+            optional(:custom_headers) => map() | nil,
             required(:provider) => atom() | String.t(),
             required(:image_mapper) => function(),
             required(:request_payload) => map(),
@@ -77,7 +79,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ChatCompletions do
         ]
 
         try do
-          response = Req.request!(request_opts)
+          response = CustomHeaders.request!(request_opts, Map.get(opts, :custom_headers))
 
           if response.status >= 400 do
             body_text = read_full_text(response)

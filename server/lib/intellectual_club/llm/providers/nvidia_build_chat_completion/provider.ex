@@ -184,6 +184,7 @@ defmodule IntellectualClub.Llm.Providers.NvidiaBuildChatCompletion do
             provider: :nvidia_build_chat_completion,
             base_url: base_url,
             api_key: api_key,
+            custom_headers: Map.get(context, :provider_custom_headers),
             request_payload: request_payload,
             request_step_id: Map.get(opts, :request_step_id),
             image_mapper: &map_request_images/3,

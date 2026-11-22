@@ -311,6 +311,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
                  %{
                    base_url: endpoint.websocket_base_url,
                    api_key: token,
+                   custom_headers: Map.get(context, :provider_custom_headers),
                    request_payload: request_payload,
                    request_step_id: Map.get(opts, :request_step_id),
                    image_mapper: &map_request_images/3,
@@ -346,6 +347,7 @@ defmodule IntellectualClub.Llm.Providers.Responses do
       %{
         base_url: endpoint.http_base_url,
         api_key: token,
+        custom_headers: Map.get(context, :provider_custom_headers),
         request_payload: request_payload,
         request_step_id: Map.get(opts, :request_step_id),
         image_mapper: &map_request_images/3,

@@ -12,7 +12,7 @@ defmodule IntellectualClub.Llm.Providers.GoogleInteractions.ModelDiscovery do
     with {:ok, api_key} <- api_key(provider),
          {:ok, url} <- CommonModelDiscovery.models_url(provider),
          {:ok, body} <-
-           CommonModelDiscovery.request_json(url, [
+           CommonModelDiscovery.request_json(provider, url, [
              {"x-goog-api-key", api_key},
              {"accept", "application/json"}
            ]) do

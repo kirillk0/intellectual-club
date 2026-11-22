@@ -293,6 +293,7 @@ describe('shared read-only editor tabs', () => {
     jsonApiMocks.get.mockResolvedValue(
       readonlyDocument('llm-providers', {
         name: 'Shared provider',
+        custom_headers: { 'X-Test': 'not-shown' },
         type: 'test-provider',
         auth_method: 'api_key',
         base_url: 'https://example.com',
@@ -303,6 +304,7 @@ describe('shared read-only editor tabs', () => {
     const view = await mountView(LlmProviderEditView, '/catalogs/llm-providers/27');
     await vi.waitFor(() => expect(view.text()).toContain('This provider is read-only.'));
 
+    expect(view.find('.header-editor').exists()).toBe(false);
     const credentialsTab = tabByText(view, 'Credentials');
     expect(credentialsTab.element.closest('fieldset[disabled]')).toBeNull();
     expect(view.get<HTMLInputElement>('input.full').element.closest('fieldset[disabled]')).not.toBeNull();
@@ -310,6 +312,45 @@ describe('shared read-only editor tabs', () => {
     credentialsTab.element.click();
     await nextTick();
     expect(tabByText(view, 'Credentials').classes()).toContain('active');
+  });
+
+  it('edits provider headers, rejects case-insensitive duplicates and clears all overrides', async () => {
+    const document = readonlyDocument('llm-providers', { name: 'Provider', type: 'test-provider' });
+    const attributes = { ...document.data.attributes, can_edit: true, custom_headers: { 'User-Agent': 'custom-agent' } };
+    const saved = { data: { ...document.data, attributes } };
+    jsonApiMocks.get.mockResolvedValue(saved);
+    jsonApiMocks.update.mockImplementation(async (_path, _type, _id, changes) => {
+      Object.assign(attributes, changes);
+      return saved;
+    });
+    const view = await mountView(LlmProviderEditView, '/catalogs/llm-providers/27');
+    await tabByText(view, 'Settings').trigger('click');
+    const input = (label: string) => view.get<HTMLInputElement>(`[aria-label="${label}"]`);
+    expect(input('Header 1 value').element.value).toBe('custom-agent');
+    expect(input('Header 1 value').attributes('type')).toBe('password');
+    await view.get<HTMLInputElement>('input.full').setValue('Another provider name');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await flushPromises();
+    expect(jsonApiMocks.update.mock.calls[0]?.[3]).not.toHaveProperty('custom_headers');
+    jsonApiMocks.update.mockClear();
+
+    await input('Header 1 value').setValue('another-agent');
+    await view.get('.add-header').trigger('click');
+    await input('Header 2 name').setValue('user-agent');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await nextTick();
+    expect(view.text()).toContain('Header 2: the name is duplicated.');
+    expect(jsonApiMocks.update).not.toHaveBeenCalled();
+
+    await input('Header 2 name').setValue('X-Empty');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await flushPromises();
+    expect(jsonApiMocks.update.mock.calls[0]?.[3].custom_headers).toEqual({ 'User-Agent': 'another-agent', 'X-Empty': '' });
+
+    for (const button of view.findAll('.header-row button')) await button.trigger('click');
+    view.getComponent(CrudHeader).vm.$emit('save');
+    await flushPromises();
+    expect(jsonApiMocks.update.mock.calls[1]?.[3].custom_headers).toEqual({});
   });
 
   it('hides a non-selectable provider type for other provider records', async () => {

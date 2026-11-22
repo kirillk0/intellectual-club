@@ -33,6 +33,8 @@ defmodule IntellectualClub.Generation.Context do
   @turn_aborted_user_interrupt_reason "The user interrupted the previous turn on purpose"
   @turn_aborted_error_reason "The move was interrupted due to an error."
 
+  @derive {Inspect,
+           except: [:provider_api_key, :provider_oauth_refresh_token, :provider_custom_headers]}
   defstruct [
     :owner_id,
     :chat_id,
@@ -48,6 +50,7 @@ defmodule IntellectualClub.Generation.Context do
     :provider_id,
     :provider_type,
     :provider_base_url,
+    :provider_custom_headers,
     :provider_api_key,
     :provider_auth_method,
     :provider_oauth_refresh_token,
@@ -274,6 +277,7 @@ defmodule IntellectualClub.Generation.Context do
         provider_id: provider_id,
         provider_type: provider_type,
         provider_base_url: provider_base_url,
+        provider_custom_headers: custom_headers(provider),
         provider_api_key: provider_api_key,
         provider_auth_method: provider_auth_method,
         provider_oauth_refresh_token: provider_oauth_refresh_token,
@@ -415,6 +419,7 @@ defmodule IntellectualClub.Generation.Context do
       provider_id: provider && Map.get(provider, :id),
       provider_type: provider_type,
       provider_base_url: provider && Map.get(provider, :base_url),
+      provider_custom_headers: custom_headers(provider),
       provider_api_key: provider && Map.get(provider, :api_key),
       provider_auth_method: provider && Map.get(provider, :auth_method),
       provider_oauth_refresh_token: provider && Map.get(provider, :oauth_refresh_token),
@@ -893,6 +898,8 @@ defmodule IntellectualClub.Generation.Context do
       provider_id: provider_id,
       provider_type: provider_type,
       provider_base_url: provider_base_url,
+      provider_custom_headers:
+        custom_headers(chat.llm_configuration && chat.llm_configuration.provider),
       provider_api_key: provider_api_key,
       provider_auth_method: provider_auth_method,
       provider_oauth_refresh_token: provider_oauth_refresh_token,
@@ -1247,6 +1254,9 @@ defmodule IntellectualClub.Generation.Context do
       %{}
     end
   end
+
+  defp custom_headers(%{custom_headers: headers}) when is_map(headers), do: headers
+  defp custom_headers(_provider), do: %{}
 
   defp configuration_timeout_ms(%{} = llm_configuration) do
     timeout_seconds =

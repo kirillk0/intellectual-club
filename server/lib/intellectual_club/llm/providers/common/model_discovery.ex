@@ -3,6 +3,7 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
   Shared model discovery HTTP and normalization helpers for provider packages.
   """
 
+  alias IntellectualClub.Llm.Providers.Common.CustomHeaders
   alias IntellectualClub.Llm.Providers.Common.ProviderType
   alias Req.Response
 
@@ -23,16 +24,14 @@ defmodule IntellectualClub.Llm.Providers.Common.ModelDiscovery do
 
   def models_url(_provider, _query), do: {:error, "Provider base URL is not set."}
 
-  @spec request_json(String.t(), [{String.t(), String.t()}], keyword()) ::
+  @spec request_json(map(), String.t(), [{String.t(), String.t()}], keyword()) ::
           {:ok, map()} | {:error, String.t()}
-  def request_json(url, headers, opts \\ [])
+  def request_json(provider, url, headers, opts \\ [])
       when is_binary(url) and is_list(headers) and is_list(opts) do
     response =
-      Req.get!(
-        url: url,
-        headers: headers,
-        receive_timeout: 30_000,
-        retry: false
+      CustomHeaders.request!(
+        [method: :get, url: url, headers: headers, receive_timeout: 30_000, retry: false],
+        Map.get(provider, :custom_headers, Map.get(provider, "custom_headers"))
       )
 
     case response do

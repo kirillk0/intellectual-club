@@ -13,6 +13,7 @@ defmodule IntellectualClub.Llm.Providers.AnthropicMessages.ModelDiscovery do
          {:ok, url} <- CommonModelDiscovery.models_url(provider),
          {:ok, body} <-
            CommonModelDiscovery.request_json(
+             provider,
              url,
              [
                {"x-api-key", api_key},

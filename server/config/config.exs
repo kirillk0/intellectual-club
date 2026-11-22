@@ -75,6 +75,7 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+config :phoenix, :filter_parameters, ["password", "token", "api_key", "custom_headers"]
 
 # JSON:API content type support for AshJsonApi.
 config :mime, :types, %{

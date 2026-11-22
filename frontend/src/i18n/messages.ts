@@ -122,6 +122,13 @@ export const ruMessages: Record<string, string> = {
   '(generated on save)': '(генерируется при сохранении)',
   '1 subchat': '1 сабчат',
   'Add': 'Добавить',
+  'must not override transport-controlled headers': 'Нельзя переопределять служебные заголовки HTTP и WebSocket.',
+  'Show header values': 'Показать значения заголовков',
+  'Custom HTTP headers': 'Пользовательские HTTP-заголовки',
+  'Leave the list empty to use the default headers. A matching name overrides the default, regardless of case.':
+    'Оставьте список пустым, чтобы использовать стандартные заголовки. Если имя совпадает без учёта регистра, заданное здесь значение заменит стандартное.',
+  'Header {index} name': 'Имя заголовка {index}',
+  'Header {index} value': 'Значение заголовка {index}',
   'Add header': 'Добавить заголовок',
   'Header name': 'Название заголовка',
   'Header value': 'Значение заголовка',

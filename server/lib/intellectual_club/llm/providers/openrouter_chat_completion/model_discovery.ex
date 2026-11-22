@@ -14,7 +14,7 @@ defmodule IntellectualClub.Llm.Providers.OpenRouterChatCompletion.ModelDiscovery
          {:ok, url} <-
            CommonModelDiscovery.models_url(provider, %{"supported_parameters" => "tools"}),
          {:ok, body} <-
-           CommonModelDiscovery.request_json(url, [
+           CommonModelDiscovery.request_json(provider, url, [
              {"authorization", "Bearer " <> token},
              {"accept", "application/json"}
            ]) do

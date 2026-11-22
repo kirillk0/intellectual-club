@@ -21,6 +21,7 @@ defmodule IntellectualClub.Llm.Providers.Responses.ModelDiscovery do
            ),
          {:ok, body} <-
            CommonModelDiscovery.request_json(
+             provider,
              url,
              CodexHeaders.put_account_id(
                [

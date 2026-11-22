@@ -37,6 +37,7 @@ defmodule IntellectualClub.Llm do
             :type,
             :auth_method,
             :base_url,
+            :editable_custom_headers,
             :credentials_present,
             :can_edit,
             :shared_incoming,

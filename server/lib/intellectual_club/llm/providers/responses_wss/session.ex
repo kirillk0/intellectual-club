@@ -8,6 +8,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   require Mint.HTTP
 
   alias IntellectualClub.Llm.Providers.Responses
+  alias IntellectualClub.Llm.Providers.Common.CustomHeaders
   alias IntellectualClub.Llm.Providers.Common.RequestHydration
   alias IntellectualClub.Llm.Providers.Responses.CodexHeaders
   alias IntellectualClub.Llm.Providers.Responses.Endpoint
@@ -135,7 +136,15 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
       websocket_url(Map.get(opts, :base_url) || Map.get(state.context, :provider_base_url))
 
     session_headers = CodexHeaders.session_headers(logical_request)
-    state = prepare_connection(state, endpoint, session_headers)
+    custom = Map.get(opts, :custom_headers, Map.get(state.context, :provider_custom_headers))
+    headers = handshake_headers(endpoint, opts, session_headers, custom)
+
+    headers_key =
+      if custom in [nil, %{}],
+        do: session_headers,
+        else: :crypto.hash(:sha256, :erlang.term_to_binary(headers))
+
+    state = prepare_connection(state, endpoint, headers_key)
 
     with {:ok, url} <- endpoint,
          {:ok, logical_transport_request} <- wire_payload(logical_request, state),
@@ -150,7 +159,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
              llm_configuration_id: Map.get(opts, :image_llm_configuration_id),
              provider: provider
            ),
-         {:ok, connection, state} <- ensure_connection(state, opts, url, session_headers),
+         {:ok, connection, state} <- ensure_connection(state, opts, url, headers, headers_key),
          {:ok, connection} <- send_payload(connection, wire_payload) do
       state = %{state | connection: connection}
 
@@ -301,13 +310,13 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
   # A peer close may already be queued behind the call. Consume it before choosing
   # the continuation or hydrating its input: response IDs belong to one socket.
   defp prepare_connection(
-         %{connection: %{url: url, session_headers: headers, conn: conn}} = state,
+         %{connection: %{url: url, headers_key: headers_key, conn: conn}} = state,
          {:ok, url} = endpoint,
-         headers
+         headers_key
        ) do
     receive do
       message when Mint.HTTP.is_connection_message(conn, message) ->
-        state |> handle_idle_message(message) |> prepare_connection(endpoint, headers)
+        state |> handle_idle_message(message) |> prepare_connection(endpoint, headers_key)
     after
       0 -> state
     end
@@ -324,14 +333,14 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
-  defp ensure_connection(%{connection: %{} = connection} = state, _opts, _url, _headers),
+  defp ensure_connection(%{connection: %{} = connection} = state, _opts, _url, _headers, _key),
     do: {:ok, connection, state}
 
-  defp ensure_connection(state, opts, url, session_headers) do
+  defp ensure_connection(state, opts, url, headers, headers_key) do
     case connect(
            url,
-           Map.fetch!(opts, :api_key),
-           session_headers,
+           headers,
+           headers_key,
            Map.get(opts, :connect_timeout_ms, 10_000)
          ) do
       {:ok, connection} ->
@@ -349,7 +358,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
-  defp connect(url, api_key, session_headers, connect_timeout_ms) do
+  defp connect(url, headers, headers_key, connect_timeout_ms) do
     opts = [
       mode: :active,
       protocols: [:http1],
@@ -357,7 +366,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     ]
 
     with {:ok, conn} <- Mint.HTTP.connect(url.connect_scheme, url.host, url.port, opts),
-         {:ok, conn, ref} <- upgrade_connection(conn, url, api_key, session_headers),
+         {:ok, conn, ref} <- upgrade_connection(conn, url, headers),
          {:ok, conn, status, headers, responses} <- receive_upgrade(conn, ref, connect_timeout_ms),
          {:ok, conn, websocket} <- Mint.WebSocket.new(conn, ref, status, headers) do
       connection = %{
@@ -365,7 +374,7 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
         websocket: websocket,
         ref: ref,
         url: url,
-        session_headers: session_headers
+        headers_key: headers_key
       }
 
       # Mint includes any bytes following the 101 headers in the upgrade responses.
@@ -392,14 +401,20 @@ defmodule IntellectualClub.Llm.Providers.ResponsesWss.Session do
     end
   end
 
-  defp upgrade_connection(conn, url, api_key, session_headers) do
-    headers =
-      [
-        {"authorization", "Bearer " <> api_key},
-        {"openai-beta", @openai_beta_header} | session_headers
-      ]
-      |> CodexHeaders.put_account_id(URI.to_string(url.uri), api_key)
+  defp handshake_headers({:ok, url}, opts, session_headers, custom) do
+    api_key = Map.fetch!(opts, :api_key)
 
+    [
+      {"authorization", "Bearer " <> api_key},
+      {"openai-beta", @openai_beta_header} | session_headers
+    ]
+    |> CodexHeaders.put_account_id(URI.to_string(url.uri), api_key)
+    |> CustomHeaders.merge(custom)
+  end
+
+  defp handshake_headers({:error, _reason}, _opts, _session_headers, _custom), do: []
+
+  defp upgrade_connection(conn, url, headers) do
     Mint.WebSocket.upgrade(url.upgrade_scheme, conn, url.path, headers,
       extensions: [Mint.WebSocket.PerMessageDeflate]
     )
