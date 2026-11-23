@@ -1788,6 +1788,16 @@ select.full {
   min-width: 0;
 }
 
+:is(.message-content, .working-item-body) a:where(:any-link) {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+:is(.message-content, .working-item-body) a:where(:any-link):where(:hover, :focus-visible) {
+  text-decoration-thickness: 0.12em;
+}
+
 .chat-attachment-image {
   max-width: 100%;
   height: auto;
