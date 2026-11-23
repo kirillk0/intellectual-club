@@ -17,35 +17,46 @@ defmodule IntellectualClub.Knowledge.TagTree do
 
   If the tag does not exist (or is not accessible to the actor), returns `[]`.
   The traversal is cycle-safe and stops after `:max_nodes` to avoid unbounded work.
+  Pass `:lock` inside a write transaction to prevent tags leaving the scanned subtree.
   """
   @spec subtree_ids(integer(), keyword()) :: [integer()]
   def subtree_ids(tag_id, opts) when is_integer(tag_id) do
     max_nodes = Keyword.get(opts, :max_nodes, @default_max_nodes)
     read_opts = read_opts(opts)
+    lock = Keyword.get(opts, :lock)
 
-    case Ash.get(KnowledgeTag, tag_id, read_opts) do
-      {:ok, _tag} ->
+    root =
+      KnowledgeTag
+      |> Ash.Query.filter(id == ^tag_id)
+      |> Ash.Query.select([])
+      |> Ash.Query.lock(lock)
+
+    case Ash.read_one(root, read_opts) do
+      {:ok, %KnowledgeTag{}} ->
         # max_nodes counts the root as well.
         remaining = max(0, max_nodes - 1)
 
         descendants =
-          descendant_ids([tag_id], MapSet.new([tag_id]), read_opts, remaining)
+          descendant_ids([tag_id], MapSet.new([tag_id]), read_opts, remaining, lock)
 
         [tag_id | descendants]
 
-      {:error, _} ->
+      _other ->
         []
     end
   end
 
-  defp descendant_ids(_frontier, _visited, _read_opts, remaining) when remaining <= 0, do: []
-  defp descendant_ids([], _visited, _read_opts, _remaining), do: []
+  defp descendant_ids(_frontier, _visited, _read_opts, remaining, _lock) when remaining <= 0,
+    do: []
 
-  defp descendant_ids(frontier, visited, read_opts, remaining) do
+  defp descendant_ids([], _visited, _read_opts, _remaining, _lock), do: []
+
+  defp descendant_ids(frontier, visited, read_opts, remaining, lock) do
     query =
       KnowledgeTag
       |> Ash.Query.filter(parent_id in ^frontier)
       |> Ash.Query.select([])
+      |> Ash.Query.lock(lock)
 
     case Ash.read(query, read_opts) do
       {:ok, tags} ->
@@ -62,7 +73,13 @@ defmodule IntellectualClub.Knowledge.TagTree do
           end)
 
         current_batch ++
-          descendant_ids(current_batch, visited, read_opts, remaining - length(current_batch))
+          descendant_ids(
+            current_batch,
+            visited,
+            read_opts,
+            remaining - length(current_batch),
+            lock
+          )
 
       {:error, _} ->
         []

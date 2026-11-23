@@ -3,9 +3,9 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   Native knowledge library driver.
 
   The driver exposes knowledge blocks from one owner-selected knowledge tag
-  through fixed read and search functions. Shared recipients execute the tool
-  through the tool instance owner authority instead of gaining direct block
-  access.
+  through fixed read, search and opt-in write functions. Shared recipients
+  can read through the tool owner authority without gaining direct block access.
+  Only the owner can write.
   """
 
   @behaviour IntellectualClub.Tools.Driver
@@ -13,16 +13,24 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   @impl true
   def interruptible?, do: false
 
-  alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Generation.ToolExecution
-  alias IntellectualClub.Knowledge.KnowledgeTag
-  alias IntellectualClub.Knowledge.PromptContent
-  alias IntellectualClub.Knowledge.TagTree
+
+  alias IntellectualClub.Knowledge.{
+    KnowledgeBlock,
+    KnowledgeTag,
+    LibraryText,
+    LibraryWrites,
+    PromptContent,
+    TagTree
+  }
+
+  alias IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary.WriteFunctions
   alias IntellectualClub.Tools.DocumentReader
   alias IntellectualClub.Tools.ToolInstance
 
   require Ash.Query
 
+  @write_functions WriteFunctions.names()
   @default_max_context_blocks 40
   @default_list_max_results 50
   @frontmatter_field_pattern ~r/^\s*([A-Za-z0-9_-]+)\s*:\s*(.*)\s*$/u
@@ -35,7 +43,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
   @impl true
   def description do
-    "Expose knowledge blocks from a selected tag as a paged library with regex search."
+    "Browse and search knowledge blocks in a tag subtree, with optional owner-only editing."
   end
 
   @impl true
@@ -188,7 +196,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
       %{
         "name" => "read_block",
         "description" =>
-          "Read a knowledge block by block_id or exact block_name and return one cached page.",
+          "Read one page of a knowledge block by block_id or exact block_name. Use the edit view for exact text to replace.",
         "schema" => %{
           "type" => "object",
           "properties" => %{
@@ -201,6 +209,13 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
               "type" => "string",
               "description" =>
                 "Exact knowledge block name. If names are duplicated, use block_id."
+            },
+            "view" => %{
+              "type" => "string",
+              "enum" => ["read", "edit"],
+              "default" => "read",
+              "description" =>
+                "read: formatted page with attachments. edit: exact visible text fragments for literal replacements. Page boundaries can differ."
             },
             "page" => %{
               "type" => "integer",
@@ -249,8 +264,14 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
         },
         "enabled" => true
       }
-    ]
+    ] ++ WriteFunctions.specs()
   end
+
+  @impl true
+  def unavailable_functions(%ToolInstance{owner_id: id}, _chat, %{id: id}) when is_integer(id),
+    do: []
+
+  def unavailable_functions(_tool_instance, _chat, _actor), do: @write_functions
 
   @impl true
   def instance_prompt_context(%ToolInstance{} = tool_instance) do
@@ -295,13 +316,40 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   end
 
   @impl true
-  def execute(%ToolInstance{} = tool_instance, function_name, args, _execution_context \\ nil)
+  def execute(%ToolInstance{} = tool_instance, function_name, args, execution_context \\ nil)
       when is_binary(function_name) and is_map(args) do
     case function_name do
-      "list_blocks" -> list_blocks(tool_instance, args)
-      "read_block" -> read_block(tool_instance, args)
-      "search_blocks" -> search_blocks(tool_instance, args)
-      _other -> {:error, "Unknown function: #{function_name}"}
+      "list_blocks" ->
+        list_blocks(tool_instance, args)
+
+      "read_block" ->
+        read_block(tool_instance, args)
+
+      "search_blocks" ->
+        search_blocks(tool_instance, args)
+
+      name when name in @write_functions ->
+        write_block(tool_instance, name, args, execution_context)
+
+      _other ->
+        {:error, "Unknown function: #{function_name}"}
+    end
+  end
+
+  defp write_block(tool, name, args, context) do
+    case WriteFunctions.run(tool, name, args, context) do
+      {:ok, %KnowledgeBlock{} = block} ->
+        raw = block_raw(block)
+        {:ok, {Jason.encode!(raw), raw}}
+
+      :ok ->
+        raw = %{"block_id" => args["block_id"], "deleted" => true}
+        {:ok, {Jason.encode!(raw), raw}}
+
+      {:error, code, message} ->
+        {:ok,
+         {"#{code}: #{message}",
+          %{"isError" => true, "code" => to_string(code), "error" => message}}}
     end
   end
 
@@ -362,8 +410,33 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
          {:ok, _tag} <- fetch_tag(tag_id, owner_actor),
          {:ok, blocks} <- list_collection_blocks(tag_id, owner_actor),
          {:ok, block} <- resolve_block(blocks, args),
-         {:ok, page} <- DocumentReader.parse_page(args),
-         {:ok, {doc_dir, meta, cached}} <- ensure_block_cache_ready(tool_instance, block, cfg) do
+         {:ok, page} <- DocumentReader.parse_page(args) do
+      case Map.get(args, "view", "read") do
+        "edit" -> read_edit_page(block, page, cfg)
+        "read" -> read_cached_page(tool_instance, block, page, cfg)
+        _other -> {:error, "Argument `view` must be read or edit."}
+      end
+    end
+  end
+
+  defp read_edit_page(block, page, cfg) do
+    with {:ok, fragments, pages_total} <-
+           LibraryText.page(block.content, page, cfg.chunk_size_tokens) do
+      raw =
+        Map.merge(block_raw(block), %{
+          "view" => "edit",
+          "page" => page,
+          "pages_total" => pages_total,
+          "fragments" => fragments
+        })
+
+      # JSON preserves indentation, trailing spaces and line endings in the model-visible text.
+      {:ok, {Jason.encode!(raw), raw}}
+    end
+  end
+
+  defp read_cached_page(tool_instance, block, page, cfg) do
+    with {:ok, {doc_dir, meta, cached}} <- ensure_block_cache_ready(tool_instance, block, cfg) do
       total_pages = DocumentReader.pages_total(doc_dir, meta)
       used_page = page
 
@@ -373,7 +446,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
           text =
             [
-              "Knowledge block: #{block.name} (id: #{block.id})",
+              "Knowledge block: #{format_block_ref(block)}",
               "Cached: #{if(cached, do: "true", else: "false")}",
               "Error: block has no readable content.",
               attachment_section
@@ -384,13 +457,12 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
 
           {:ok,
            {text,
-            %{
-              "block_id" => block.id,
+            Map.merge(block_raw(block), %{
               "cached" => cached,
               "page" => used_page,
               "pages_total" => total_pages,
               "attachments" => block_attachments_raw(block)
-            }}}
+            })}}
 
         used_page < 1 or used_page > total_pages ->
           {:error, "Page out of range: #{used_page} (total pages: #{total_pages})"}
@@ -794,7 +866,8 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
   defp format_block_ref(%KnowledgeBlock{} = block) do
     version = block.version |> to_string() |> String.trim()
     version_part = if version == "", do: "", else: ", version: #{version}"
-    "#{block.name} (block_id: #{block.id}#{version_part}, tokens: #{block.token_count || 0})"
+
+    "#{block.name} (block_id: #{block.id}#{version_part}, tokens: #{block.token_count || 0}, revision: #{LibraryWrites.revision(block)})"
   end
 
   defp append_skill_description(value, %KnowledgeBlock{} = block) do
@@ -808,6 +881,7 @@ defmodule IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary do
     %{
       "block_id" => block.id,
       "name" => block.name,
+      "revision" => LibraryWrites.revision(block),
       "version" => block.version || "",
       "token_count" => block.token_count || 0,
       "description" => skill_description(block)

@@ -1,4 +1,14 @@
 export const ruMessages: Record<string, string> = {
+  'Browse and search knowledge blocks in a tag subtree, with optional owner-only editing.':
+    'Чтение и поиск блоков по тегу и его подтегам. Владелец может отдельно включить функции записи.',
+  'Read one page of a knowledge block by block_id or exact block_name. Use the edit view for exact text to replace.':
+    'Прочитать страницу блока по block_id или точному block_name. Для буквальных замен используйте режим edit: он сохраняет исходные пробелы и переносы строк.',
+  'Create a new block in the library root tag, even if its name already exists.':
+    'Создать новый блок с корневым тегом библиотеки. Блок с таким же именем не перезаписывается.',
+  'Edit a block in place everywhere it is used. Supply at least one change. All changes succeed together or none are saved.':
+    'Изменить блок во всех местах, где он используется. Укажите хотя бы одну правку. Если какая-либо правка не удалась, остальные тоже не сохраняются.',
+  'Permanently delete the block itself, not just its library tag. A block with outside tags, references, shares or attachments cannot be deleted here.':
+    'Удалить сам блок, а не только тег библиотеки. Если у блока есть теги вне библиотеки, привязки, общий доступ или вложения, он не будет удалён.',
   'Lua': 'Lua',
   'Lua source': 'Исходный код Lua',
   'Manifest JSON': 'Манифест JSON',

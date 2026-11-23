@@ -283,15 +283,16 @@ defmodule IntellectualClub.Tools.ToolInstance do
         actor = changeset.context[:private][:actor]
         source_id = Ash.Changeset.get_argument(changeset, :id)
         source = Ash.get!(__MODULE__, source_id, actor: actor)
-        preserve_secrets? = Duplication.owned_by_actor?(source.owner_id, actor)
+        same_owner? = Duplication.owned_by_actor?(source.owner_id, actor)
 
         functions =
           ToolFunction
           |> Ash.Query.filter(tool_instance_id == ^source.id)
           |> Ash.Query.sort(id: :asc)
           |> Ash.read!(actor: actor)
+          |> copyable_function_overrides(source, same_owner?)
 
-        case duplicate_secrets(source, preserve_secrets?) do
+        case duplicate_secrets(source, same_owner?) do
           {:ok, driver_secrets} ->
             changeset
             |> Ash.Changeset.change_attributes(%{
@@ -299,7 +300,7 @@ defmodule IntellectualClub.Tools.ToolInstance do
               name: Duplication.next_copy_label(source.name),
               description: source.description,
               alias: source.alias || source.name,
-              config: duplicate_config(source, preserve_secrets?),
+              config: duplicate_config(source, same_owner?),
               secrets: driver_secrets,
               max_output_tokens: source.max_output_tokens,
               rps_limit: source.rps_limit
@@ -501,6 +502,14 @@ defmodule IntellectualClub.Tools.ToolInstance do
   end
 
   defp secrets_schema_aliases(_other), do: []
+
+  defp copyable_function_overrides(functions, %{type: "native-knowledge-library"}, false) do
+    # The new owner must opt in for their own library, not inherit the sharer's write grants.
+    writes = IntellectualClub.Tools.Drivers.NativeKnowledgeLibrary.WriteFunctions.names()
+    Enum.reject(functions, &(&1.name in writes))
+  end
+
+  defp copyable_function_overrides(functions, _source, _same_owner?), do: functions
 
   defp duplicate_config(%{type: "native-knowledge-library", config: config}, false)
        when is_map(config) do

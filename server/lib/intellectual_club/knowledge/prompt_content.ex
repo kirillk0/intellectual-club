@@ -20,6 +20,13 @@ defmodule IntellectualClub.Knowledge.PromptContent do
 
   def strip_comments(_content), do: ""
 
+  @doc "Whether a source line is hidden from model-visible knowledge content."
+  def comment_line?(line) when is_binary(line) do
+    String.starts_with?(line, @comment_prefix)
+  end
+
+  def comment_line?(_line), do: false
+
   @doc """
   Renders a knowledge block title, body, and file attachment placeholders.
   """
@@ -75,12 +82,6 @@ defmodule IntellectualClub.Knowledge.PromptContent do
   end
 
   def secret_placeholders(_block), do: ""
-
-  defp comment_line?(line) when is_binary(line) do
-    String.starts_with?(line, @comment_prefix)
-  end
-
-  defp comment_line?(_line), do: false
 
   defp normalize_bindings(%Ash.NotLoaded{}), do: []
   defp normalize_bindings(bindings) when is_list(bindings), do: bindings

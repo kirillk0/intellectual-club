@@ -13,7 +13,8 @@ defmodule IntellectualClub.Tools.ExecutorTest do
        ~w(spawn fork spawn_background fork_background handoff cancel_background_task check_background_task_status)},
       {"native-web-search", ~w(web_search web_fetch), []},
       {"native-web-reader", ~w(read_url search_url), []},
-      {"native-knowledge-library", ~w(search_blocks), ~w(list_blocks read_block)},
+      {"native-knowledge-library", ~w(search_blocks),
+       ~w(list_blocks read_block create_block edit_block delete_block)},
       {"native-artifact-reader", [], ~w(read_file search_file read_image upload_file)},
       {"native-game-tools", [], ~w(random_select)},
       {"ssh", [], ~w(run_command run_command_background download_file upload_file read_image)}

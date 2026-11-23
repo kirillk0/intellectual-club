@@ -208,6 +208,10 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       destination_attribute(:knowledge_block_id)
     end
 
+    has_many :user_bindings, IntellectualClub.Accounts.UserKnowledgeBlock do
+      destination_attribute(:knowledge_block_id)
+    end
+
     has_many :file_bindings, IntellectualClub.Knowledge.KnowledgeBlockFile do
       destination_attribute(:knowledge_block_id)
       public?(true)
@@ -305,6 +309,12 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       change(cascade_destroy(:secret_bindings, after_action?: false))
       change(cascade_destroy(:shares, after_action?: false))
       change({DeleteAssociatedFile, field: :image_file_id})
+    end
+
+    read :library_delete_dependencies do
+      argument :block_id, :integer, allow_nil?: false
+      filter expr(id == ^arg(:block_id) and owner_id == ^actor(:id))
+      prepare(&library_delete_dependencies/2)
     end
 
     read :search do
@@ -468,6 +478,27 @@ defmodule IntellectualClub.Knowledge.KnowledgeBlock do
       accept([:image_file_id])
       require_atomic?(false)
     end
+  end
+
+  defp library_delete_dependencies(query, _context) do
+    # A shared block may be referenced by a private chat, bot or configuration
+    # of another user. Only expose existence on this owner-only read, never the
+    # related records. Filtering the aggregates by their read policies would
+    # incorrectly report that such blocks were unused.
+    links = [
+      bots: :bot_bindings,
+      bot_handoffs: :handoff_message_bots,
+      llm_configurations: :llm_configuration_bindings,
+      chats: :chat_bindings,
+      user_profiles: :user_bindings,
+      attachments: :file_bindings,
+      secrets: :secret_bindings,
+      sharing: :shares
+    ]
+
+    Enum.reduce(links, Ash.Query.select(query, [:image_file_id]), fn {name, relationship}, acc ->
+      Ash.Query.aggregate(acc, name, :exists, relationship, authorize?: false)
+    end)
   end
 
   defp maybe_filter_by_query(query) do
