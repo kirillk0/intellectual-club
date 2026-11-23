@@ -19,6 +19,7 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmConfigurationTag
+  alias IntellectualClub.TokenCounter
   alias IntellectualClub.Tools.BotToolBinding
   alias IntellectualClub.Tools.ChatToolBinding
   alias IntellectualClub.Tools.ToolFunction
@@ -1681,6 +1682,10 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
              )
 
       refute String.contains?(payload["compiled_prompt_text"], "prompt_mcp__disabled_tool")
+
+      assert payload["counters"]["prompt_token_count"] ==
+               TokenCounter.estimate(payload["compiled_prompt_text"])
+
       assert payload["counters"]["history_message_count"] == 1
       refute Map.has_key?(payload["counters"], "total_token_count")
       refute Map.has_key?(payload, "branch")
@@ -1695,6 +1700,9 @@ defmodule IntellectualClubWeb.Bff.ChatStateTest do
 
       assert String.contains?(state_payload["compiled_prompt_text"], "# Available tool instances")
       assert String.contains?(state_payload["compiled_prompt_text"], "`prompt_mcp__search_docs`")
+
+      assert state_payload["counters"]["prompt_token_count"] ==
+               TokenCounter.estimate(state_payload["compiled_prompt_text"])
 
       assert Enum.map(
                state_payload["prompt_blocks"] || [],

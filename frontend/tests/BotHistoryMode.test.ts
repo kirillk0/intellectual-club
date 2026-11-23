@@ -102,6 +102,7 @@ describe('bot history mode', () => {
       readOnly: computed(() => false),
       promptSources: ref({ bot: [], chat: [], configuration: [], user: [] }),
       promptBlocks: ref([]),
+      promptTokenCount: computed(() => 100),
       currentConfig: computed(() => ({ context_length: 1000 }) as LlmConfiguration),
       currentBotInfo: computed(() => bot.value),
       isMobile: ref(false), leftOpen: ref(false),
@@ -112,7 +113,7 @@ describe('bot history mode', () => {
       expect(panel.contextUsageTitle.value).toBe('800 / 1000 tokens');
       for (const history_mode of ['agent', 'full', 'chat'] as const) {
         bot.value = { history_mode } as Bot;
-        expect(panel.contextUsageTitle.value).toBe(`${history_mode === 'chat' ? 32 : 800} / 1000 tokens`);
+        expect(panel.contextUsageTitle.value).toBe(`${history_mode === 'chat' ? 132 : 800} / 1000 tokens`);
       }
     } finally {
       scope.stop();

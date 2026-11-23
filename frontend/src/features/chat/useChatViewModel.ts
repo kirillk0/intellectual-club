@@ -355,6 +355,7 @@ export function useChatViewModel() {
     readOnly: historyReadonly,
     promptSources,
     promptBlocks,
+    promptTokenCount: computed(() => counters.value.prompt_token_count),
     currentConfig: headerControls.currentConfig,
     currentBotInfo: headerControls.currentBotInfo,
     isMobile: ui.isMobile,

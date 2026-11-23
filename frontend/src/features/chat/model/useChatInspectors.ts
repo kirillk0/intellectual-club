@@ -88,13 +88,11 @@ export function useChatInspectors(params: Params) {
   const promptModalOpen = ref(false);
   const promptLoading = ref(false);
   const promptError = ref('');
-  const promptText = ref('');
 
   const openPromptModal = async () => {
     promptModalOpen.value = true;
     promptLoading.value = false;
     promptError.value = '';
-    promptText.value = params.compiledPromptText.value || '';
   };
 
   const closePromptModal = () => {
@@ -942,7 +940,7 @@ export function useChatInspectors(params: Params) {
     promptModalOpen,
     promptLoading,
     promptError,
-    promptText,
+    promptText: params.compiledPromptText,
     openPromptModal,
     closePromptModal,
     stepDetailsOpen,

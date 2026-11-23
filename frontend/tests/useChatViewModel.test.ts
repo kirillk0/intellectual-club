@@ -875,9 +875,15 @@ describe('useChatViewModel loading', () => {
       expect.objectContaining({ retry: false, signal: expect.any(AbortSignal) })
     );
 
-    resolveSettings(chatSettings());
+    await viewModel.openPromptModal();
+    const settings = chatSettings();
+    settings.compiled_prompt_text = '# Available tool instances\n\n---';
+    settings.counters.prompt_token_count = 9;
+    resolveSettings(settings);
     await flushPromises();
     expect(viewModel.chatSettingsStatus.value).toBe('ready');
+    expect(viewModel.promptText.value).toBe(settings.compiled_prompt_text);
+    expect(viewModel.promptTokenCount.value).toBe(9);
   });
 
   it('hydrates durable queued messages from the core chat state', async () => {

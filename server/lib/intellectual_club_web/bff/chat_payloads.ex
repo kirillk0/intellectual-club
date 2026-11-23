@@ -124,10 +124,7 @@ defmodule IntellectualClubWeb.Bff.ChatPayloads do
       prompt_sources: serialize_prompt_sources(snapshot.prompt_sources),
       prompt_blocks: serialize_prompt_blocks(snapshot.prompt_blocks),
       compiled_prompt_text: snapshot.system_prompt,
-      counters:
-        ChatMetrics.counters_from_history(chat, history, actor,
-          prompt_sources: snapshot.prompt_sources
-        )
+      counters: ChatMetrics.counters_from_history(history, snapshot.system_prompt)
     }
   end
 

@@ -27,6 +27,7 @@ type Params = {
     user: PromptBinding[];
   }>;
   promptBlocks: Ref<PromptBlock[]>;
+  promptTokenCount: ComputedRef<number>;
   currentConfig: ComputedRef<LlmConfiguration | null>;
   currentBotInfo: ComputedRef<Bot | null>;
   isMobile: Ref<boolean>;
@@ -97,9 +98,7 @@ export function useChatContextPanel(params: Params) {
     return items;
   });
 
-  const promptTokenCount = computed(() =>
-    linkedBlocks.value.reduce((sum, item) => sum + (item.block.token_count || 0), 0)
-  );
+  const { promptTokenCount } = params;
   const historyTokenCount = computed(() =>
     params.branch.value.reduce((sum, msg) => {
       const steering = (msg.content?.parts || [])

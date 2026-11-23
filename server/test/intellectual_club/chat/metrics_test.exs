@@ -8,10 +8,12 @@ defmodule IntellectualClub.Chat.MetricsTest do
   alias IntellectualClub.Chat.ChatKnowledgeBlock
   alias IntellectualClub.Chat.Metrics
   alias IntellectualClub.Chat.Threads
+  alias IntellectualClub.Generation.Context
   alias IntellectualClub.Knowledge.KnowledgeBlock
   alias IntellectualClub.Llm.LlmConfiguration
   alias IntellectualClub.Llm.LlmConfigurationKnowledgeBlock
   alias IntellectualClub.Llm.LlmProvider
+  alias IntellectualClub.TokenCounter
 
   test "returns prompt and history token counters for active branch" do
     %{user: actor} = user_fixture()
@@ -162,13 +164,11 @@ defmodule IntellectualClub.Chat.MetricsTest do
 
     counters = Metrics.counters(chat.id, actor)
 
-    expected_prompt_tokens =
-      bot_block.token_count + chat_block.token_count + config_block.token_count +
-        user_block.token_count
+    snapshot = Context.prompt_snapshot!(chat, actor: actor)
 
     expected_history_tokens = root.token_count + b1.token_count
 
-    assert counters.prompt_token_count == expected_prompt_tokens
+    assert counters.prompt_token_count == TokenCounter.estimate(snapshot.system_prompt)
     assert counters.history_token_count == expected_history_tokens
     assert counters.history_message_count == 2
   end
