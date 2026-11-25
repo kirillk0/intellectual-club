@@ -14,6 +14,34 @@ defmodule IntellectualClubWeb.Bff.ChatListTest do
   alias IntellectualClub.Chat.Threads
 
   describe "grouped chat list" do
+    test "bot selection uses the latest no-bot activity across inbox and archive", %{conn: conn} do
+      %{user: actor} = fixture = user_fixture()
+      conn = sign_in_conn(conn, fixture)
+      bot_chat = create_chat!(actor, bot_id: create_bot!(actor).id)
+      no_bot_chat = create_chat!(actor)
+
+      {:ok, _} =
+        IntellectualClub.Chat.ReadState.mutate(
+          no_bot_chat.id,
+          %{"action" => "archive", "expected_state_version" => 0, "observed_revision" => 0},
+          actor
+        )
+
+      activity = DateTime.to_iso8601(no_bot_chat.created_at)
+
+      for {view, count} <- [{"inbox", 0}, {"archive", 1}] do
+        params = %{sections: "other", view: view}
+        list = conn |> get(~p"/api/bff/chat-list", params) |> json_response(200)
+        assert list["stats"]["no_bot_chat_count"] == count
+        assert list["stats"]["no_bot_last_activity_at"] == activity
+      end
+
+      settings =
+        conn |> get(~p"/api/bff/chat-state/#{bot_chat.id}/settings") |> json_response(200)
+
+      assert settings["options"]["no_bot_last_activity_at"] == activity
+    end
+
     test "attachment-only drafts include descendants in both grouped and paginated lists", %{
       conn: conn
     } do

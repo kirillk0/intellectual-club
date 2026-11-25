@@ -63,18 +63,16 @@ defmodule IntellectualClub.Chat.ListingStats do
         }
       end)
     end)
-    |> Map.put(:no_bot_last_activity_at, no_bot_last_activity_at(actor, view))
+    |> Map.put(:no_bot_last_activity_at, no_bot_last_activity_at(actor))
   end
 
   def sidebar(_actor, _view), do: empty_sidebar_stats()
 
+  @doc "Returns the actor's latest no-bot activity across inbox and archive for bot sorting."
   @spec no_bot_last_activity_at(any()) :: DateTime.t() | NaiveDateTime.t() | nil
-  def no_bot_last_activity_at(actor, view \\ "inbox")
-
-  def no_bot_last_activity_at(%{id: actor_id} = actor, view) when is_integer(actor_id) do
+  def no_bot_last_activity_at(%{id: actor_id} = actor) when is_integer(actor_id) do
     Chat
-    |> Ash.Query.filter(owner_id == ^actor.id and is_nil(bot_id) and subagent == false)
-    |> IntellectualClub.Chat.Listing.apply_view(view, actor)
+    |> Ash.Query.filter(owner_id == ^actor_id and is_nil(bot_id) and subagent == false)
     |> Ash.Query.sort(last_activity_at: :desc, id: :desc)
     |> Ash.Query.load(:last_activity_at)
     |> Ash.Query.limit(1)
@@ -85,7 +83,7 @@ defmodule IntellectualClub.Chat.ListingStats do
     end
   end
 
-  def no_bot_last_activity_at(_actor, _view), do: nil
+  def no_bot_last_activity_at(_actor), do: nil
 
   defp chat_activity_at(%Chat{} = chat) do
     case Map.get(chat, :last_activity_at) do
