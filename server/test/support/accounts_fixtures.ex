@@ -6,7 +6,7 @@ defmodule IntellectualClub.AccountsFixtures do
   alias IntellectualClub.Accounts.{User, UserGroup}
 
   def user_fixture(attrs \\ %{}) when is_map(attrs) do
-    username = Map.get(attrs, :username, unique_username())
+    username = Map.get_lazy(attrs, :username, fn -> "user_#{Ecto.UUID.generate()}" end)
     password = Map.get(attrs, :password, "test-password-1234")
     is_admin = Map.get(attrs, :is_admin, false)
 
@@ -46,7 +46,7 @@ defmodule IntellectualClub.AccountsFixtures do
   end
 
   def user_group_fixture(attrs \\ %{}) when is_map(attrs) do
-    name = Map.get(attrs, :name, unique_group_name())
+    name = Map.get_lazy(attrs, :name, fn -> "group_#{Ecto.UUID.generate()}" end)
 
     users =
       attrs
@@ -69,14 +69,6 @@ defmodule IntellectualClub.AccountsFixtures do
       |> Ash.create!()
 
     %{group: group}
-  end
-
-  defp unique_username do
-    "user_#{System.unique_integer([:positive])}"
-  end
-
-  defp unique_group_name do
-    "group_#{System.unique_integer([:positive])}"
   end
 
   defp maybe_put_users(payload, []), do: payload
