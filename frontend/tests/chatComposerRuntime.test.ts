@@ -247,8 +247,11 @@ describe('chat composer runtime', () => {
       const uploads = new Map<string, { filename: string; mime_type: string; size_bytes: number }>();
       let nextUpload = 0;
       let text = { text: '', revision: 0, updated_at: null };
+      const listAttachments = vi.fn(async () => ({
+        attachments: [...snapshots.values()].filter((item) => item.status !== 'deleted'),
+      }));
       apiMocks.get.mockImplementation(async (url: string) => url.endsWith('/attachments')
-        ? { attachments: [...snapshots.values()].filter((item) => item.status !== 'deleted') }
+        ? listAttachments()
         : { draft: { ...text } });
       apiMocks.put.mockImplementation(async (url: string, body) => {
         if (!url.includes('/attachments/')) {
@@ -292,8 +295,40 @@ describe('chat composer runtime', () => {
         if (snapshot) snapshots.set(id, { ...snapshot, status: 'deleted', revision: snapshot.revision + 1 });
         return {};
       });
-      return { snapshots, uploads };
+      return { snapshots, uploads, listAttachments };
     };
+
+    it('clears the attachment list error after an automatic retry succeeds in the open chat', async () => {
+      vi.useFakeTimers();
+      const { listAttachments } = mockDraftServer();
+      listAttachments.mockRejectedValueOnce(Object.assign(new Error('timeout'), { name: 'RequestTimeoutError' }));
+      const { runtime } = createRuntime(null, false, [], undefined, true);
+      try {
+        await flushPromises();
+        expect(runtime.attachmentError.value).toBe('Failed to load draft attachments.');
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(listAttachments).toHaveBeenCalledTimes(2);
+        expect(runtime.attachmentError.value).toBe('');
+      } finally {
+        await runtime.dispose();
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores a late attachment list failure after a newer refresh succeeds', async () => {
+      const { listAttachments } = mockDraftServer();
+      let fail!: (error: Error) => void;
+      listAttachments.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+      const { runtime } = createRuntime(null, false, [], undefined, true);
+      try {
+        await runtime.refreshDraft();
+        fail(new TypeError('Network error'));
+        await flushPromises();
+        expect(runtime.attachmentError.value).toBe('');
+      } finally {
+        await runtime.dispose();
+      }
+    });
 
     it('keeps attachment rejections in the current composer and clears them on the next accepted file', async () => {
       mockDraftServer();
@@ -303,6 +338,8 @@ describe('chat composer runtime', () => {
       runtime.addPendingFiles([large]);
       expect(runtime.attachmentError.value).toContain('"large.doc"');
       expect(loadError.value).toBe('Page error');
+      await runtime.refreshDraft();
+      expect(runtime.attachmentError.value).toContain('"large.doc"');
 
       runtime.addPendingFiles([new File(['note'], 'note.txt', { type: 'text/plain' })]);
       expect(runtime.attachmentError.value).toBe('');

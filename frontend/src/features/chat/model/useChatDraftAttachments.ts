@@ -1,5 +1,6 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { api, getApiErrorMessage } from '@/api/client';
+import { isTransientReadError, recoverableRetryDelayMs } from '@/features/app/recoverableReadPolicy';
 import {
   canTogglePendingImageOriginal, createPendingChatFiles, initialPendingImageState, isImageMimeType,
   pendingImageStateAfterInspection, pendingImageStateAfterConversion, pendingImageStatePatch,
@@ -34,6 +35,12 @@ export function useChatDraftAttachments(options: {
   let current: Session | null = null;
   let displaying = false;
   let disposed = false;
+  const refreshError = ref('');
+  let retryTimer: number | null = null;
+  const cancelRefreshRetry = () => {
+    if (retryTimer !== null) window.clearTimeout(retryTimer);
+    retryTimer = null;
+  };
   const enabled = computed(() => options.target.value !== null);
   const display = (s: Session) => {
     if (current !== s || disposed) return;
@@ -85,13 +92,18 @@ export function useChatDraftAttachments(options: {
     }
     display(s);
   };
-  const refresh = async (s = current) => {
+  const refresh = async (retryIndex = 0) => {
+    const s = current;
     if (!s || disposed) return;
+    cancelRefreshRetry();
     const sequence = ++s.refreshSequence;
     const mutations = s.mutations;
+    const isCurrentRead = () => !disposed && current === s && sequence === s.refreshSequence;
     try {
       const payload = await api.get<{ attachments: DraftAttachmentSnapshot[] }>(endpoint(s), requestOptions);
-      if (!payload?.attachments || sequence !== s.refreshSequence || mutations !== s.mutations) return;
+      if (!payload?.attachments || !isCurrentRead()) return;
+      refreshError.value = '';
+      if (mutations !== s.mutations) return;
       const ids = new Set(payload.attachments.map((item) => item.id));
       s.files.value = s.files.value.filter((item) => s.pending.has(item.id) ||
         !item.draftAttachment || ids.has(item.id));
@@ -104,7 +116,11 @@ export function useChatDraftAttachments(options: {
       }
       display(s);
     } catch (error) {
-      if (current === s) options.error.value = getApiErrorMessage(error, translate('Failed to load draft attachments.'));
+      if (!isCurrentRead()) return;
+      refreshError.value = getApiErrorMessage(error, translate('Failed to load draft attachments.'));
+      if (isTransientReadError(error)) {
+        retryTimer = window.setTimeout(() => void refresh(retryIndex + 1), recoverableRetryDelayMs(retryIndex, error));
+      }
     }
   };
   const mutate = async (s: Session, id: string, body: Record<string, unknown>) => {
@@ -284,6 +300,8 @@ export function useChatDraftAttachments(options: {
   }, { flush: 'sync' });
   const stopTarget = watch(options.target, (target) => {
     if (target && current?.target.chatId === target.chatId && current.target.userId === target.userId) return;
+    cancelRefreshRetry();
+    refreshError.value = '';
     const previous = current;
     current = null;
     if (previous) { displaying = true; options.files.value = []; displaying = false; }
@@ -294,7 +312,7 @@ export function useChatDraftAttachments(options: {
       session = { target, policy: options.policy.value, files: ref([]), pending: new Map(), removed: new Set(), workers: new Map(), refreshSequence: 0, mutations: 0, desired: new Map() };
       sessions.set(key, session);
     }
-    current = session; display(session); void refresh(session);
+    current = session; display(session); void refresh();
   }, { immediate: true, flush: 'sync' });
   const wake = () => {
     void refresh();
@@ -314,10 +332,11 @@ export function useChatDraftAttachments(options: {
   window.addEventListener('focus', wake); window.addEventListener('online', wake);
   window.addEventListener('beforeunload', beforeUnload);
   const dispose = () => {
+    cancelRefreshRetry();
     disposed = true; stopFiles(); stopTarget();
     window.removeEventListener('focus', wake); window.removeEventListener('online', wake);
     if (![...sessions.values()].some((s) => s.pending.size)) window.removeEventListener('beforeunload', beforeUnload);
     // In-flight uploads retain their captured chat/session and can finish after navigation.
   };
-  return { enabled, add, remove, select, retry, ensureSaved, acknowledge, refresh, dispose };
+  return { enabled, add, remove, select, retry, ensureSaved, acknowledge, refresh, refreshError, dispose };
 }

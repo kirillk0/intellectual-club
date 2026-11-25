@@ -1576,7 +1576,7 @@ export function useChatComposerRuntime(params: Params) {
 
   return {
     pendingFiles,
-    attachmentError,
+    attachmentError: computed(() => attachmentError.value || draftAttachments.refreshError.value),
     activeGenerationId: params.activeGenerationId,
     cancelingGenerationId: params.cancelingGenerationId,
     draft,
